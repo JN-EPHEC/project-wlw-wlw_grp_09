@@ -1,0 +1,473 @@
+// app/services/rides.ts
+import { resolveAreaFromPlace } from '../constants/areas';
+import {
+  CAMPUSPOINTS_PER_PASSENGER,
+  CAMPUSRIDE_COMMISSION_RATE,
+} from '../constants/fuel';
+import { getAreaSubscribers, pushNotification } from './notifications';
+import { processPayment, type Payment, type PaymentMethod } from './payments';
+import { creditWallet, addPoints } from './wallet';
+import { recordCommission } from './platform';
+export type Ride = {
+  id: string;
+  driver: string;
+  plate: string;
+  depart: string;
+  destination: string;
+  time: string;   // HH:MM
+  seats: number;  // 1..3
+  price: number;  // € / passager
+  pricingMode: 'single' | 'double';
+  createdAt: number;
+  ownerEmail: string;
+  passengers: string[];
+  canceledPassengers: string[];
+  updatedAt: number;
+  departureAt: number;
+  payoutProcessed: boolean;
+};
+
+let rides: Ride[] = [];
+type Listener = (items: Ride[]) => void;
+const listeners: Listener[] = [];
+
+const clone = (data: Ride[]) =>
+  data.map((item) => ({ ...item, passengers: [...item.passengers], canceledPassengers: [...item.canceledPassengers] }));
+
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+export type RidePayload = {
+  id: string;
+  driver: string;
+  plate: string;
+  depart: string;
+  destination: string;
+  time: string;
+  seats: number;
+  price: number;
+  ownerEmail: string;
+  pricingMode?: 'single' | 'double';
+};
+
+const capitalise = (segment: string) =>
+  segment ? segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase() : segment;
+
+const sanitiseText = (label: keyof Pick<RidePayload, 'driver' | 'depart' | 'destination'>, value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`Champ ${label} invalide`);
+  }
+  return trimmed
+    .split(/\s+/)
+    .map((part) => capitalise(part))
+    .join(' ');
+};
+
+const sanitiseTime = (value: string) => {
+  if (!TIME_PATTERN.test(value)) {
+    throw new Error('Heure invalide (attendu HH:MM)');
+  }
+  return value;
+};
+
+const sanitisePlate = (value: string) => {
+  const plate = value.trim().toUpperCase();
+  if (!/^[A-Z0-9-]{4,10}$/.test(plate)) {
+    throw new Error('Plaque invalide (ex. ABC-123)');
+  }
+  return plate;
+};
+
+const sanitiseSeats = (value: number) => {
+  if (!Number.isInteger(value) || value < 1 || value > 3) {
+    throw new Error('Places disponibles hors limites (1-3)');
+  }
+  return value;
+};
+
+const sanitisePrice = (value: number) => {
+  if (!Number.isFinite(value) || value < 1 || value > 40) {
+    throw new Error('Prix par passager invalide');
+  }
+  return Number(value.toFixed(2));
+};
+
+const computeDepartureAt = (time: string, reference = Date.now()) => {
+  const now = new Date(reference);
+  const departure = new Date(reference);
+  const [hours, minutes] = time.split(':').map((part) => parseInt(part, 10));
+  departure.setHours(hours, minutes, 0, 0);
+  if (departure.getTime() <= now.getTime()) {
+    departure.setDate(departure.getDate() + 1);
+  }
+  return departure.getTime();
+};
+
+export const hasRideDeparted = (ride: Ride, now = Date.now()) => now >= ride.departureAt;
+
+const buildRide = (payload: RidePayload): Ride => {
+  const driver = sanitiseText('driver', payload.driver);
+  const depart = sanitiseText('depart', payload.depart);
+  const destination = sanitiseText('destination', payload.destination);
+  const plate = sanitisePlate(payload.plate);
+  const time = sanitiseTime(payload.time);
+  const seats = sanitiseSeats(payload.seats);
+  const price = sanitisePrice(payload.price);
+  const ownerEmail = payload.ownerEmail.trim().toLowerCase();
+  const pricingMode = payload.pricingMode ?? 'single';
+
+  const createdAt = Date.now();
+  const departureAt = computeDepartureAt(time, createdAt);
+
+  return {
+    id: payload.id,
+    driver,
+    plate,
+    depart,
+    destination,
+    time,
+    seats,
+    price,
+    ownerEmail,
+    pricingMode,
+    passengers: [],
+    canceledPassengers: [],
+    createdAt,
+    updatedAt: createdAt,
+    departureAt,
+    payoutProcessed: false,
+  };
+};
+
+const updateRideFromPatch = (ride: Ride, patch: Partial<RidePayload>): Ride => {
+  if (hasRideDeparted(ride)) {
+    throw new Error('Impossible de modifier un trajet déjà parti.');
+  }
+
+  const next: Ride = { ...ride };
+
+  if (patch.driver !== undefined) next.driver = sanitiseText('driver', patch.driver);
+  if (patch.plate !== undefined) next.plate = sanitisePlate(patch.plate);
+  if (patch.depart !== undefined) next.depart = sanitiseText('depart', patch.depart);
+  if (patch.destination !== undefined) next.destination = sanitiseText('destination', patch.destination);
+  if (patch.ownerEmail !== undefined) next.ownerEmail = patch.ownerEmail.trim().toLowerCase();
+
+  if (patch.time !== undefined) {
+    const time = sanitiseTime(patch.time);
+    next.time = time;
+    const reference = Math.max(Date.now(), ride.createdAt);
+    next.departureAt = computeDepartureAt(time, reference);
+  }
+
+  if (patch.seats !== undefined) {
+    const seats = sanitiseSeats(patch.seats);
+    if (ride.passengers.length > seats) {
+      throw new Error('Impossible de réduire les places en dessous des réservations existantes.');
+    }
+    next.seats = seats;
+  }
+
+  if (patch.price !== undefined) next.price = sanitisePrice(patch.price);
+  if (patch.pricingMode !== undefined) next.pricingMode = patch.pricingMode;
+
+  next.updatedAt = Date.now();
+  return next;
+};
+
+(() => {
+  // Jeu de données initial pour la démo (permet d'afficher une carte immédiatement)
+  const now = Date.now();
+  rides = [
+    {
+      id: 'seed-1',
+      driver: 'Lina Dupont',
+      plate: 'ULB-832',
+      depart: 'Etterbeek',
+      destination: 'EPHEC Louvain-la-Neuve',
+      time: '08:15',
+      seats: 3,
+      price: 4.5,
+      createdAt: now - 1000 * 60 * 45,
+      updatedAt: now - 1000 * 60 * 30,
+      ownerEmail: 'lina.dupont@ephec.be',
+      passengers: ['marc.durand@ephec.be'],
+      canceledPassengers: [],
+      departureAt: computeDepartureAt('08:15', now - 1000 * 60 * 45),
+      payoutProcessed: true,
+      pricingMode: 'single',
+    },
+    {
+      id: 'seed-2',
+      driver: 'Bilal Nasser',
+      plate: 'WOL-204',
+      depart: 'Ixelles',
+      destination: 'EPHEC Woluwé',
+      time: '09:00',
+      seats: 2,
+      price: 3.2,
+      createdAt: now - 1000 * 60 * 70,
+      updatedAt: now - 1000 * 60 * 70,
+      ownerEmail: 'bilal.nasser@ephec.be',
+      passengers: [],
+      canceledPassengers: [],
+      departureAt: computeDepartureAt('09:00', now - 1000 * 60 * 70),
+      payoutProcessed: true,
+      pricingMode: 'single',
+    },
+  ];
+})();
+
+const processRidePayouts = () => {
+  const now = Date.now();
+  rides = rides.map((ride) => {
+    if (ride.payoutProcessed) return ride;
+    if (!hasRideDeparted(ride, now)) return ride;
+    const passengerCount = ride.passengers.length;
+    if (passengerCount <= 0) {
+      return { ...ride, payoutProcessed: true, updatedAt: now };
+    }
+    const grossAmount = +(ride.price * passengerCount).toFixed(2);
+    if (grossAmount > 0) {
+      const commission = +(grossAmount * CAMPUSRIDE_COMMISSION_RATE).toFixed(2);
+      const driverNet = +(grossAmount - commission).toFixed(2);
+      if (driverNet > 0) {
+        creditWallet(ride.ownerEmail, driverNet, {
+          description: `Trajet ${ride.depart} → ${ride.destination}`,
+          rideId: ride.id,
+          grossAmount,
+          commission,
+        });
+        addPoints(
+          ride.ownerEmail,
+          CAMPUSPOINTS_PER_PASSENGER * passengerCount,
+          'Trajet complété'
+        );
+      }
+      if (commission > 0) {
+        recordCommission(ride.id, commission, {
+          passengers: passengerCount,
+          depart: ride.depart,
+          destination: ride.destination,
+        });
+      }
+      pushNotification({
+        to: ride.ownerEmail,
+        title: 'Versement reçu',
+        body: `€${driverNet.toFixed(2)} crédités suite à ton trajet ${ride.depart} → ${ride.destination}.`,
+        metadata: {
+          rideId: ride.id,
+          action: 'wallet-credit',
+          amount: driverNet,
+          commission,
+        },
+      });
+    }
+    return { ...ride, payoutProcessed: true, updatedAt: now };
+  });
+};
+
+const notifyRides = () => {
+  processRidePayouts();
+  const snapshot = clone(rides);
+  listeners.forEach((l) => l(snapshot));
+};
+
+export const getRides = () => {
+  processRidePayouts();
+  return clone(rides);
+};
+
+export const addRide = (payload: RidePayload) => {
+  const ride = buildRide(payload);
+  rides = [ride, ...rides];
+  const area = resolveAreaFromPlace(ride.depart);
+  if (area) {
+    const recipients = getAreaSubscribers(area.id).filter((email) => email !== ride.ownerEmail);
+    const title = `Nouveau trajet ${area.label}`;
+    const body = `${ride.driver} (${ride.plate}) part vers ${ride.destination} à ${ride.time}.`;
+    recipients.forEach((to) =>
+      pushNotification({
+        to,
+        title,
+        body,
+        metadata: {
+          rideId: ride.id,
+          action: 'ride-published',
+          areaId: area.id,
+          driver: ride.driver,
+          plate: ride.plate,
+          time: ride.time,
+          destination: ride.destination,
+          depart: ride.depart,
+        },
+      })
+    );
+  }
+  notifyRides();
+  return ride;
+};
+
+export const updateRide = (id: string, patch: Partial<RidePayload>) => {
+  let updated: Ride | null = null;
+  rides = rides.map((r) => {
+    if (r.id !== id) return r;
+    updated = updateRideFromPatch(r, patch);
+    return updated;
+  });
+  if (!updated) {
+    throw new Error('Trajet introuvable');
+  }
+  notifyRides();
+  return updated;
+};
+
+export const removeRide = (id: string) => {
+  const target = rides.find((r) => r.id === id);
+  if (!target) {
+    throw new Error('Trajet introuvable');
+  }
+  if (hasRideDeparted(target)) {
+    throw new Error('Impossible de supprimer un trajet déjà parti.');
+  }
+  rides = rides.filter((r) => r.id !== id);
+  notifyRides();
+};
+
+export const subscribeRides = (cb: Listener) => {
+  listeners.push(cb);
+  cb(getRides());
+  return () => {
+    const i = listeners.indexOf(cb);
+    if (i >= 0) listeners.splice(i, 1);
+  };
+};
+
+export type ReservationFailureReason =
+  | 'DEPARTED'
+  | 'ALREADY_RESERVED'
+  | 'FULL'
+  | 'PAYMENT_WALLET'
+  | 'PAYMENT_PASS'
+  | 'PAYMENT_UNKNOWN';
+
+export type ReservationResult =
+  | { ok: true; ride: Ride; payment: Payment }
+  | { ok: false; reason: ReservationFailureReason; details?: string };
+
+export type ReservationOptions = {
+  paymentMethod?: PaymentMethod;
+};
+
+export const reserveSeat = (
+  rideId: string,
+  passengerEmail: string,
+  options: ReservationOptions = {}
+): ReservationResult => {
+  let updated: Ride | null = null;
+  let payment: Payment | null = null;
+  let failure: ReservationFailureReason | null = null;
+  let failureDetails: string | undefined;
+  const method = options.paymentMethod;
+
+  rides = rides.map((ride) => {
+    if (ride.id !== rideId) return ride;
+    if (hasRideDeparted(ride)) {
+      failure = 'DEPARTED';
+      return ride;
+    }
+    if (ride.passengers.includes(passengerEmail)) {
+      failure = 'ALREADY_RESERVED';
+      return ride;
+    }
+    if (ride.passengers.length >= ride.seats) {
+      failure = 'FULL';
+      return ride;
+    }
+    try {
+      payment = processPayment(ride, passengerEmail, { method });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown payment error';
+      if (message === 'WALLET_INSUFFICIENT_FUNDS') {
+        failure = 'PAYMENT_WALLET';
+      } else if (message === 'NO_PASS_CREDIT') {
+        failure = 'PAYMENT_PASS';
+      } else {
+        failure = 'PAYMENT_UNKNOWN';
+      }
+      failureDetails = message;
+      return ride;
+    }
+    updated = {
+      ...ride,
+      passengers: [...ride.passengers, passengerEmail],
+      updatedAt: Date.now(),
+    };
+    return updated;
+  });
+
+  if (updated && payment) {
+    notifyRides();
+    return { ok: true, ride: updated, payment };
+  }
+
+  return { ok: false, reason: failure ?? 'FULL', details: failureDetails };
+};
+
+export const cancelReservation = (rideId: string, passengerEmail: string) => {
+  let updated: Ride | null = null;
+  rides = rides.map((ride) => {
+    if (ride.id !== rideId) return ride;
+    if (!ride.passengers.includes(passengerEmail)) return ride;
+    if (ride.passengers.includes(passengerEmail)) {
+      const updatedAt = Date.now();
+      const nextPassengers = ride.passengers.filter((mail) => mail !== passengerEmail);
+      const nextCanceled = ride.canceledPassengers.includes(passengerEmail)
+        ? ride.canceledPassengers
+        : [...ride.canceledPassengers, passengerEmail];
+      updated = {
+        ...ride,
+        passengers: nextPassengers,
+        canceledPassengers: nextCanceled,
+        updatedAt,
+      };
+
+      const alias = passengerEmail.split('@')[0] ?? passengerEmail;
+      const passengerDisplay = alias
+        .replace(/[._-]+/g, ' ')
+        .split(/\s+/)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+        .join(' ');
+
+      pushNotification({
+        to: ride.ownerEmail,
+        title: 'Réservation annulée',
+        body: `${passengerDisplay} a annulé sa place sur ${ride.depart} → ${ride.destination}.`,
+        metadata: {
+          action: 'reservation-cancelled',
+          rideId: ride.id,
+          passenger: passengerDisplay,
+        },
+      });
+      pushNotification({
+        to: passengerEmail,
+        title: 'Réservation annulée',
+        body: `Ta réservation pour ${ride.depart} → ${ride.destination} est annulée.`,
+        metadata: {
+          action: 'reservation-cancelled-confirmation',
+          rideId: ride.id,
+        },
+      });
+    }
+    return updated;
+  });
+  if (updated) {
+    notifyRides();
+    return updated;
+  }
+  return null;
+};
+
+export const getRide = (id: string) => {
+  processRidePayouts();
+  return rides.find((r) => r.id === id);
+};
