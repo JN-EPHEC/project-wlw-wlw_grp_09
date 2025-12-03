@@ -1441,7 +1441,7 @@ export default function Home() {
           style={styles(C, S).businessCard}
         >
           <Image
-            source={require('@/assets/images/fusée.png')}
+            source={require('@/assets/images/fusee.png')}
             style={styles(C, S).businessIcon}
           />
           <View style={{ flex: 1, gap: Spacing.xs }}>

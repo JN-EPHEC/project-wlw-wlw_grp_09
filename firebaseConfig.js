@@ -1,4 +1,3 @@
-
 // firebaseConfig.js (ou firebase.js)
 
 import { getApps, initializeApp } from "firebase/app";
