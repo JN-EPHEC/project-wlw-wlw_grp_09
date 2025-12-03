@@ -1,6 +1,6 @@
 // app/(tabs)/index.tsx
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, Easing, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AREAS, MAX_RADIUS_KM, resolveAreaFromPlace } from '@/app/constants/areas';
@@ -9,6 +9,7 @@ import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { PublishRideFlowPreview } from '@/components/publish-ride-flow';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { useBreakpoints } from '@/hooks/use-breakpoints';
 import { useDriverSecurity } from '@/hooks/use-driver-security';
@@ -566,6 +567,9 @@ export default function Home() {
   );
   const [driverReviews, setDriverReviews] = useState<Review[]>([]);
   const driverSecurity = useDriverSecurity(session.email);
+  const handleOpenBusiness = useCallback(() => {
+    router.push('/business-partnership');
+  }, [router]);
   const openDriverVerification = () => router.push('/driver-verification');
 
   useEffect(() => {
@@ -986,13 +990,18 @@ export default function Home() {
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
               >
+                <IconSymbol
+                  name={mode === 'passenger' ? 'person.fill' : 'car.fill'}
+                  size={18}
+                  color={selected ? C.primary : C.gray500}
+                />
                 <Text
                   style={[
                     styles(C, S).modeSwitchLabel,
                     selected ? styles(C, S).modeSwitchLabelActive : undefined,
                   ]}
                 >
-                  {mode === 'passenger' ? 'Accueil passager' : 'Accueil conducteur'}
+                  {mode === 'passenger' ? 'Passager' : 'Conducteur'}
                 </Text>
               </Pressable>
             );
@@ -1022,7 +1031,7 @@ export default function Home() {
             <GradientBackground colors={Gradients.ocean} style={heroCardResponsiveStyle}>
               <View style={styles(C, S).heroTexts}>
                 <Text style={styles(C, S).heroGreeting}>
-                  {firstName ? `Salut ${firstName} 👋` : 'Bienvenue sur CampusRide 👋'}
+                  {firstName ? `Salut ${firstName} 👋` : 'Bienvenue 👋'}
                 </Text>
                 <Text style={styles(C, S).heroSubtitle}>
                   {filteredRides.length > 0
@@ -1348,6 +1357,10 @@ export default function Home() {
             </View>
           </GradientBackground>
 
+          <GradientBackground colors={Gradients.card} style={styles(C, S).driverFlowCard}>
+            <PublishRideFlowPreview />
+          </GradientBackground>
+
           {driverSecurityBanner ? (
             <GradientBackground colors={Gradients.soft} style={styles(C, S).driverSecurityCard}>
               <View style={styles(C, S).driverSecurityRow}>
@@ -1417,6 +1430,31 @@ export default function Home() {
           ) : null}
         </>
       )}
+
+      <Pressable
+        onPress={handleOpenBusiness}
+        accessibilityRole="button"
+        style={styles(C, S).businessCardWrapper}
+      >
+        <GradientBackground
+          colors={['#B96DFF', '#925CFF', '#6E4AE2']}
+          style={styles(C, S).businessCard}
+        >
+          <Image
+            source={require('@/assets/images/fusée.png')}
+            style={styles(C, S).businessIcon}
+          />
+          <View style={{ flex: 1, gap: Spacing.xs }}>
+            <Text style={styles(C, S).businessTitle}>Obtenez plus de clients avec CampusRide</Text>
+            <Text style={styles(C, S).businessSubtitle}>
+              Touchez +1000 étudiants actifs avec profils vérifiés.
+            </Text>
+          </View>
+          <View style={styles(C, S).businessCTA}>
+            <Text style={styles(C, S).businessCTAText}>Découvrir</Text>
+          </View>
+        </GradientBackground>
+      </Pressable>
     </View>
   );
 
@@ -1541,6 +1579,9 @@ const styles = (C: typeof ThemeColors, S: typeof ThemeShadows) =>
       borderRadius: Radius.pill,
       paddingVertical: Spacing.sm,
       alignItems: 'center',
+      flexDirection: 'row',
+      justifyContent: 'center',
+      gap: Spacing.xs,
     },
     modeSwitchButtonActive: {
       backgroundColor: '#FFFFFF',
@@ -1557,6 +1598,45 @@ const styles = (C: typeof ThemeColors, S: typeof ThemeShadows) =>
     },
     modeSwitchLabelActive: {
       color: C.ink,
+    },
+    businessCardWrapper: {
+      marginTop: Spacing.md,
+      width: '100%',
+    },
+    businessCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.md,
+      borderRadius: Radius.lg,
+      padding: Spacing.md,
+      width: '100%',
+      shadowColor: 'rgba(42, 16, 90, 0.4)',
+      shadowOpacity: 0.5,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 8 },
+      elevation: 6,
+    },
+    businessIcon: { width: 48, height: 48, resizeMode: 'contain' },
+    businessTitle: {
+      fontWeight: '800',
+      color: '#FFFFFF',
+      fontSize: 16,
+    },
+    businessSubtitle: {
+      color: 'rgba(255,255,255,0.9)',
+      fontSize: 13,
+    },
+    businessCTA: {
+      borderRadius: Radius.pill,
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.6)',
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs,
+      backgroundColor: 'rgba(255,255,255,0.15)',
+    },
+    businessCTAText: {
+      color: '#FFFFFF',
+      fontWeight: '700',
     },
     driverReminder: {
       borderRadius: Radius.lg,
@@ -1722,6 +1802,15 @@ const styles = (C: typeof ThemeColors, S: typeof ThemeShadows) =>
       color: C.gray600,
       fontSize: 13,
       lineHeight: 18,
+    },
+    driverFlowCard: {
+      borderRadius: Radius.lg,
+      padding: Spacing.lg,
+      gap: Spacing.md,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: 'rgba(255,255,255,0.2)',
+      backgroundColor: 'rgba(255,255,255,0.95)',
+      width: '100%',
     },
     driverSecurityCard: {
       borderRadius: Radius.lg,

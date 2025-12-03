@@ -36,6 +36,6 @@ export const getPreferredFuel = () => preferredFuel;
 
 export const MAINTENANCE_EUROS_PER_KM = 0.05;
 
-export const CAMPUSRIDE_COMMISSION_RATE = 0.15;
+export const CAMPUSRIDE_COMMISSION_RATE = 0.2;
 
 export const CAMPUSPOINTS_PER_PASSENGER = 12;

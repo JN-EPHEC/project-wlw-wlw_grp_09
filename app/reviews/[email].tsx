@@ -145,8 +145,8 @@ export default function DriverReviewsScreen() {
           showsVerticalScrollIndicator={false}
         >
         <View style={styles.header}>
-          <Pressable style={styles.backLink} onPress={() => router.back()}>
-            <Text style={styles.backLinkText}>← Retour</Text>
+        <Pressable style={styles.backLink} onPress={() => router.back()}>
+          <Text style={styles.backLinkText}>←</Text>
           </Pressable>
           <Text style={styles.title}>Avis sur {driverDisplay}</Text>
           <Text style={styles.subtitle}>

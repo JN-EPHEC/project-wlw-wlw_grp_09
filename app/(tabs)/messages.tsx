@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   SafeAreaView,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -16,11 +16,11 @@ import {
 
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
-import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
+import { getAvatarUrl } from '@/app/ui/avatar';
 import {
   ensureDemoThreads,
   markThreadAsRead,
@@ -37,7 +37,7 @@ const C = Colors;
 export default function MessagesScreen() {
   const session = useAuthSession();
   const { width } = useWindowDimensions();
-  const isCompact = width < 840;
+  const isSplitLayout = width >= 960;
   const bottomInset = useTabBarInset(Spacing.lg);
   const [threads, setThreads] = useState<ThreadSnapshot[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
@@ -58,10 +58,18 @@ export default function MessagesScreen() {
       setActiveThreadId(null);
       return;
     }
+
+    if (!isSplitLayout) {
+      if (activeThreadId && !threads.some((thread) => thread.id === activeThreadId)) {
+        setActiveThreadId(null);
+      }
+      return;
+    }
+
     if (!activeThreadId || !threads.some((thread) => thread.id === activeThreadId)) {
       setActiveThreadId(threads[0].id);
     }
-  }, [threads, activeThreadId]);
+  }, [threads, activeThreadId, isSplitLayout]);
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -93,6 +101,26 @@ export default function MessagesScreen() {
 
   const myEmail = session.email ?? '';
   const myEmailKey = myEmail.toLowerCase();
+
+  const conversationPartner = activeThread
+    ? activeThread.participants.find(
+        (participant) => participant.email.toLowerCase() !== myEmailKey
+      ) ?? activeThread.participants[0]
+    : null;
+  const conversationPartnerName =
+    conversationPartner?.name ?? conversationPartner?.email ?? 'Conversation';
+  const conversationPartnerAvatar = useMemo(() => {
+    if (conversationPartner?.email) {
+      return getAvatarUrl(conversationPartner.email, 120);
+    }
+    return getAvatarUrl(conversationPartnerName, 120);
+  }, [conversationPartner?.email, conversationPartnerName]);
+
+  const userRole: 'passenger' | 'driver' =
+    session.isDriver && !session.isPassenger ? 'driver' : 'passenger';
+  const conversationGradient =
+    userRole === 'passenger' ? ['#A474F9', '#E891C5'] : ['#F89B68', '#F89B68'];
+  const bubbleAccent = userRole === 'passenger' ? '#F89B68' : '#A474F9';
 
   const sendMessage = useCallback(() => {
     const trimmed = draft.trim();
@@ -155,209 +183,224 @@ export default function MessagesScreen() {
     return other?.name ?? other?.email ?? 'Conversation';
   };
 
-  const getThreadBadge = (thread: ThreadSnapshot) => {
-    const other =
-      thread.participants.find((participant) => participant.email.toLowerCase() !== myEmailKey) ??
-      thread.participants[0];
-    if (!other) return '';
-    return other.role === 'driver' ? 'Conducteur' : other.role === 'passenger' ? 'Passager' : '';
-  };
-
   const getUnreadCount = (thread: ThreadSnapshot) => thread.unreadBy[myEmailKey] ?? 0;
 
-  const formatPreviewTime = (timestamp: number | null) => {
+  const formatRelativeLabel = (timestamp: number | null) => {
     if (!timestamp) return null;
-    return new Date(timestamp).toLocaleTimeString('fr-BE', { hour: '2-digit', minute: '2-digit' });
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays <= 0) {
+      return date.toLocaleTimeString('fr-BE', { hour: '2-digit', minute: '2-digit' });
+    }
+    if (diffDays === 1) return 'Hier';
+    if (diffDays < 7) return `Il y a ${diffDays} jours`;
+    return date.toLocaleDateString('fr-BE', { day: 'numeric', month: 'short' });
   };
+
+  const formatDayLabel = (timestamp: number) =>
+    new Date(timestamp).toLocaleDateString('fr-BE', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'short',
+    });
+
+  const showConversationOnly = !isSplitLayout && !!activeThreadId;
+
+  const renderThreadItem = ({ item }: { item: ThreadSnapshot }) => {
+    const partner = getThreadPartnerLabel(item);
+    const preview = item.lastMessage ?? 'Démarre la conversation';
+    const unread = getUnreadCount(item);
+    const isSelected = item.id === activeThreadId && (isSplitLayout || showConversationOnly);
+    const timeLabel = formatRelativeLabel(item.lastMessageAt);
+    const avatarUri = getAvatarUrl(partner ?? preview, 96);
+    return (
+      <Pressable
+        onPress={() => selectThread(item.id)}
+        style={[styles.threadCard, (unread > 0 || isSelected) && styles.threadCardActive]}
+        accessibilityRole="button"
+      >
+        <Image source={{ uri: avatarUri }} style={styles.threadAvatar} />
+        <View style={styles.threadInfo}>
+          <View style={styles.threadHeaderRow}>
+            <Text style={styles.threadName}>{partner}</Text>
+            {timeLabel ? <Text style={styles.threadTime}>{timeLabel}</Text> : null}
+          </View>
+          <Text style={styles.threadPreview} numberOfLines={1}>
+            {preview}
+          </Text>
+        </View>
+        {unread > 0 ? (
+          <View style={styles.unreadTag}>
+            <Text style={styles.unreadTagText}>{unread}</Text>
+          </View>
+        ) : null}
+      </Pressable>
+    );
+  };
+
+  const renderThreadList = () => (
+    <View style={[styles.listSection, isSplitLayout && styles.listSectionSplit]}>
+      <Text style={styles.heading}>Messages</Text>
+      <Text style={styles.subheading}>Vos conversations</Text>
+      <GradientBackground colors={Gradients.card} style={styles.listCard}>
+        <FlatList
+          data={threads}
+          keyExtractor={(item) => item.id}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          renderItem={renderThreadItem}
+          contentContainerStyle={styles.threadListContent}
+          ListEmptyComponent={() => (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>Aucune conversation</Text>
+              <Text style={styles.emptyDescription}>
+                Réserve un trajet ou publie-en un pour démarrer un échange.
+              </Text>
+            </View>
+          )}
+          showsVerticalScrollIndicator={false}
+        />
+      </GradientBackground>
+    </View>
+  );
+
+  const renderConversationView = () => (
+    <GradientBackground colors={conversationGradient} style={styles.conversationCard}>
+      {activeThread ? (
+        <View style={styles.conversationWrapper}>
+          <View style={styles.conversationHeader}>
+            {!isSplitLayout ? (
+              <Pressable
+                onPress={() => setActiveThreadId(null)}
+                accessibilityRole="button"
+                style={styles.backButton}
+              >
+                <IconSymbol name="chevron.left" size={22} color="#FFFFFF" />
+              </Pressable>
+            ) : null}
+            <Image source={{ uri: conversationPartnerAvatar }} style={styles.partnerAvatar} />
+            <View style={styles.partnerMeta}>
+              <Text style={styles.partnerName}>{conversationPartnerName}</Text>
+              <Text style={styles.partnerStatus}>
+                En ligne • {activeThread.routeLabel ?? 'Trajet CampusRide'}
+              </Text>
+            </View>
+            <View style={styles.headerActions}>
+              <Pressable accessibilityRole="button" style={styles.headerActionButton}>
+                <IconSymbol name="phone.fill" size={18} color="#FFFFFF" />
+              </Pressable>
+              <Pressable accessibilityRole="button" style={styles.headerActionButton}>
+                <IconSymbol name="ellipsis.circle" size={18} color="#FFFFFF" />
+              </Pressable>
+            </View>
+          </View>
+
+          <FlatList
+            data={messages}
+            keyExtractor={(item) => item.id}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.messageList}
+            renderItem={({ item, index }) => {
+              const prev = messages[index - 1];
+              const showSeparator =
+                !prev ||
+                new Date(prev.sentAt).toDateString() !== new Date(item.sentAt).toDateString();
+              const ownMessage = item.author.toLowerCase() === myEmailKey;
+              const isLast = index === messages.length - 1;
+              const statusLabel = ownMessage && isLast ? getMessageStatusLabel(item.receipts) : null;
+              return (
+                <View>
+                  {showSeparator ? (
+                    <View style={styles.daySeparator}>
+                      <Text style={styles.daySeparatorText}>{formatDayLabel(item.sentAt)}</Text>
+                    </View>
+                  ) : null}
+                  <View
+                    style={[
+                      styles.messageBubble,
+                      ownMessage ? styles.messageMine : styles.messageOther,
+                      ownMessage && { backgroundColor: bubbleAccent },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.messageText,
+                        ownMessage ? styles.messageTextMine : styles.messageTextOther,
+                      ]}
+                    >
+                      {item.body}
+                    </Text>
+                    <View style={styles.messageMetaRow}>
+                      <Text style={styles.messageMeta}>
+                        {new Date(item.sentAt).toLocaleTimeString('fr-BE', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </Text>
+                      {!ownMessage ? (
+                        <Pressable onPress={() => handleReport(item)} hitSlop={6}>
+                          <Text style={styles.reportLink}>Signaler</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  </View>
+                  {ownMessage && statusLabel ? (
+                    <Text style={styles.statusInline}>{statusLabel}</Text>
+                  ) : null}
+                </View>
+              );
+            }}
+          />
+
+          <KeyboardAvoidingView
+            behavior={Platform.select({ ios: 'padding', android: undefined })}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 96 : 0}
+          >
+            <View style={styles.inputBar}>
+              <TextInput
+                placeholder="Écris ton message…"
+                placeholderTextColor="rgba(255,255,255,0.85)"
+                value={draft}
+                onChangeText={setDraft}
+                style={styles.inputField}
+                multiline
+              />
+              <Pressable
+                onPress={sendMessage}
+                disabled={!draft.trim()}
+                style={[styles.sendButton, !draft.trim() && styles.sendButtonDisabled]}
+                accessibilityRole="button"
+              >
+                <IconSymbol name="paperplane.fill" size={18} color="#FFFFFF" />
+              </Pressable>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      ) : (
+        <View style={styles.emptyConversation}>
+          <Text style={styles.emptyConversationTitle}>Sélectionne une conversation</Text>
+          <Text style={styles.emptyConversationSubtitle}>
+            Choisis un conducteur ou un passager pour ouvrir la discussion.
+          </Text>
+        </View>
+      )}
+    </GradientBackground>
+  );
 
   return (
     <AppBackground style={styles.screen}>
-      <SafeAreaView style={[styles.safe, { paddingBottom: bottomInset }]}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Messagerie</Text>
-          <Text style={styles.subtitle}>
-            Organise tes trajets sans partager ton numéro : toutes les conversations restent sur
-            CampusRide. Tout échange en dehors de l’app est contraire aux règles et peut entraîner
-            une suspension.
-          </Text>
-          <Text style={styles.identity}>Connecté en tant que {session.name ?? session.email ?? 'toi'}.</Text>
-          {isCompact ? (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.threadChipRow}
-            >
-              {threads.map((thread) => {
-                const selected = thread.id === activeThreadId;
-                const unread = getUnreadCount(thread);
-                return (
-                  <Pressable
-                    key={thread.id}
-                    onPress={() => selectThread(thread.id)}
-                    style={[styles.threadChip, selected && styles.threadChipSelected]}
-                  >
-                    <Text style={[styles.threadChipLabel, selected && styles.threadChipLabelSelected]}>
-                      {getThreadPartnerLabel(thread)}
-                    </Text>
-                    {unread > 0 ? (
-                      <View style={styles.threadChipBadge}>
-                        <Text style={styles.threadChipBadgeText}>{unread}</Text>
-                      </View>
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          ) : null}
-        </View>
-        <View style={[styles.content, isCompact && styles.contentCompact]}>
-          <GradientBackground
-            colors={Gradients.card}
-            style={[styles.threadList, isCompact && styles.threadListCompact]}
-          >
-            <FlatList
-              data={threads}
-              keyExtractor={(item) => item.id}
-              ItemSeparatorComponent={() => <View style={styles.threadSeparator} />}
-              contentContainerStyle={styles.threadListContent}
-              showsVerticalScrollIndicator={!isCompact}
-              renderItem={({ item }) => {
-                const selected = item.id === activeThreadId;
-                const partner = getThreadPartnerLabel(item);
-                const badge = getThreadBadge(item);
-                const unread = getUnreadCount(item);
-                const timeLabel = formatPreviewTime(item.lastMessageAt);
-                const preview = item.lastMessage ?? 'Soyez le premier à écrire';
-                return (
-                  <Pressable
-                    onPress={() => selectThread(item.id)}
-                    style={[
-                      styles.threadItem,
-                      selected && styles.threadItemSelected,
-                      isCompact && styles.threadItemCompact,
-                    ]}
-                  >
-                    <View style={styles.threadHeader}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.threadPartner}>{partner}</Text>
-                        {badge ? <Text style={styles.threadBadge}>{badge}</Text> : null}
-                      </View>
-                      {timeLabel ? <Text style={styles.threadTime}>{timeLabel}</Text> : null}
-                      {unread > 0 ? (
-                        <View style={styles.unreadBadge}>
-                          <Text style={styles.unreadText}>{unread}</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <Text style={styles.threadRoute}>{item.routeLabel}</Text>
-                    <Text style={styles.threadPreview} numberOfLines={1}>
-                      {preview}
-                    </Text>
-                  </Pressable>
-                );
-              }}
-            />
-          </GradientBackground>
-
-          <GradientBackground
-            colors={Gradients.card}
-            style={[styles.conversation, isCompact && styles.conversationCompact]}
-          >
-            {activeThread ? (
-              <>
-                <View style={styles.conversationHeader}>
-                  <IconSymbol name="bubble.left.and.bubble.right.fill" size={18} color={C.primary} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.conversationPartner}>{getThreadPartnerLabel(activeThread)}</Text>
-                    <Text style={styles.conversationRoute}>{activeThread.routeLabel}</Text>
-                  </View>
-                </View>
-                <FlatList
-                  data={messages}
-                  keyExtractor={(item) => item.id}
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={styles.messageList}
-                  renderItem={({ item, index }) => {
-                    const ownMessage = item.author.toLowerCase() === myEmailKey;
-                    const isLast = index === messages.length - 1;
-                    const statusLabel =
-                      ownMessage && isLast ? getMessageStatusLabel(item.receipts) : null;
-                    return (
-                      <View
-                        style={[
-                          styles.messageBubble,
-                          ownMessage ? styles.messageMine : styles.messageOther,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.messageText,
-                            ownMessage ? styles.messageTextMine : styles.messageTextOther,
-                          ]}
-                        >
-                          {item.body}
-                        </Text>
-                        <View style={styles.messageFooter}>
-                          <Text style={styles.messageMeta}>
-                            {new Date(item.sentAt).toLocaleTimeString('fr-BE', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </Text>
-                          {!ownMessage ? (
-                            <Pressable onPress={() => handleReport(item)} hitSlop={8}>
-                              <Text style={styles.reportLink}>Signaler</Text>
-                            </Pressable>
-                          ) : null}
-                        </View>
-                        {statusLabel ? (
-                          <Text
-                            style={[
-                              styles.messageStatus,
-                              statusLabel === 'Vu' && styles.messageStatusSeen,
-                            ]}
-                          >
-                            {statusLabel}
-                          </Text>
-                        ) : null}
-                      </View>
-                    );
-                  }}
-                />
-                <KeyboardAvoidingView
-                  behavior={Platform.select({ ios: 'padding', android: undefined })}
-                  keyboardVerticalOffset={Platform.OS === 'ios' ? 96 : 0}
-                >
-                  <View style={styles.composer}>
-                    <TextInput
-                      placeholder="Écris ton message…"
-                      placeholderTextColor={C.gray500}
-                      value={draft}
-                      onChangeText={setDraft}
-                      style={styles.input}
-                      multiline
-                      autoCorrect
-                      autoCapitalize="sentences"
-                    />
-                    <GradientButton
-                      title="Envoyer"
-                      onPress={sendMessage}
-                      disabled={!draft.trim()}
-                      style={styles.sendButton}
-                    />
-                  </View>
-                </KeyboardAvoidingView>
-              </>
-            ) : (
-              <View style={styles.emptyConversation}>
-                <Text style={styles.emptyTitle}>Aucune conversation</Text>
-                <Text style={styles.emptyDescription}>
-                  Réserve un trajet ou publie-en un pour commencer à discuter avec la communauté.
-                </Text>
-              </View>
-            )}
-          </GradientBackground>
-        </View>
+      <SafeAreaView style={[styles.safe, { paddingBottom: bottomInset }]}> 
+        {isSplitLayout ? (
+          <View style={styles.splitLayout}>
+            {renderThreadList()}
+            {renderConversationView()}
+          </View>
+        ) : showConversationOnly ? (
+          renderConversationView()
+        ) : (
+          renderThreadList()
+        )}
       </SafeAreaView>
     </AppBackground>
   );
@@ -365,148 +408,177 @@ export default function MessagesScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: 'transparent' },
-  safe: { flex: 1 },
-  header: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, gap: Spacing.sm },
-  title: { fontSize: 24, fontWeight: '800', color: C.ink },
-  subtitle: { color: C.white, fontSize: 13, lineHeight: 18 },
-  identity: { color: C.white, fontSize: 12 },
-  threadChipRow: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    paddingVertical: Spacing.sm,
-  },
-  threadChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: Spacing.sm,
-    borderRadius: Radius.pill,
-    borderWidth: 1,
-    borderColor: 'rgba(122,95,255,0.25)',
-    backgroundColor: 'rgba(255,255,255,0.6)',
-  },
-  threadChipSelected: {
-    backgroundColor: C.primaryLight,
-    borderColor: C.primary,
-  },
-  threadChipLabel: { fontSize: 12, color: C.gray700, fontWeight: '600' },
-  threadChipLabelSelected: { color: C.primaryDark },
-  threadChipBadge: {
-    backgroundColor: C.primary,
-    borderRadius: Radius.pill,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  threadChipBadgeText: { color: '#fff', fontSize: 10, fontWeight: '700' },
-  content: {
-    flex: 1,
-    flexDirection: 'row',
-    padding: Spacing.lg,
-    gap: Spacing.lg,
-  },
-  contentCompact: {
-    flexDirection: 'column',
-  },
-  threadList: {
-    width: 280,
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.3)',
-    padding: Spacing.md,
-    gap: Spacing.md,
-  },
-  threadListCompact: {
-    width: '100%',
-    maxHeight: 260,
-  },
-  threadListContent: { paddingBottom: Spacing.sm },
-  threadSeparator: { height: 1, backgroundColor: 'rgba(0,0,0,0.05)', marginVertical: Spacing.xs },
-  threadItem: { gap: 6, paddingVertical: Spacing.xs, paddingHorizontal: 2 },
-  threadItemCompact: { paddingHorizontal: Spacing.sm },
-  threadItemSelected: {
-    backgroundColor: 'rgba(255,255,255,0.6)',
-    borderRadius: Radius.md,
-    padding: Spacing.sm,
-  },
-  threadHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  threadPartner: { fontWeight: '700', color: C.ink },
-  threadBadge: { color: C.gray500, fontSize: 11, marginTop: 2 },
-  threadTime: { color: C.gray500, fontSize: 11, marginRight: Spacing.xs },
-  unreadBadge: {
-    backgroundColor: C.primary,
-    borderRadius: Radius.pill,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  unreadText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  threadRoute: { color: C.gray500, fontSize: 12 },
-  threadPreview: { color: C.gray600, fontSize: 12 },
-  conversation: {
+  safe: { flex: 1, paddingHorizontal: Spacing.lg },
+  splitLayout: { flex: 1, flexDirection: 'row', gap: Spacing.lg },
+  listSection: { flex: 1, gap: Spacing.sm },
+  listSectionSplit: { flex: 0.9 },
+  heading: { fontSize: 26, fontWeight: '800', color: C.white },
+  subheading: { color: 'rgba(255,255,255,0.8)', fontSize: 14, marginBottom: Spacing.sm },
+  listCard: {
     flex: 1,
     borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.3)',
-    padding: Spacing.lg,
-    gap: Spacing.lg,
-  },
-  conversationCompact: {
-    width: '100%',
-    minHeight: 260,
-  },
-  conversationHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  conversationPartner: { fontWeight: '700', color: C.ink, fontSize: 16 },
-  conversationRoute: { color: C.gray600, fontSize: 12 },
-  messageList: {
-    paddingBottom: Spacing.sm,
-  },
-  messageBubble: {
-    maxWidth: '80%',
-    borderRadius: 14,
     paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.md,
-    marginBottom: Spacing.sm,
     shadowColor: '#0B2545',
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+  },
+  threadListContent: { paddingVertical: Spacing.sm },
+  separator: { height: Spacing.sm },
+  threadCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: Spacing.sm,
+    borderRadius: Radius.lg,
+    backgroundColor: 'rgba(248,248,255,0.8)',
+    gap: Spacing.sm,
+  },
+  threadCardActive: {
+    backgroundColor: 'rgba(250,230,255,0.95)',
+    shadowColor: '#8C5CF5',
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
     shadowOffset: { width: 0, height: 4 },
   },
-  messageMine: { alignSelf: 'flex-end', backgroundColor: C.primaryLight },
-  messageOther: { alignSelf: 'flex-start', backgroundColor: 'rgba(255,255,255,0.8)' },
-  messageText: { fontSize: 13, lineHeight: 18 },
-  messageTextMine: { color: C.primaryDark, fontWeight: '600' },
+  threadAvatar: { width: 48, height: 48, borderRadius: 24 },
+  threadInfo: { flex: 1 },
+  threadHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', gap: Spacing.xs },
+  threadName: { fontSize: 15, fontWeight: '700', color: C.ink },
+  threadTime: { fontSize: 12, color: C.gray500 },
+  threadPreview: { fontSize: 13, color: C.gray600, marginTop: 2 },
+  unreadTag: {
+    minWidth: 24,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+  },
+  unreadTagText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+  emptyState: { alignItems: 'center', paddingVertical: Spacing.xl, gap: Spacing.xs },
+  emptyTitle: { fontWeight: '700', color: C.gray600 },
+  emptyDescription: { color: C.gray500, textAlign: 'center', fontSize: 13 },
+  conversationCard: {
+    flex: 1,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    shadowColor: '#0B2545',
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+  },
+  conversationWrapper: { flex: 1 },
+  conversationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  backButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  partnerAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFFFFF' },
+  partnerMeta: { flex: 1 },
+  partnerName: { color: '#FFFFFF', fontSize: 18, fontWeight: '800' },
+  partnerStatus: { color: 'rgba(255,255,255,0.9)', fontSize: 12 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  headerActionButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  messageList: { paddingBottom: Spacing.lg },
+  daySeparator: { alignItems: 'center', marginVertical: Spacing.sm },
+  daySeparatorText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    textTransform: 'capitalize',
+  },
+  messageBubble: {
+    maxWidth: '85%',
+    borderRadius: 20,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.xs,
+    shadowColor: '#0B2545',
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  messageMine: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#F89B68',
+  },
+  messageOther: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#FFFFFF',
+  },
+  messageText: { fontSize: 14, lineHeight: 20 },
+  messageTextMine: { color: '#FFFFFF', fontWeight: '600' },
   messageTextOther: { color: C.gray700 },
-  messageFooter: {
+  messageMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginTop: 6,
   },
-  messageMeta: { fontSize: 11, color: 'rgba(16,32,48,0.45)' },
-  messageStatus: { fontSize: 11, color: C.gray600, marginTop: 4, alignSelf: 'flex-end' },
-  messageStatusSeen: { color: C.success },
+  messageMeta: { fontSize: 11, color: 'rgba(10, 18, 32, 0.6)' },
   reportLink: { fontSize: 11, color: C.danger, fontWeight: '700' },
-  composer: {
+  statusInline: {
+    fontSize: 11,
+    color: '#FFFFFF',
+    alignSelf: 'flex-end',
+    marginBottom: Spacing.sm,
+  },
+  inputBar: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: Spacing.sm,
-    alignItems: 'flex-end',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(0,0,0,0.08)',
-    paddingTop: Spacing.sm,
+    marginTop: Spacing.md,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: Radius.pill,
   },
-  input: {
+  inputField: {
     flex: 1,
-    minHeight: 44,
-    maxHeight: 120,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: C.gray300,
-    padding: Spacing.sm,
-    backgroundColor: 'rgba(255,255,255,0.85)',
-    color: C.ink,
+    minHeight: 42,
+    maxHeight: 100,
+    color: '#FFFFFF',
   },
-  sendButton: { alignSelf: 'flex-end', minWidth: 96 },
-  emptyConversation: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
-  emptyTitle: { fontWeight: '700', color: C.gray600 },
-  emptyDescription: { color: C.gray500, fontSize: 12, textAlign: 'center', paddingHorizontal: Spacing.xl },
+  sendButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FF8347',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendButtonDisabled: { opacity: 0.5 },
+  emptyConversation: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+  },
+  emptyConversationTitle: { color: '#FFFFFF', fontWeight: '800', fontSize: 18 },
+  emptyConversationSubtitle: {
+    color: 'rgba(255,255,255,0.9)',
+    textAlign: 'center',
+    fontSize: 13,
+  },
 });

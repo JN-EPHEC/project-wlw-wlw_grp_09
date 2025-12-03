@@ -37,7 +37,7 @@ function RewardBadgeComponent({ snapshot, onPressAction, actionLabel }: RewardBa
         <View style={styles.nextBox}>
           <Text style={styles.nextTitle}>Prochain palier : {next.label}</Text>
           <Text style={styles.nextText}>
-            {next.ridesGap > 0 ? `${next.ridesGap} trajet(s)` : 'Trajets ok'} •{' '}
+            {next.ridesGap > 0 ? `${next.ridesGap} trajet(s)` : 'Trajets OK'} •{' '}
             {next.ratingGap > 0 ? `Note +${next.ratingGap.toFixed(1)}` : 'Note OK'} •{' '}
             {next.reviewsGap > 0 ? `${next.reviewsGap} avis` : 'Avis OK'}
           </Text>

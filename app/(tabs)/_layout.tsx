@@ -77,6 +77,7 @@ function TabLayout() {
         tabBarStyle,
         tabBarLabelStyle,
         tabBarItemStyle,
+        tabBarShowLabel: false,
         tabBarBackground: () => (
           <GradientBackground
             colors={['#FFFFFF', '#FFFFFF']}
@@ -93,17 +94,17 @@ function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="messages"
-        options={{
-          title: 'Messages',
-          tabBarIcon: buildTabIcon('bubble.left.and.bubble.right.fill'),
-        }}
-      />
-      <Tabs.Screen
         name="explore"
         options={{
           title: 'Publier',
           tabBarIcon: buildTabIcon('car.fill'),
+        }}
+      />
+      <Tabs.Screen
+        name="messages"
+        options={{
+          title: 'Messages',
+          tabBarIcon: buildTabIcon('bubble.left.and.bubble.right.fill'),
         }}
       />
       <Tabs.Screen

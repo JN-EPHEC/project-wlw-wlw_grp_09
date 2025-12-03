@@ -1,6 +1,7 @@
 import { Redirect, router } from 'expo-router';
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Image,
@@ -23,6 +24,8 @@ import { AppBackground } from '@/components/ui/app-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
+import { updatePassengerProfile } from '@/src/firestoreUsers';
+import { uploadProfileSelfie, uploadStudentCard } from '@/src/storageUploads';
 
 const splitName = (fullName: string | null | undefined) => {
   const safe = fullName?.trim();
@@ -48,13 +51,21 @@ const preserveValue = (value: string | null | undefined) => {
   return trimmed && trimmed.length > 0 ? trimmed : null;
 };
 
+const isRemoteUri = (uri: string | null | undefined) =>
+  typeof uri === 'string' && /^https?:\/\//.test(uri);
+
 export default function CompleteProfile() {
   const session = useAuthSession();
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const isCompact = width < 360;
+  const showUploadGrid = width >= 420;
   // local illustration of a student on a laptop for the onboarding card
   const heroImage = require('@/assets/images/Etudiant.png');
-  const parsedName = splitName(session.name);
+  const emailAlias =
+    session.email?.split('@')[0]?.replace(/[._-]+/g, ' ').trim().toLowerCase() ?? '';
+  const rawName = session.name?.trim() ?? '';
+  const isAutoName = emailAlias && rawName && rawName.toLowerCase() === emailAlias;
+  const parsedName = splitName(isAutoName ? '' : rawName);
   const savedStudentCard = preserveValue(session.studentCardUrl);
   const savedSelfie = savedStudentCard ? preserveValue(session.avatarUrl) : null;
   const [firstName, setFirstName] = useState(parsedName.first);
@@ -74,7 +85,10 @@ export default function CompleteProfile() {
   const [selfieUri, setSelfieUri] = useState<string | null>(savedSelfie);
   const [studentCardLoading, setStudentCardLoading] = useState(false);
   const [selfieLoading, setSelfieLoading] = useState(false);
+  const studentCardAttemptRef = useRef(0);
+  const selfieAttemptRef = useRef(0);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
 
   const phoneValid = useMemo(() => /^(\+?\d{8,15})$/.test(phone.trim()), [phone]);
   const infoValid =
@@ -89,36 +103,113 @@ export default function CompleteProfile() {
     return <Redirect href="/sign-in" />;
   }
 
-  const chooseStudentCard = async () => {
-    if (studentCardLoading) return;
-    setStudentCardLoading(true);
-    try {
-      const uri = await pickKycImage('files', 'student-card');
-      if (uri) {
-        setStudentCardUri(uri);
-        return;
-      }
-      const gallery = await pickKycImage('gallery', 'student-card');
-      if (gallery) setStudentCardUri(gallery);
-    } finally {
-      setStudentCardLoading(false);
-    }
+  const resetStudentCardSelection = () => {
+    studentCardAttemptRef.current += 1;
+    setStudentCardLoading(false);
+    setStudentCardUri(null);
   };
 
-  const chooseSelfie = async () => {
-    if (selfieLoading) return;
-    setSelfieLoading(true);
-    try {
-      const fromDocs = await pickProfileDocument();
-      if (fromDocs) {
-        setSelfieUri(fromDocs);
-        return;
+  const resetSelfieSelection = () => {
+    selfieAttemptRef.current += 1;
+    setSelfieLoading(false);
+    setSelfieUri(null);
+  };
+
+  const pickStudentCardFrom = useCallback(
+    async (source: 'files' | 'gallery') => {
+      if (studentCardLoading) return;
+      const attempt = ++studentCardAttemptRef.current;
+      setStudentCardLoading(true);
+      try {
+        const uri =
+          source === 'files'
+            ? await pickKycImage('files', 'student-card')
+            : await pickKycImage('gallery', 'student-card');
+        if (uri && studentCardAttemptRef.current === attempt) {
+          setStudentCardUri(uri);
+        }
+      } finally {
+        if (studentCardAttemptRef.current === attempt) {
+          setStudentCardLoading(false);
+        }
       }
-      const fromGallery = await pickProfileImage();
-      if (fromGallery) setSelfieUri(fromGallery);
-    } finally {
-      setSelfieLoading(false);
+    },
+    [studentCardLoading]
+  );
+
+  const pickSelfieFrom = useCallback(
+    async (source: 'files' | 'gallery') => {
+      if (selfieLoading) return;
+      const attempt = ++selfieAttemptRef.current;
+      setSelfieLoading(true);
+      try {
+        const uri = source === 'files' ? await pickProfileDocument() : await pickProfileImage();
+        if (uri && selfieAttemptRef.current === attempt) {
+          setSelfieUri(uri);
+        }
+      } finally {
+        if (selfieAttemptRef.current === attempt) {
+          setSelfieLoading(false);
+        }
+      }
+    },
+    [selfieLoading]
+  );
+
+  const chooseStudentCard = () => {
+    if (studentCardLoading) return;
+    if (Platform.OS === 'web') {
+      void pickStudentCardFrom('files');
+      return;
     }
+    const openFiles = () => void pickStudentCardFrom('files');
+    const openGallery = () => void pickStudentCardFrom('gallery');
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Annuler', 'Mes fichiers', 'Ma galerie'],
+          cancelButtonIndex: 0,
+        },
+        (index) => {
+          if (index === 1) openFiles();
+          if (index === 2) openGallery();
+        }
+      );
+      return;
+    }
+    Alert.alert('Importer ta carte étudiante', 'Choisis la source de la photo.', [
+      { text: 'Annuler', style: 'cancel' },
+      { text: 'Mes fichiers', onPress: openFiles },
+      { text: 'Ma galerie', onPress: openGallery },
+    ]);
+  };
+
+  const chooseSelfie = () => {
+    if (selfieLoading) return;
+    if (Platform.OS === 'web') {
+      void pickSelfieFrom('files');
+      return;
+    }
+    const openFiles = () => void pickSelfieFrom('files');
+    const openGallery = () => void pickSelfieFrom('gallery');
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Annuler', 'Importer un fichier', 'Choisir dans ma galerie'],
+          cancelButtonIndex: 0,
+        },
+        (index) => {
+          if (index === 1) openFiles();
+          if (index === 2) openGallery();
+        }
+      );
+      return;
+    }
+    Alert.alert('Importer ton selfie', 'Choisis la source de ta photo.', [
+      { text: 'Annuler', style: 'cancel' },
+      { text: 'Importer un fichier', onPress: openFiles },
+      { text: 'Galerie', onPress: openGallery },
+    ]);
   };
 
   const goToDocumentsStep = () => {
@@ -130,12 +221,48 @@ export default function CompleteProfile() {
     if (!session.email || !formValid) return;
     try {
       setSubmitting(true);
+
+      const uploadIfNeeded = async (
+        uri: string | null,
+        uploader: (localUri: string) => Promise<string>
+      ) => {
+        if (!uri) return null;
+        if (isRemoteUri(uri)) return uri;
+        return uploader(uri);
+      };
+
+      let studentCardUrl: string | null = null;
+      let profileSelfieUrl: string | null = null;
+
+      try {
+        setUploadMessage('Téléversement des documents…');
+        [studentCardUrl, profileSelfieUrl] = await Promise.all([
+          uploadIfNeeded(studentCardUri, (uri) =>
+            uploadStudentCard({ email: session.email, uri })
+          ),
+          uploadIfNeeded(selfieUri, (uri) =>
+            uploadProfileSelfie({ email: session.email, uri })
+          ),
+        ]);
+      } finally {
+        setUploadMessage(null);
+      }
+
       await Auth.updateProfile(session.email, {
         name: `${firstName.trim()} ${lastName.trim()}`,
         address: campus.trim(),
         phone: phone.trim(),
-        studentCardUrl: studentCardUri ?? '',
-        avatarUrl: selfieUri ?? '',
+        studentCardUrl: studentCardUrl ?? '',
+        avatarUrl: profileSelfieUrl ?? '',
+      });
+      await updatePassengerProfile({
+        email: session.email,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        campus: campus.trim(),
+        phone: phone.trim(),
+        studentCardUrl: studentCardUrl ?? undefined,
+        selfieUrl: profileSelfieUrl ?? undefined,
       });
       router.replace('/profile-welcome');
     } catch (error) {
@@ -145,6 +272,16 @@ export default function CompleteProfile() {
       setSubmitting(false);
     }
   };
+
+  const handleBack = () => {
+    if (step === 2) {
+      setStep(1);
+      return;
+    }
+    router.replace('/(tabs)/profile');
+  };
+
+  const primaryActionLabel = step === 1 ? 'Continuer' : submitting ? 'Enregistrement…' : 'Valider';
 
   return (
     <AppBackground colors={Gradients.twilight}>
@@ -156,12 +293,18 @@ export default function CompleteProfile() {
           <ScrollView
             contentContainerStyle={[styles.scroll, isCompact && styles.scrollCompact]}
             showsVerticalScrollIndicator={false}
+            bounces={false}
           >
-            <View style={[styles.card, isCompact && styles.cardCompact]}>
+            <View
+              style={[
+                styles.card,
+                isCompact && styles.cardCompact,
+                step === 2 && { minHeight: Math.max(540, height - Spacing.lg * 2) },
+              ]}
+            >
               <View style={styles.headerRow}>
-                <Pressable style={styles.backLink} hitSlop={16} onPress={() => router.back()}>
-                  <IconSymbol name="chevron.left.circle.fill" size={28} color={Colors.primary} />
-                  <Text style={styles.backLinkText}>Retour</Text>
+                <Pressable style={styles.backLink} hitSlop={16} onPress={handleBack}>
+                  <IconSymbol name="chevron.left.circle.fill" size={40} color={Colors.primary} />
                 </Pressable>
                 <View style={{ flex: 1 }} />
               </View>
@@ -249,7 +392,6 @@ export default function CompleteProfile() {
                       style={[
                         styles.input,
                         styles.singleInput,
-                        phone && !phoneValid && styles.inputError,
                         styles.phoneInput,
                       ]}
                       placeholderTextColor={Colors.gray500}
@@ -259,99 +401,122 @@ export default function CompleteProfile() {
                 </>
               ) : null}
 
-              {step === 1 ? (
+              {step === 2 ? (
+                <View style={styles.documentSection}>
+                  <View style={styles.documentColumns}>
+                    <View style={styles.documentCard}>
+                      <View style={styles.documentHeader}>
+                        <IconSymbol name="idcard" size={20} color={Colors.primary} />
+                        <Text style={styles.documentTitle}>Carte étudiante</Text>
+                        {(studentCardLoading || studentCardUri) && (
+                          <Pressable
+                            onPress={resetStudentCardSelection}
+                            hitSlop={8}
+                            style={styles.resetLink}
+                          >
+                            <Text style={styles.resetLinkText}>
+                              {studentCardLoading ? 'Annuler' : 'Réinitialiser'}
+                            </Text>
+                          </Pressable>
+                        )}
+                      </View>
+                      <Pressable
+                        style={[
+                          styles.uploadBox,
+                          studentCardLoading && styles.uploadDisabled,
+                          studentCardUri && styles.uploadBoxValid,
+                        ]}
+                        onPress={chooseStudentCard}
+                        disabled={studentCardLoading}
+                      >
+                        {studentCardUri ? (
+                          <IconSymbol
+                            name="checkmark.circle.fill"
+                            size={38}
+                            color={Colors.success}
+                            style={styles.uploadIconTop}
+                          />
+                        ) : (
+                          <View style={[styles.uploadIcon, styles.uploadIconTop]}>
+                            <IconSymbol name="camera.fill" size={22} color={Colors.secondary} />
+                          </View>
+                        )}
+                        <Text style={styles.uploadBoxLabel}>
+                          {studentCardLoading
+                            ? 'Chargement…'
+                            : studentCardUri
+                            ? 'Carte étudiante importée'
+                            : 'Importer ma carte étudiante'}
+                        </Text>
+                      </Pressable>
+                    </View>
+
+                    <View style={styles.documentCard}>
+                      <View style={styles.documentHeader}>
+                        <IconSymbol name="person.crop.square" size={20} color={Colors.primary} />
+                        <Text style={styles.documentTitle}>Selfie de vérification</Text>
+                        {(selfieLoading || selfieUri) && (
+                          <Pressable
+                            onPress={resetSelfieSelection}
+                            hitSlop={8}
+                            style={styles.resetLink}
+                          >
+                            <Text style={styles.resetLinkText}>
+                              {selfieLoading ? 'Annuler' : 'Réinitialiser'}
+                            </Text>
+                          </Pressable>
+                        )}
+                      </View>
+                      <Pressable
+                        style={[
+                          styles.uploadBox,
+                          selfieLoading && styles.uploadDisabled,
+                          selfieUri && styles.uploadBoxValid,
+                        ]}
+                        onPress={chooseSelfie}
+                        disabled={selfieLoading}
+                      >
+                        {selfieUri ? (
+                          <IconSymbol
+                            name="checkmark.circle.fill"
+                            size={38}
+                            color={Colors.success}
+                            style={styles.uploadIconTop}
+                          />
+                        ) : (
+                          <View style={[styles.uploadIcon, styles.uploadIconTop]}>
+                            <IconSymbol name="camera.fill" size={22} color={Colors.secondary} />
+                          </View>
+                        )}
+                        <Text style={styles.uploadBoxLabel}>
+                          {selfieLoading
+                            ? 'Chargement…'
+                            : selfieUri
+                            ? 'Selfie importé'
+                            : 'Importer un selfie récent'}
+                        </Text>
+                        {!selfieUri ? (
+                          <Text style={styles.uploadHint}>Ajoute une photo récente pour la vérification</Text>
+                        ) : null}
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              ) : null}
+              <View style={styles.actionRow}>
                 <GradientButton
-                  title="Continuer"
-                  onPress={goToDocumentsStep}
-                  disabled={!infoValid}
+                  title={primaryActionLabel}
+                  onPress={step === 1 ? goToDocumentsStep : onSubmit}
+                  disabled={step === 1 ? !infoValid : !formValid || submitting}
                   fullWidth
                   style={styles.cta}
-                />
-              ) : (
-                <>
-                  <View style={styles.uploadSection}>
-                    <Pressable
-                      style={[
-                        styles.uploadBox,
-                        studentCardLoading && styles.uploadDisabled,
-                        studentCardUri && styles.uploadBoxValid,
-                      ]}
-                      onPress={chooseStudentCard}
-                      disabled={studentCardLoading}
-                    >
-                      {studentCardUri ? (
-                        <IconSymbol
-                          name="checkmark.circle.fill"
-                          size={38}
-                          color={Colors.success}
-                          style={styles.uploadIconTop}
-                        />
-                      ) : (
-                        <View style={[styles.uploadIcon, styles.uploadIconTop]}>
-                          <IconSymbol name="camera.fill" size={22} color={Colors.secondary} />
-                        </View>
-                      )}
-                      <Text style={styles.uploadBoxLabel}>
-                        {studentCardLoading
-                          ? 'Chargement…'
-                          : studentCardUri
-                          ? 'Carte étudiante importée'
-                          : 'Importer ma carte étudiante'}
-                      </Text>
-                    </Pressable>
-                  </View>
-
-                  <View style={styles.uploadSection}>
-                    <Pressable
-                      style={[
-                        styles.uploadBox,
-                        selfieLoading && styles.uploadDisabled,
-                        selfieUri && styles.uploadBoxValid,
-                      ]}
-                      onPress={chooseSelfie}
-                      disabled={selfieLoading}
-                    >
-                      {selfieUri ? (
-                        <IconSymbol
-                          name="checkmark.circle.fill"
-                          size={38}
-                          color={Colors.success}
-                          style={styles.uploadIconTop}
-                        />
-                      ) : (
-                        <View style={[styles.uploadIcon, styles.uploadIconTop]}>
-                          <IconSymbol name="camera.fill" size={22} color={Colors.secondary} />
-                        </View>
-                      )}
-                      <Text style={styles.uploadBoxLabel}>
-                        {selfieLoading
-                          ? 'Chargement…'
-                          : selfieUri
-                          ? 'Selfie importé'
-                          : 'Importer un selfie récent'}
-                      </Text>
-                      {!selfieUri ? (
-                        <Text style={styles.uploadHint}>Ajoute une photo récente pour la vérification</Text>
-                      ) : null}
-                    </Pressable>
-                  </View>
-
-                  <View style={styles.stepActions}>
-                    <Pressable style={styles.backButton} onPress={() => setStep(1)} disabled={submitting}>
-                      <Text style={styles.backButtonText}>Retour</Text>
-                    </Pressable>
-                    <GradientButton
-                      title={submitting ? 'Enregistrement…' : 'Valider'}
-                      onPress={onSubmit}
-                      disabled={!formValid || submitting}
-                      fullWidth
-                      style={styles.cta}
-                    >
-                      {submitting ? <ActivityIndicator color="#fff" /> : null}
-                    </GradientButton>
-                  </View>
-                </>
-              )}
+                >
+                  {step === 2 && submitting ? <ActivityIndicator color="#fff" /> : null}
+                </GradientButton>
+              </View>
+              {uploadMessage ? (
+                <Text style={styles.uploadMessage}>{uploadMessage}</Text>
+              ) : null}
 
               <View style={styles.stepFooter}>
                 <View style={styles.stepIndicator}>
@@ -380,42 +545,47 @@ const styles = StyleSheet.create({
   keyboard: { flex: 1 },
   safe: { flex: 1 },
   scroll: {
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    alignItems: 'center',
+    flexGrow: 1,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    alignItems: 'stretch',
+    gap: Spacing.md,
   },
   scrollCompact: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
   },
   card: {
+    alignSelf: 'center',
     width: '100%',
-    borderRadius: 32,
+    maxWidth: 420,
+    borderRadius: 30,
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    gap: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+    gap: Spacing.md,
     shadowColor: '#000',
     shadowOpacity: 0.08,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 10,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
   },
   cardCompact: {
-    paddingHorizontal: Spacing.md,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.md,
   },
   title: {
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: '800',
     color: Colors.ink,
     textAlign: 'center',
-    marginBottom: Spacing.sm,
+    marginBottom: Spacing.xs,
   },
   stepFooter: {
     width: '100%',
     alignItems: 'center',
     gap: Spacing.xs,
-    marginTop: Spacing.md,
+    marginTop: Spacing.xs,
   },
   stepIndicator: {
     flexDirection: 'row',
@@ -442,15 +612,8 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xs,
   },
   backLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
     paddingVertical: 6,
     paddingHorizontal: 8,
-  },
-  backLinkText: {
-    color: Colors.primary,
-    fontWeight: '700',
   },
   stepNumber: {
     fontWeight: '700',
@@ -470,8 +633,9 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: 'row',
-    gap: Spacing.md,
+    gap: Spacing.sm,
     width: '100%',
+    marginTop: Spacing.xs,
   },
   rowStack: {
     flexDirection: 'column',
@@ -482,14 +646,15 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   heroImage: {
-    width: '68%',
+    width: '120%',
+    maxWidth: 420,
     aspectRatio: ILLUSTRATION_RATIO,
     alignSelf: 'center',
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.xs,
   },
   heroImageCompact: {
-    width: '82%',
-    marginBottom: Spacing.lg,
+    width: '100%',
+    marginBottom: Spacing.xs,
   },
   input: {
     flex: 1,
@@ -510,6 +675,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: Spacing.sm,
     alignItems: 'center',
+    marginTop: Spacing.xs,
   },
   phonePrefix: {
     paddingVertical: 14,
@@ -524,20 +690,20 @@ const styles = StyleSheet.create({
   phoneInput: {
     flex: 1,
   },
-  inputError: { borderWidth: 1, borderColor: Colors.danger },
   error: { color: Colors.danger, fontSize: 12 },
   uploadBox: {
     borderWidth: 2,
     borderColor: '#B79BFF',
     borderStyle: 'dashed',
     borderRadius: 20,
-    paddingVertical: 22,
+    paddingVertical: 16,
+    paddingHorizontal: 10,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(244,239,255,0.8)',
     gap: Spacing.sm,
     width: '100%',
-    minHeight: 150,
+    minHeight: 110,
   },
   uploadBoxValid: {
     borderColor: Colors.success,
@@ -587,20 +753,63 @@ const styles = StyleSheet.create({
     width: '100%',
     position: 'relative',
     zIndex: 10,
+    marginTop: Spacing.xs,
   },
   uploadHint: {
     color: Colors.gray500,
     fontSize: 12,
   },
-  uploadSection: {
+  resetLink: {
+    marginLeft: 'auto',
+  },
+  resetLinkText: {
+    color: Colors.primary,
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  actionRow: {
     width: '100%',
+    marginTop: Spacing.sm,
+  },
+  documentSection: {
+    flex: 1,
+    width: '100%',
+    justifyContent: 'center',
+  },
+  documentColumns: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+    alignItems: 'stretch',
+  },
+  documentCard: {
+    flex: 1,
+    minWidth: 220,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(122,95,255,0.3)',
+    padding: Spacing.lg,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    gap: Spacing.md,
+  },
+  documentHeader: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: Spacing.xs,
+    gap: Spacing.xs,
+  },
+  documentTitle: {
+    fontWeight: '700',
+    color: Colors.ink,
   },
   uploadDisabled: { opacity: 0.5 },
   stepActions: {
     width: '100%',
-    gap: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
   },
   backButton: {
     alignSelf: 'flex-start',
@@ -612,4 +821,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   cta: { marginTop: Spacing.xs },
+  uploadMessage: {
+    marginTop: Spacing.xs,
+    textAlign: 'center',
+    color: Colors.gray600,
+  },
+  validateButton: { flex: 1 },
 });

@@ -27,7 +27,7 @@ export default function VerifyEmail() {
   const [devCode, setDevCode] = useState<string | null>(null);
   const codeInputRef = useRef<TextInput>(null);
   const CODE_LENGTH = 4;
-  const RESEND_DELAY = 10;
+  const RESEND_DELAY = 29;
   const [resendTimer, setResendTimer] = useState(RESEND_DELAY);
 
   const normalizedEmail = useMemo(() => (email ? String(email).trim().toLowerCase() : ''), [email]);
@@ -72,7 +72,7 @@ export default function VerifyEmail() {
 
   useEffect(() => {
     if (status !== 'verified') return;
-    router.replace('/complete-profile');
+    router.replace('/account-activated');
   }, [status]);
 
   const onSimulateConfirm = async () => {
@@ -242,7 +242,12 @@ const PressableSecondary = ({
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: 'transparent' },
-  safeArea: { flex: 1, padding: 24, justifyContent: 'center' },
+  safeArea: {
+    flex: 1,
+    paddingVertical: 24,
+    paddingHorizontal: 72,
+    justifyContent: 'center',
+  },
   container: {
     borderRadius: 24,
     padding: 24,
@@ -250,6 +255,8 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.35)',
     alignItems: 'center',
     gap: 12,
+    alignSelf: 'stretch',
+    marginHorizontal: 16,
   },
   h1: { fontSize: 24, fontWeight: '800', color: Colors.ink },
   text: { color: Colors.gray700, marginBottom: 4, textAlign: 'center' },

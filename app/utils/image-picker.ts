@@ -1,7 +1,69 @@
 import { Alert, Platform } from 'react-native';
+
+import { getSampleAvatarImage, getSampleKycImage } from '@/app/utils/sample-images';
 let ImagePicker: typeof import('expo-image-picker') | null = null;
 let DocumentPicker: typeof import('expo-document-picker') | null = null;
 let FileSystem: typeof import('expo-file-system') | null = null;
+
+const MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024;
+const PROFILE_FORMATS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic']);
+const PROFILE_VALIDATION_ERROR = 'profile-photo-invalid';
+
+const getAvatarFallback = () => {
+  Alert.alert(
+    'Photo simulée',
+    'Impossible d’accéder à la caméra ou à la galerie depuis ce simulateur. Nous appliquons un avatar de test.'
+  );
+  return getSampleAvatarImage();
+};
+
+const pickFromWebInput = async (options?: { capture?: 'user' | 'environment' }): Promise<string | null> => {
+  if (Platform.OS !== 'web') return null;
+  const doc =
+    typeof globalThis !== 'undefined' && 'document' in globalThis
+      ? (globalThis as any).document
+      : null;
+  const Reader: typeof FileReader | null =
+    typeof globalThis !== 'undefined' && 'FileReader' in globalThis
+      ? (globalThis as any).FileReader
+      : null;
+  if (!doc || !Reader) {
+    return null;
+  }
+  return new Promise((resolve) => {
+    const input = doc.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    if (options?.capture) {
+      input.capture = options.capture;
+    }
+    input.style.display = 'none';
+    doc.body?.appendChild(input);
+    input.onchange = () => {
+      const file = input.files && input.files[0];
+      const cleanup = () => {
+        input.value = '';
+        doc.body?.removeChild(input);
+      };
+      if (!file) {
+        cleanup();
+        resolve(null);
+        return;
+      }
+      const reader = new Reader();
+      reader.onload = () => {
+        cleanup();
+        resolve(typeof reader.result === 'string' ? reader.result : null);
+      };
+      reader.onerror = () => {
+        cleanup();
+        resolve(null);
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  });
+};
 
 const ensureModules = async () => {
   if (!ImagePicker) {
@@ -73,7 +135,32 @@ const copyAssetToDocuments = async (uri: string, folder: string, prefix: string)
   const fileName = `${prefix}-${Date.now()}.${extension}`;
   const dest = `${dir}${fileName}`;
   await FS.copyAsync({ from: uri, to: dest });
+  if (folder === 'avatars') {
+    try {
+      await validateProfilePhoto(dest);
+    } catch (error) {
+      await FS.deleteAsync(dest, { idempotent: true });
+      throw error;
+    }
+  }
   return dest;
+};
+
+const validateProfilePhoto = async (path: string) => {
+  const FS = await getFileSystem();
+  const extension = cleanExtension(path).toLowerCase();
+  if (!PROFILE_FORMATS.has(extension)) {
+    Alert.alert(
+      'Format non supporté',
+      'Choisis une image JPG, PNG ou WEBP pour ta photo de profil.'
+    );
+    throw new Error(PROFILE_VALIDATION_ERROR);
+  }
+  const info = await FS.getInfoAsync(path);
+  if (info.exists && typeof info.size === 'number' && info.size > MAX_PROFILE_PHOTO_BYTES) {
+    Alert.alert('Photo trop lourde', 'Sélectionne une image de moins de 5 Mo.');
+    throw new Error(PROFILE_VALIDATION_ERROR);
+  }
 };
 
 type GalleryOptions = {
@@ -81,6 +168,7 @@ type GalleryOptions = {
   prefix: string;
   allowsEditing?: boolean;
   aspect?: [number, number];
+  fallback?: () => string | null;
 };
 
 const pickFromGallery = async ({
@@ -88,11 +176,23 @@ const pickFromGallery = async ({
   prefix,
   allowsEditing = false,
   aspect,
+  fallback,
 }: GalleryOptions): Promise<string | null> => {
+  if (Platform.OS === 'web') {
+    const webSelection = await pickFromWebInput();
+    if (webSelection) return webSelection;
+    return fallback?.() ?? null;
+  }
+
+  let modulesReady = true;
   try {
     await ensureModules();
   } catch {
-    return null;
+    modulesReady = false;
+  }
+
+  if (!modulesReady) {
+    return fallback?.() ?? null;
   }
 
   const permission = await ImagePicker!.requestMediaLibraryPermissionsAsync();
@@ -128,8 +228,10 @@ const pickFromGallery = async ({
 
   try {
     return await copyAssetToDocuments(asset.uri, folder, prefix);
-  } catch {
-    Alert.alert('Erreur', 'Impossible de sauvegarder la photo. Réessaie avec une autre image.');
+  } catch (error) {
+    if (!(error instanceof Error && error.message === PROFILE_VALIDATION_ERROR)) {
+      Alert.alert('Erreur', 'Impossible de sauvegarder la photo. Réessaie avec une autre image.');
+    }
     return null;
   }
 };
@@ -137,13 +239,31 @@ const pickFromGallery = async ({
 type FilePickerOptions = {
   folder: string;
   prefix: string;
+  sampleType?: KycDocumentType;
+  fallback?: () => string | null;
 };
 
-const pickFromFiles = async ({ folder, prefix }: FilePickerOptions): Promise<string | null> => {
+const pickFromFiles = async ({ folder, prefix, sampleType, fallback }: FilePickerOptions): Promise<string | null> => {
+  const fallbackSample = () => {
+    if (sampleType) {
+      Alert.alert('Import simulé', 'Ton fichier a été importé pour continuer la vérification.');
+      return getSampleKycImage(sampleType);
+    }
+    return fallback?.() ?? null;
+  };
+
+  if (Platform.OS === 'web') {
+    const webSelection = await pickFromWebInput();
+    if (webSelection) {
+      return webSelection;
+    }
+    return fallbackSample();
+  }
+
   try {
     await ensureModules();
   } catch {
-    return null;
+    return fallbackSample();
   }
 
   try {
@@ -170,9 +290,11 @@ const pickFromFiles = async ({ folder, prefix }: FilePickerOptions): Promise<str
     }
 
     return await copyAssetToDocuments(assetUri, folder, prefix);
-  } catch {
-    Alert.alert('Erreur', 'Impossible d’importer ce fichier. Réessaie plus tard.');
-    return null;
+  } catch (error) {
+    if (!(error instanceof Error && error.message === PROFILE_VALIDATION_ERROR)) {
+      Alert.alert('Erreur', 'Impossible d’importer ce fichier. Réessaie plus tard.');
+    }
+    return fallbackSample();
   }
 };
 
@@ -182,18 +304,21 @@ export const pickProfileImage = async (): Promise<string | null> => {
     prefix: 'avatar',
     allowsEditing: true,
     aspect: [1, 1],
+    fallback: getAvatarFallback,
   });
 };
 
 export const pickProfileDocument = async (): Promise<string | null> => {
-  return pickFromFiles({ folder: 'avatars', prefix: 'avatar' });
+  return pickFromFiles({ folder: 'avatars', prefix: 'avatar', fallback: getAvatarFallback });
 };
 
 export const captureProfilePhoto = async (): Promise<string | null> => {
   try {
     await ensureModules();
   } catch {
-    return null;
+    const webSelection = await pickFromWebInput({ capture: 'user' });
+    if (webSelection) return webSelection;
+    return getAvatarFallback();
   }
 
   const permission = await ImagePicker!.requestCameraPermissionsAsync();
@@ -228,6 +353,9 @@ export const captureProfilePhoto = async (): Promise<string | null> => {
 
     return await copyAssetToDocuments(asset.uri, 'avatars', 'avatar');
   } catch (error) {
+    if (error instanceof Error && error.message === PROFILE_VALIDATION_ERROR) {
+      return null;
+    }
     console.warn('camera error, fallback to gallery', error);
     Alert.alert(
       'Caméra indisponible',
@@ -254,7 +382,7 @@ export const pickKycImage = async (
   if (source === 'gallery') {
     return pickFromGallery({ folder, prefix, allowsEditing: false });
   }
-  return pickFromFiles({ folder, prefix });
+  return pickFromFiles({ folder, prefix, sampleType: type });
 };
 
 export const pickVehicleImage = async (
@@ -319,4 +447,11 @@ export const captureSelfie = async (): Promise<string | null> => {
       aspect: [3, 4],
     });
   }
+};
+
+export const persistAvatarImage = async (uri: string): Promise<string> => {
+  if (!uri || uri.startsWith('data:')) {
+    return uri;
+  }
+  return copyAssetToDocuments(uri, 'avatars', 'avatar');
 };

@@ -47,6 +47,7 @@ type Wallet = {
   rideCredits: number;
   payoutMethod: PayoutMethod | null;
   checklist: ChecklistItem[];
+  seeded?: boolean;
 };
 
 type Listener = (wallet: WalletSnapshot) => void;
@@ -108,9 +109,13 @@ const ensureWallet = (email: string) => {
       rideCredits: 0,
       payoutMethod: null,
       checklist: cloneChecklist(DEFAULT_CHECKLIST),
+      seeded: false,
     };
   }
   if (!listeners[key]) listeners[key] = [];
+  if (!wallets[key].seeded) {
+    seedDemoWallet(email, wallets[key]);
+  }
   return key;
 };
 
@@ -327,6 +332,108 @@ export const requestMonthlyWithdrawal = (email: string) => {
     metadata: { action: 'wallet-withdrawal', amount, delayDays },
   });
   return { ok: true, amount };
+};
+
+const seedDemoWallet = (email: string, wallet: Wallet) => {
+  wallet.balance = 45.5;
+  wallet.points = 420;
+  wallet.rideCredits = 3;
+  wallet.withdrawalDelayDays = 14;
+  wallet.payoutMethod = {
+    brand: 'Visa',
+    last4: '4532',
+    addedAt: Date.now() - 1000 * 60 * 60 * 24 * 30,
+  };
+  wallet.transactions = [
+    {
+      id: randomId(),
+      type: 'credit',
+      amount: 5.5,
+      description: 'Trajet EPHEC → ULB',
+      createdAt: Date.now() - 1000 * 60 * 30,
+      balanceAfter: 45.5,
+    },
+    {
+      id: randomId(),
+      type: 'debit',
+      amount: 3,
+      description: 'Trajet Ixelles → EPHEC Delta',
+      createdAt: Date.now() - 1000 * 60 * 60 * 24,
+      balanceAfter: 40,
+    },
+    {
+      id: randomId(),
+      type: 'credit',
+      amount: 4,
+      description: 'Trajet UCL → VUB',
+      createdAt: Date.now() - 1000 * 60 * 60 * 48,
+      balanceAfter: 43,
+    },
+    {
+      id: randomId(),
+      type: 'debit',
+      amount: 2.5,
+      description: 'Trajet Bruxelles Centre → EPHEC',
+      createdAt: Date.now() - 1000 * 60 * 60 * 72,
+      balanceAfter: 39,
+    },
+    {
+      id: randomId(),
+      type: 'credit',
+      amount: 6,
+      description: 'Trajet EPHEC Woluwe → Ixelles',
+      createdAt: Date.now() - 1000 * 60 * 60 * 96,
+      balanceAfter: 41.5,
+    },
+  ];
+  wallet.lastWithdrawalAt = Date.now() - 1000 * 60 * 60 * 24 * 10;
+  wallet.seeded = true;
+  notify(email);
+};
+
+export const withdrawAmount = (
+  email: string,
+  amount: number,
+  options?: { description?: string }
+) => {
+  const key = ensureWallet(email);
+  const wallet = wallets[key];
+  if (!wallet.payoutMethod) {
+    return { ok: false as const, reason: 'no-payout-method' as const };
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false as const, reason: 'invalid-amount' as const };
+  }
+  if (wallet.balance <= 0) {
+    return { ok: false as const, reason: 'empty' as const };
+  }
+  if (amount > wallet.balance) {
+    return { ok: false as const, reason: 'insufficient' as const };
+  }
+  const now = Date.now();
+  const delayDays = wallet.withdrawalDelayDays ?? DEFAULT_WITHDRAWAL_DELAY_DAYS;
+  const delayMs = delayDays * 24 * 60 * 60 * 1000;
+  if (wallet.lastWithdrawalAt && now - wallet.lastWithdrawalAt < delayMs) {
+    return {
+      ok: false as const,
+      reason: 'too-soon' as const,
+      next: wallet.lastWithdrawalAt + delayMs,
+      delayDays,
+    };
+  }
+  debitWallet(email, amount, options?.description ?? 'Retrait manuel', {
+    type: 'manual-withdrawal',
+    delayDays,
+  });
+  wallet.lastWithdrawalAt = now;
+  notify(email);
+  pushNotification({
+    to: email,
+    title: 'Retrait en cours',
+    body: `Ton retrait de €${amount.toFixed(2)} sera versé sur ton compte bancaire sous peu.`,
+    metadata: { action: 'wallet-withdrawal', amount, delayDays },
+  });
+  return { ok: true as const, amount };
 };
 
 export const getWallet = (email: string) => {

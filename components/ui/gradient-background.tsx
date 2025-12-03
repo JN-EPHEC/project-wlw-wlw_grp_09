@@ -1,8 +1,8 @@
 import { ReactNode } from 'react';
-import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { StyleProp, StyleSheet, View, ViewProps, ViewStyle } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
-type GradientProps = {
+type GradientProps = ViewProps & {
   colors?: readonly [string, string?, string?];
   style?: StyleProp<ViewStyle>;
   children?: ReactNode;
@@ -15,11 +15,11 @@ const ensurePalette = (colors?: readonly [string, string?, string?]) => {
   return [a, b ?? a, c ?? b ?? a] as const;
 };
 
-export function GradientBackground({ colors, style, children, blur = 0.55 }: GradientProps) {
+export function GradientBackground({ colors, style, children, blur = 0.55, ...rest }: GradientProps) {
   const [base, mid, highlight] = ensurePalette(colors);
 
   return (
-    <View style={[styles.container, style]}>
+    <View {...rest} style={[styles.container, style]}>
       <LinearGradient
         colors={[base, mid, highlight]}
         locations={[0, 0.5, 1]}

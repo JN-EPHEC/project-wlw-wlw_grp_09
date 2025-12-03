@@ -43,6 +43,7 @@ import {
 } from '@/app/services/passenger-feedback';
 import { createReport } from '@/app/services/reports';
 import { GradientButton } from '@/components/ui/gradient-button';
+import { CAMPUSRIDE_COMMISSION_RATE } from '@/app/constants/fuel';
 
 const C = Colors;
 const S = Shadows;
@@ -65,6 +66,16 @@ export default function RideDetailScreen() {
   const [feedbackRating, setFeedbackRating] = useState(4.5);
   const [feedbackComment, setFeedbackComment] = useState('');
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
+
+  const platformFeePerPassenger = useMemo(() => {
+    if (!ride) return 0;
+    return +(ride.price * CAMPUSRIDE_COMMISSION_RATE).toFixed(2);
+  }, [ride]);
+
+  const driverNetPerPassenger = useMemo(() => {
+    if (!ride) return 0;
+    return +(ride.price - platformFeePerPassenger).toFixed(2);
+  }, [ride, platformFeePerPassenger]);
 
   useEffect(() => {
     const unsubscribe = subscribeRides((rides) => {
@@ -524,6 +535,25 @@ export default function RideDetailScreen() {
         </View>
       </View>
 
+      <View style={styles.priceBreakCard}>
+        <Text style={styles.priceBreakTitle}>Transparence paiement</Text>
+        <View style={styles.priceBreakRow}>
+          <Text style={styles.priceBreakLabel}>Montant par passager</Text>
+          <Text style={styles.priceBreakValue}>€{ride.price.toFixed(2)}</Text>
+        </View>
+        <View style={styles.priceBreakRow}>
+          <Text style={styles.priceBreakLabel}>CampusRide (20 %)</Text>
+          <Text style={[styles.priceBreakValue, styles.priceBreakFee]}>€{platformFeePerPassenger.toFixed(2)}</Text>
+        </View>
+        <View style={styles.priceBreakRow}>
+          <Text style={styles.priceBreakLabel}>Versé au conducteur</Text>
+          <Text style={styles.priceBreakValue}>€{driverNetPerPassenger.toFixed(2)}</Text>
+        </View>
+        <Text style={styles.priceBreakHint}>
+          Ce détail apparaît avant toute confirmation afin que tu saches exactement ce qui est prélevé.
+        </Text>
+      </View>
+
       <View style={styles.mapCard}>
         <RideMap rides={[ride]} />
       </View>
@@ -860,6 +890,24 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 15,
   },
+  priceBreakCard: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: C.gray200,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+    ...(S.card as object),
+  },
+  priceBreakTitle: { fontWeight: '800', color: C.ink, fontSize: 16 },
+  priceBreakRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  priceBreakLabel: { color: C.gray600, fontSize: 13 },
+  priceBreakValue: { color: C.ink, fontWeight: '700' },
+  priceBreakFee: { color: C.primary },
+  priceBreakHint: { color: C.gray500, fontSize: 12 },
   mapCard: {
     borderRadius: Radius.lg,
     borderWidth: 1,

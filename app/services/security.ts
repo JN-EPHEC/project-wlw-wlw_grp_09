@@ -12,8 +12,10 @@ export type VehicleSnapshot = {
 };
 
 export type DriverSecuritySnapshot = {
-  driverLicenseUrl: string | null;
-  licenseUploadedAt: number | null;
+  driverLicenseFrontUrl: string | null;
+  driverLicenseBackUrl: string | null;
+  licenseFrontUploadedAt: number | null;
+  licenseBackUploadedAt: number | null;
   vehicle: VehicleSnapshot;
   selfieUrl: string | null;
   selfieCapturedAt: number | null;
@@ -28,8 +30,10 @@ export type DriverSecuritySnapshot = {
 };
 
 type DriverSecurityRecord = {
-  driverLicenseUrl: string | null;
-  licenseUploadedAt: number | null;
+  driverLicenseFrontUrl: string | null;
+  driverLicenseBackUrl: string | null;
+  licenseFrontUploadedAt: number | null;
+  licenseBackUploadedAt: number | null;
   vehicle: {
     plate: string | null;
     brand: string | null;
@@ -76,8 +80,10 @@ const ensureRecord = (email: string) => {
   const key = normalizeEmail(email);
   if (!driverSecurity[key]) {
     driverSecurity[key] = {
-      driverLicenseUrl: null,
-      licenseUploadedAt: null,
+      driverLicenseFrontUrl: null,
+      driverLicenseBackUrl: null,
+      licenseFrontUploadedAt: null,
+      licenseBackUploadedAt: null,
       vehicle: {
         plate: null,
         brand: null,
@@ -99,9 +105,8 @@ const ensureRecord = (email: string) => {
 };
 
 const computeBlockers = (record: DriverSecurityRecord) => {
-  const requiresLicense = !record.driverLicenseUrl;
-  const requiresVehicle =
-    !record.vehicle.plate || !record.vehicle.brand || !record.vehicle.photoUrl;
+  const requiresLicense = !record.driverLicenseFrontUrl || !record.driverLicenseBackUrl;
+  const requiresVehicle = !record.vehicle.plate;
   const requiresSelfie =
     !record.selfieCapturedAt || now() - record.selfieCapturedAt > SELFIE_VALIDITY_MS;
 
@@ -122,8 +127,10 @@ const snapshot = (record: DriverSecurityRecord): DriverSecuritySnapshot => {
     : null;
 
   return {
-    driverLicenseUrl: record.driverLicenseUrl,
-    licenseUploadedAt: record.licenseUploadedAt,
+    driverLicenseFrontUrl: record.driverLicenseFrontUrl,
+    driverLicenseBackUrl: record.driverLicenseBackUrl,
+    licenseFrontUploadedAt: record.licenseFrontUploadedAt,
+    licenseBackUploadedAt: record.licenseBackUploadedAt,
     vehicle: {
       plate: record.vehicle.plate,
       brand: record.vehicle.brand,
@@ -175,10 +182,20 @@ export const subscribeDriverSecurity = (email: string, listener: Listener) => {
   };
 };
 
-export const updateDriverLicense = (email: string, url: string) => {
+export const updateDriverLicense = (
+  email: string,
+  payload: { side: 'front' | 'back'; url: string }
+) => {
   const key = ensureRecord(email);
-  driverSecurity[key].driverLicenseUrl = url.trim();
-  driverSecurity[key].licenseUploadedAt = now();
+  const target = driverSecurity[key];
+  const cleaned = payload.url.trim();
+  if (payload.side === 'front') {
+    target.driverLicenseFrontUrl = cleaned;
+    target.licenseFrontUploadedAt = now();
+  } else {
+    target.driverLicenseBackUrl = cleaned;
+    target.licenseBackUploadedAt = now();
+  }
   notify(email);
 };
 
@@ -219,8 +236,10 @@ export const recordSelfie = (email: string, url: string) => {
 export const clearDriverSecurity = (email: string) => {
   const key = ensureRecord(email);
   driverSecurity[key] = {
-    driverLicenseUrl: null,
-    licenseUploadedAt: null,
+    driverLicenseFrontUrl: null,
+    driverLicenseBackUrl: null,
+    licenseFrontUploadedAt: null,
+    licenseBackUploadedAt: null,
     vehicle: {
       plate: null,
       brand: null,

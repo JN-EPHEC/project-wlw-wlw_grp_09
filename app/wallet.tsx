@@ -1,499 +1,732 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
-
-import { useAuthSession } from '@/hooks/use-auth-session';
+import { useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActionSheetIOS,
+  Alert,
+  Image,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+
+import {
+  creditWallet,
   getWallet,
-  requestMonthlyWithdrawal,
   setPayoutMethod,
   subscribeWallet,
-  toggleChecklistItem,
+  withdrawAmount,
   type WalletSnapshot,
 } from '@/app/services/wallet';
-import { listRidePacks, purchasePack, type RidePack } from '@/app/services/passes';
+import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
-import { GradientButton } from '@/components/ui/gradient-button';
-import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
+import { useAuthSession } from '@/hooks/use-auth-session';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 
 const C = Colors;
 
-const FILTERS = [
-  { id: 'all', label: 'Tous' },
-  { id: 'credit', label: 'Crédits' },
-  { id: 'debit', label: 'Débits' },
-] as const;
+type WalletView = 'home' | 'add' | 'withdraw';
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat('fr-BE', { style: 'currency', currency: 'EUR' }).format(value);
 
-const POINT_TIERS = [
-  { id: 'bronze', label: 'Badge Bronze', threshold: 300, reward: 'Retrait sous 21 jours' },
-  { id: 'silver', label: 'Badge Silver', threshold: 600, reward: 'Retrait sous 14 jours' },
-  { id: 'gold', label: 'Badge Gold', threshold: 900, reward: 'Retrait sous 7 jours' },
-] as const;
+const ADD_PRESETS = [10, 20, 50, 100];
+const WITHDRAW_PRESETS = [10, 20, 30];
 
 export default function WalletScreen() {
+  const router = useRouter();
   const session = useAuthSession();
   const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
-  const [filter, setFilter] = useState<'all' | 'credit' | 'debit'>('all');
-  const [showPointsDetails, setShowPointsDetails] = useState(false);
+  const [view, setView] = useState<WalletView>('home');
+  const [addAmount, setAddAmount] = useState('20');
+  const [withdrawValue, setWithdrawValue] = useState('0');
+  const [processing, setProcessing] = useState(false);
 
   useEffect(() => {
-    if (!session.email) {
-      setWallet(null);
-      return;
-    }
+    if (!session.email) return setWallet(null);
     setWallet(getWallet(session.email));
     const unsubscribe = subscribeWallet(session.email, setWallet);
     return unsubscribe;
   }, [session.email]);
 
   const balance = wallet?.balance ?? 0;
-  const lastWithdrawalAt = wallet?.lastWithdrawalAt ?? null;
-  const DAY = 1000 * 60 * 60 * 24;
-  const withdrawalDelayDays = wallet?.withdrawalDelayDays ?? 30;
-  const withdrawalWindowMs = withdrawalDelayDays * DAY;
-  const now = Date.now();
-  const packs = useMemo(() => listRidePacks(), []);
-  const firstName = useMemo(() => {
-    const raw = session.name ? session.name.split(' ')[0] : 'toi';
-    if (!raw) return 'Toi';
-    return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
-  }, [session.name]);
-  const walletPoints = wallet?.points ?? 0;
-  const checklist = wallet?.checklist ?? [];
-  const payoutLabel = wallet?.payoutMethod
-    ? `${wallet.payoutMethod.brand} ••••${wallet.payoutMethod.last4}`
-    : 'Aucune carte enregistrée';
-  const hasPayoutMethod = !!wallet?.payoutMethod;
+  const payoutMethod = wallet?.payoutMethod ?? null;
+  const transactions = wallet?.transactions ?? [];
 
-  const canWithdraw = useMemo(() => {
-    if (!wallet) return false;
-    if (wallet.balance <= 0) return false;
-    if (!wallet.lastWithdrawalAt) return true;
-    return now - wallet.lastWithdrawalAt >= withdrawalWindowMs;
-  }, [wallet, now, withdrawalWindowMs]);
-
-  const nextWithdrawalDate = useMemo(() => {
-    if (!lastWithdrawalAt) return null;
-    const next = lastWithdrawalAt + withdrawalWindowMs;
-    if (next <= now) return null;
-    return new Date(next);
-  }, [lastWithdrawalAt, withdrawalWindowMs, now]);
-
-  const filteredTransactions = useMemo(() => {
-    if (!wallet) return [];
-    if (filter === 'all') return wallet.transactions;
-    return wallet.transactions.filter((tx) => tx.type === filter);
-  }, [wallet, filter]);
-
-  const { currentTier, nextTier, pointsToNext } = useMemo(() => {
-    let current: (typeof POINT_TIERS)[number] | null = null;
-    for (const tier of POINT_TIERS) {
-      if (walletPoints >= tier.threshold) {
-        current = tier;
-      }
+  const goBack = useCallback(() => {
+    if (view === 'home') {
+      router.replace('/(tabs)/profile');
+      return;
     }
-    const next = POINT_TIERS.find((tier) => walletPoints < tier.threshold) ?? null;
-    const remaining = next ? next.threshold - walletPoints : 0;
-    return { currentTier: current, nextTier: next, pointsToNext: remaining };
-  }, [walletPoints]);
+    setView('home');
+  }, [router, view]);
 
-  const currentTierLabel = currentTier ? currentTier.label : 'Objectif Bronze';
-  const currentTierReward = currentTier
-    ? currentTier.reward
-    : 'Atteins 300 pts pour activer le badge Bronze.';
-
-  const onWithdraw = () => {
+  const onRegisterPayoutMethod = useCallback(() => {
     if (!session.email) return;
-    const result = requestMonthlyWithdrawal(session.email);
-    if (!result.ok) {
-      if (result.reason === 'empty') {
-        return Alert.alert('Solde insuffisant', 'Attend d’avoir réalisé des trajets rémunérés.');
-      }
-      if (result.reason === 'no-payout-method') {
-        return Alert.alert(
-          'Ajoute ta carte',
-          'Enregistre ta carte bancaire pour activer le virement en un clic.'
-        );
-      }
-      if (result.reason === 'too-soon' && result.next) {
-        const date = new Date(result.next);
-        return Alert.alert(
-          'Retrait déjà effectué',
-          `Tu pourras effectuer un nouveau retrait à partir du ${date.toLocaleDateString('fr-BE', {
-            day: 'numeric',
-            month: 'long',
-          })}.`
-        );
-      }
-      return Alert.alert('Retrait indisponible', 'Réessaie plus tard.');
+    const options = ['Annuler', 'Visa', 'Mastercard', 'Maestro', 'Revolut'];
+    const handleSelection = (brand?: string) => {
+      if (!brand) return;
+      registerMethod(session.email!, brand);
+    };
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options,
+          cancelButtonIndex: 0,
+          userInterfaceStyle: 'light',
+        },
+        (index) => {
+          if (index <= 0) return;
+          handleSelection(options[index]);
+        }
+      );
+      return;
     }
-    const label = wallet?.payoutMethod
-      ? `${wallet.payoutMethod.brand} ••••${wallet.payoutMethod.last4}`
-      : 'ta carte enregistrée';
     Alert.alert(
-      'Retrait programmé',
-      `Ton retrait de €${result.amount.toFixed(2)} est en cours vers ${label}.`
-    );
-  };
-
-  const registerPayoutCard = (brand: string) => {
-    if (!session.email) return;
-    const last4 = Math.floor(1000 + Math.random() * 9000)
-      .toString()
-      .padStart(4, '0');
-    setPayoutMethod(session.email, { brand, last4, addedAt: Date.now() });
-    Alert.alert('Carte enregistrée', `Les retraits se feront automatiquement sur ${brand} ••••${last4}.`);
-  };
-
-  const onRegisterPayoutMethod = () => {
-    Alert.alert(
-      'Ajouter une carte de versement',
-      'Choisis le réseau utilisé pour tes versements CampusRide.',
+      'Ajouter une méthode',
+      'Choisis le réseau pour tes paiements et retraits.',
       [
         { text: 'Annuler', style: 'cancel' },
-        { text: 'Visa', onPress: () => registerPayoutCard('Visa') },
-        { text: 'Mastercard', onPress: () => registerPayoutCard('Mastercard') },
-        { text: 'Maestro', onPress: () => registerPayoutCard('Maestro') },
-        { text: 'Revolut', onPress: () => registerPayoutCard('Revolut') },
-      ]
+        { text: 'Visa', onPress: () => handleSelection('Visa') },
+        { text: 'Mastercard', onPress: () => handleSelection('Mastercard') },
+        { text: 'Maestro', onPress: () => handleSelection('Maestro') },
+        { text: 'Revolut', onPress: () => handleSelection('Revolut') },
+      ],
+      { cancelable: true }
     );
-  };
+  }, [session.email]);
 
-  const handlePurchasePack = (pack: RidePack, channel: 'card' | 'wallet') => {
+  const onAddFunds = useCallback(() => {
     if (!session.email) return;
-    if (channel === 'wallet' && balance < pack.price) {
-      return Alert.alert(
-        'Solde insuffisant',
-        'Recharge ton wallet ou choisis un paiement par carte pour activer ce pack.'
-      );
+    const amount = parseFloat(addAmount.replace(',', '.'));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      Alert.alert('Montant invalide', 'Choisis un montant supérieur à 0 €.');
+      return;
     }
-
-    const result = purchasePack(pack.id, {
-      email: session.email,
-      channel,
-    });
-
-    if (!result.ok) {
-      return Alert.alert(
-        result.reason === 'payment-failed' ? 'Paiement refusé' : 'Achat impossible',
-        result.message ?? 'Réessaie dans un instant.'
-      );
+    setProcessing(true);
+    try {
+      creditWallet(session.email, amount, { description: 'Recharge wallet' });
+      Alert.alert('Recharge confirmée', `${formatCurrency(amount)} ajoutés à ton wallet.`);
+      setAddAmount('0');
+      setView('home');
+    } finally {
+      setProcessing(false);
     }
+  }, [addAmount, session.email]);
 
-    Alert.alert('Pack activé ✅', `Ton pack ${pack.name} est disponible dans ton wallet.`);
-  };
-
-  const toggleChecklist = (id: string) => {
+  const onWithdrawFunds = useCallback(() => {
     if (!session.email) return;
-    toggleChecklistItem(session.email, id);
-  };
+    const amountValue = parseFloat(withdrawValue.replace(',', '.'));
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
+      Alert.alert('Montant invalide', 'Choisis un montant supérieur à 0 €.');
+      return;
+    }
+    if (amountValue > balance) {
+      Alert.alert('Montant trop élevé', 'Le montant dépasse ton solde disponible.');
+      return;
+    }
+    setProcessing(true);
+    try {
+      const result = withdrawAmount(session.email, amountValue, { description: 'Retrait manuel' });
+      if (!result.ok) {
+        switch (result.reason) {
+          case 'no-payout-method':
+            Alert.alert('Ajoute un compte bancaire', 'Enregistre un compte pour recevoir tes retraits.');
+            break;
+          case 'too-soon':
+            Alert.alert(
+              'Retrait indisponible',
+              `Tu pourras retirer à partir du ${result.next
+                ? new Date(result.next).toLocaleDateString('fr-BE', { day: 'numeric', month: 'long' })
+                : 'prochain cycle'}.`
+            );
+            break;
+          case 'empty':
+            Alert.alert('Solde insuffisant', 'Ton solde doit être supérieur à 0 €.');
+            break;
+          case 'invalid-amount':
+            Alert.alert('Montant invalide', 'Entre un montant valide.');
+            break;
+          case 'insufficient':
+            Alert.alert('Montant trop élevé', 'Ton solde ne permet pas ce retrait.');
+            break;
+          default:
+            Alert.alert('Retrait impossible', 'Réessaie dans un instant.');
+        }
+      } else {
+        Alert.alert(
+          'Retrait envoyé',
+          `${formatCurrency(result.amount)} sont en route vers ton compte bancaire.`
+        );
+        setWithdrawValue('0');
+        setView('home');
+      }
+    } finally {
+      setProcessing(false);
+    }
+  }, [balance, session.email, withdrawValue]);
 
-  return (
-    <AppBackground style={styles.screen}>
-      <SafeAreaView style={styles.safe}>
-        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-          <GradientBackground colors={Gradients.card} style={styles.headerCard}>
-            <View style={styles.headerTexts}>
-              <Text style={styles.headerGreeting}>Ton wallet CampusRide</Text>
-              <Text style={styles.headerSub}>
-                {`Hey ${firstName}, voici un aperçu en temps réel de tes gains et crédits.`}
+  const renderAmountInput = (
+    label: string,
+    amount: string,
+    setAmount: (value: string) => void,
+    presets: number[],
+    highlight?: number
+  ) => (
+    <View style={styles.inputCard}>
+      <Text style={styles.inputLabel}>{label}</Text>
+      <View style={styles.amountField}>
+        <TextInput
+          value={amount}
+          onChangeText={setAmount}
+          keyboardType="decimal-pad"
+          style={styles.amountInput}
+          placeholder="0"
+          placeholderTextColor={C.gray400}
+        />
+        <Text style={styles.amountSuffix}>€</Text>
+      </View>
+      <View style={styles.chipRow}>
+        {presets.map((value) => {
+          const selected = highlight === value || parseFloat(amount) === value;
+          return (
+            <Pressable
+              key={value}
+              style={[styles.chip, selected && styles.chipSelected]}
+              onPress={() => setAmount(String(value))}
+            >
+              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+                {value}€
               </Text>
-            </View>
-            <View style={styles.balanceCard}>
-              <Text style={styles.balanceLabel}>Solde disponible</Text>
-              <Text style={styles.balanceValue}>€{balance.toFixed(2)}</Text>
-              <GradientButton
-                title="Retirer mon solde"
-                onPress={onWithdraw}
-                size="sm"
-                disabled={!canWithdraw}
-                style={styles.balanceButton}
-              />
-              {!canWithdraw && lastWithdrawalAt ? (
-                <Text style={styles.balanceHint}>
-                  Prochain retrait possible {nextWithdrawalDate?.toLocaleDateString('fr-BE', {
+            </Pressable>
+          );
+        })}
+        {label.toLowerCase().includes('retirer') ? (
+          <Pressable style={styles.chip} onPress={() => setAmount(balance.toFixed(2))}>
+            <Text style={styles.chipText}>Tout</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+
+  const renderPaymentMethodCard = (actionLabel: string) => (
+    <View style={styles.paymentCard}>
+      <Text style={styles.paymentTitle}>Méthode de paiement</Text>
+      {payoutMethod ? (
+        <View style={styles.paymentDetail}>
+          <IconSymbol name="creditcard.fill" size={28} color={C.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.paymentName}>{payoutMethod.brand}</Text>
+            <Text style={styles.paymentHint}>•••• {payoutMethod.last4}</Text>
+          </View>
+          <Pressable onPress={onRegisterPayoutMethod}>
+            <Text style={styles.paymentAction}>Modifier</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <Pressable style={styles.paymentSelector} onPress={onRegisterPayoutMethod}>
+          <View style={styles.paymentSelectorIcon} />
+          <Text style={styles.paymentSelectorText}>{actionLabel}</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+
+  const renderSummary = (label: string, amount: number, highlight?: string) => (
+    <View style={styles.summaryCard}>
+      <Text style={styles.summaryTitle}>Récapitulatif</Text>
+      <View style={styles.summaryRow}>
+        <Text style={styles.summaryLabel}>{label}</Text>
+        <Text style={styles.summaryValue}>{formatCurrency(amount)}</Text>
+      </View>
+      <View style={styles.summaryRow}>
+        <Text style={styles.summaryLabel}>Frais de transaction</Text>
+        <Text style={[styles.summaryValue, styles.summarySuccess]}>Gratuit</Text>
+      </View>
+      <View style={styles.summaryRow}>
+        <Text style={[styles.summaryLabel, styles.summaryHighlight]}>
+          {highlight ?? 'Montant total'}
+        </Text>
+        <Text style={[styles.summaryValue, styles.summaryHighlight]}>
+          {formatCurrency(amount)}
+        </Text>
+      </View>
+    </View>
+  );
+
+  const renderTransactions = () => (
+    <View style={styles.transactionsCard}>
+      <Text style={styles.sectionTitle}>Historique des transactions</Text>
+      {transactions.length === 0 ? (
+        <Text style={styles.emptyTransactions}>Aucun mouvement pour le moment.</Text>
+      ) : (
+        transactions.slice(0, 5).map((tx) => {
+          const isCredit = tx.type === 'credit';
+          return (
+            <View key={tx.id} style={styles.transactionRow}>
+              <View style={[styles.transactionIcon, isCredit ? styles.iconCredit : styles.iconDebit]}>
+                <IconSymbol
+                  name={isCredit ? 'arrow.down.left' : 'arrow.up.right'}
+                  size={16}
+                  color={isCredit ? '#1F9D55' : '#D33F3F'}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.transactionDescription}>{tx.description}</Text>
+                <Text style={styles.transactionMeta}>
+                  {new Date(tx.createdAt).toLocaleDateString('fr-BE', {
                     day: 'numeric',
-                    month: 'long',
-                  }) ?? 'bientôt'}.
+                    month: 'short',
+                  })}{' '}
+                  • Solde {formatCurrency(tx.balanceAfter)}
                 </Text>
-              ) : null}
-            </View>
-            <View style={styles.payoutRow}>
-              <Text style={styles.payoutLabel}>Carte de versement</Text>
-              <Pressable onPress={onRegisterPayoutMethod} hitSlop={12}>
-                <Text style={styles.payoutValue}>
-                  {hasPayoutMethod ? payoutLabel : 'Ajouter une carte'}
-                </Text>
-              </Pressable>
-            </View>
-          </GradientBackground>
-
-          <GradientBackground colors={Gradients.card} style={styles.pointsCard}>
-            <View style={styles.pointsHeader}>
-              <Text style={styles.pointsTitle}>Points CampusRide</Text>
-              <Pressable onPress={() => setShowPointsDetails((prev) => !prev)}>
-                <Text style={styles.pointsToggle}>
-                  {showPointsDetails ? 'Masquer les paliers' : 'Voir les paliers'}
-                </Text>
-              </Pressable>
-            </View>
-            <Text style={styles.pointsValue}>{walletPoints} pts</Text>
-            <Text style={styles.pointsSub}>
-              {currentTierLabel} • {currentTierReward}
-            </Text>
-            {showPointsDetails ? (
-              <View style={styles.pointsList}>
-                {POINT_TIERS.map((tier) => (
-                  <View key={tier.id} style={styles.pointsRow}>
-                    <Text style={styles.pointsRowLabel}>{tier.label}</Text>
-                    <Text style={styles.pointsRowValue}>{tier.threshold} pts</Text>
-                  </View>
-                ))}
               </View>
-            ) : null}
-            {nextTier ? (
-              <Text style={styles.pointsHint}>
-                Plus que {pointsToNext} pts pour atteindre {nextTier.label}.
+              <Text style={[styles.transactionAmount, isCredit ? styles.amountCredit : styles.amountDebit]}>
+                {isCredit ? '+' : '-'}
+                {formatCurrency(tx.amount)}
               </Text>
-            ) : (
-              <Text style={styles.pointsHint}>Tu as débloqué tous les paliers, bravo !</Text>
-            )}
-          </GradientBackground>
-
-          <GradientBackground colors={Gradients.card} style={styles.checklistCard}>
-            <Text style={styles.sectionTitle}>Checklist conducteur</Text>
-            <Text style={styles.sectionSubtitle}>
-              Complète ces actions pour obtenir des bonus de visibilité et des retraits accélérés.
-            </Text>
-            {checklist.map((item) => (
-              <Pressable
-                key={item.id}
-                style={styles.checklistRow}
-                onPress={() => toggleChecklist(item.id)}
-              >
-                <View style={[styles.checklistCheckbox, item.done && styles.checklistCheckboxDone]}>
-                  {item.done ? <Text style={styles.checklistMark}>✓</Text> : null}
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.checklistLabel}>{item.label}</Text>
-                  {item.hint ? <Text style={styles.checklistHint}>{item.hint}</Text> : null}
-                </View>
-              </Pressable>
-            ))}
-          </GradientBackground>
-
-          <GradientBackground colors={Gradients.card} style={styles.packCard}>
-            <Text style={styles.sectionTitle}>Packs de trajets</Text>
-            <Text style={styles.sectionSubtitle}>
-              Achète des packs pour réduire l’impact des frais CampusRide et remercier tes passagers fidèles.
-            </Text>
-            {packs.map((pack) => (
-              <View key={pack.id} style={styles.packRow}>
-                <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={styles.packTitle}>{pack.name}</Text>
-                  <Text style={styles.packSubtitle}>{pack.description}</Text>
-                </View>
-                <View style={styles.packActions}>
-                  <GradientButton
-                    title="Carte"
-                    size="sm"
-                    onPress={() => handlePurchasePack(pack, 'card')}
-                    variant="cta"
-                  />
-                  <GradientButton
-                    title="Wallet"
-                    size="sm"
-                    onPress={() => handlePurchasePack(pack, 'wallet')}
-                    disabled={balance < pack.price}
-                  />
-                </View>
-              </View>
-            ))}
-          </GradientBackground>
-
-          <GradientBackground colors={Gradients.card} style={styles.transactionsCard}>
-            <View style={styles.transactionHeader}>
-              <Text style={styles.sectionTitle}>Historique</Text>
-              <View style={styles.filterRow}>
-                {FILTERS.map((option) => {
-                  const selected = option.id === filter;
-                  return (
-                    <Pressable
-                      key={option.id}
-                      onPress={() => setFilter(option.id)}
-                      style={[
-                        styles.filterChip,
-                        selected ? styles.filterChipSelected : styles.filterChipIdle,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.filterChipText,
-                          selected ? styles.filterChipTextSelected : styles.filterChipTextIdle,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
             </View>
-            {filteredTransactions.map((tx) => (
-              <View key={tx.id} style={styles.transactionRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.transactionDescription}>{tx.description}</Text>
-                  <Text style={styles.transactionMeta}>
-                    {new Date(tx.createdAt).toLocaleDateString('fr-BE', {
-                      day: 'numeric',
-                      month: 'short',
-                    })}{' '}
-                    • Solde €{tx.balanceAfter.toFixed(2)}
-                  </Text>
-                </View>
+          );
+        })
+      )}
+    </View>
+  );
+
+  const renderHome = () => (
+    <>
+      <GradientBackground colors={Gradients.background} style={styles.heroCard}>
+        <View style={styles.heroHeader}>
+          <Pressable onPress={goBack} hitSlop={12} accessibilityRole="button">
+            <IconSymbol name="chevron.left" size={24} color="#FFFFFF" />
+          </Pressable>
+          <View style={styles.heroTitleRow}>
+            <Image source={require('@/assets/images/Wallet.png')} style={styles.heroLogo} />
+            <Text style={styles.heroTitle}>Wallet</Text>
+          </View>
+        </View>
+        <Text style={styles.heroSubtitle}>Solde disponible</Text>
+        <Text style={styles.heroBalance}>{formatCurrency(balance)}</Text>
+        <View style={styles.heroActions}>
+          <Pressable style={styles.heroActionPrimary} onPress={() => setView('add')}>
+            <Text style={styles.heroActionPrimaryText}>+ Ajouter</Text>
+          </Pressable>
+          <Pressable style={styles.heroActionSecondary} onPress={() => setView('withdraw')}>
+            <Text style={styles.heroActionSecondaryText}>Retirer</Text>
+          </Pressable>
+        </View>
+      </GradientBackground>
+
+      <View style={styles.contentCard}>
+        <View style={styles.cardHeader}>
+          <Text style={styles.cardTitle}>Moyens de paiement</Text>
+          <Pressable onPress={onRegisterPayoutMethod} hitSlop={12} accessibilityRole="button">
+            <Text style={styles.cardAction}>+</Text>
+          </Pressable>
+        </View>
+        {payoutMethod ? (
+          <View style={styles.cardList}>
+            <View style={styles.methodRow}>
+              <View
+                style={[
+                  styles.methodBadge,
+                  { backgroundColor: getBrandColors(payoutMethod.brand).background },
+                ]}
+              >
                 <Text
                   style={[
-                    styles.transactionAmount,
-                    tx.type === 'credit' ? styles.transactionCredit : styles.transactionDebit,
+                    styles.methodBadgeText,
+                    { color: getBrandColors(payoutMethod.brand).text },
                   ]}
                 >
-                  {tx.type === 'credit' ? '+' : '-'}€{tx.amount.toFixed(2)}
+                  {payoutMethod.brand}
                 </Text>
               </View>
-            ))}
-            {filteredTransactions.length === 0 ? (
-              <Text style={styles.emptyTransactions}>Aucune transaction pour le moment.</Text>
-            ) : null}
-          </GradientBackground>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.methodLabel}>Carte •••• {payoutMethod.last4}</Text>
+                <Text style={styles.methodHint}>
+                  Ajoutée le {new Date(payoutMethod.addedAt ?? Date.now()).toLocaleDateString('fr-BE')}
+                </Text>
+              </View>
+              <Text style={styles.methodDefault}>Par défaut</Text>
+            </View>
+          </View>
+        ) : (
+            <Pressable
+              style={styles.methodEmpty}
+              onPress={onRegisterPayoutMethod}
+              accessibilityRole="button"
+            >
+            <Text style={styles.methodEmptyText}>Ajouter une carte</Text>
+          </Pressable>
+        )}
+      </View>
+
+      {renderTransactions()}
+    </>
+  );
+
+  const renderAddFunds = () => (
+    <>
+      <GradientBackground colors={Gradients.background} style={styles.flowHero}>
+        <View style={styles.heroHeader}>
+          <Pressable onPress={goBack} hitSlop={12}>
+            <IconSymbol name="chevron.left" size={24} color="#FFFFFF" />
+          </Pressable>
+          <Text style={styles.heroTitle}>Ajouter des fonds</Text>
+        </View>
+        <Text style={styles.flowSubtitle}>Rechargez votre wallet CampusRide</Text>
+      </GradientBackground>
+      {renderAmountInput('Montant à ajouter', addAmount, setAddAmount, ADD_PRESETS)}
+      {renderPaymentMethodCard('Sélectionner une méthode de paiement')}
+      {renderSummary('Montant', parseFloat(addAmount.replace(',', '.')) || 0, 'Total à payer')}
+      <Pressable
+        style={styles.primaryButton}
+        onPress={onAddFunds}
+        disabled={processing}
+        accessibilityRole="button"
+      >
+        <Text style={styles.primaryButtonText}>Continuer</Text>
+      </Pressable>
+    </>
+  );
+
+  const renderWithdrawFunds = () => (
+    <>
+      <GradientBackground colors={Gradients.background} style={styles.flowHero}>
+        <View style={styles.heroHeader}>
+          <Pressable onPress={goBack} hitSlop={12}>
+            <IconSymbol name="chevron.left" size={24} color="#FFFFFF" />
+          </Pressable>
+          <Text style={styles.heroTitle}>Retirer des fonds</Text>
+        </View>
+        <Text style={styles.flowSubtitle}>Transférez vos gains vers votre compte bancaire</Text>
+      </GradientBackground>
+      <View style={styles.balanceSummary}>
+        <Text style={styles.balanceSummaryLabel}>Solde disponible</Text>
+        <Text style={styles.balanceSummaryValue}>{formatCurrency(balance)}</Text>
+      </View>
+      {renderAmountInput(
+        'Montant à retirer',
+        withdrawValue,
+        setWithdrawValue,
+        WITHDRAW_PRESETS
+      )}
+      <View style={styles.infoCard}>
+        <Text style={styles.infoTitle}>Compte bancaire</Text>
+        {payoutMethod ? (
+          <View style={styles.paymentDetail}>
+            <IconSymbol name="building.columns" size={28} color="#1F9D55" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.paymentName}>Compte principal</Text>
+              <Text style={styles.paymentHint}>•••• {payoutMethod.last4}</Text>
+            </View>
+            <Pressable onPress={onRegisterPayoutMethod}>
+              <Text style={styles.paymentAction}>Modifier</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable style={styles.paymentSelector} onPress={onRegisterPayoutMethod}>
+            <View style={styles.paymentSelectorIcon} />
+            <Text style={styles.paymentSelectorText}>Ajouter un compte bancaire</Text>
+          </Pressable>
+        )}
+      </View>
+      <View style={styles.noticeCard}>
+        <IconSymbol name="info.circle" size={18} color="#1F5FD0" />
+        <View>
+          <Text style={styles.noticeTitle}>Délai de traitement</Text>
+          <Text style={styles.noticeText}>
+            Les retraits sont généralement traités sous 2-3 jours ouvrables.
+          </Text>
+        </View>
+      </View>
+      {renderSummary(
+        'Montant du retrait',
+        parseFloat(withdrawValue.replace(',', '.')) || 0,
+        'Montant à recevoir'
+      )}
+      <Pressable
+        style={styles.primaryButton}
+        onPress={onWithdrawFunds}
+        disabled={processing}
+        accessibilityRole="button"
+      >
+        <Text style={styles.primaryButtonText}>Continuer</Text>
+      </Pressable>
+    </>
+  );
+
+  return (
+    <AppBackground colors={Gradients.background} style={styles.screen}>
+      <SafeAreaView style={styles.safe}>
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+        >
+          {view === 'home' ? renderHome() : null}
+          {view === 'add' ? renderAddFunds() : null}
+          {view === 'withdraw' ? renderWithdrawFunds() : null}
         </ScrollView>
       </SafeAreaView>
     </AppBackground>
   );
 }
 
+const registerMethod = (email: string, brand: string) => {
+  const last4 = Math.floor(1000 + Math.random() * 9000)
+    .toString()
+    .slice(-4);
+  setPayoutMethod(email, { brand, last4, addedAt: Date.now() });
+  Alert.alert('Carte enregistrée', `${brand} ••••${last4} est prête à être utilisée.`);
+};
+
+const getBrandColors = (brand: string) => {
+  switch (brand.toLowerCase()) {
+    case 'visa':
+      return { background: '#0D47A1', text: '#FFFFFF' };
+    case 'mastercard':
+      return { background: '#FF6F00', text: '#1F1F1F' };
+    case 'maestro':
+      return { background: '#006DB3', text: '#FFFFFF' };
+    case 'revolut':
+      return { background: '#1BC8FF', text: '#0F2240' };
+    default:
+      return { background: '#3C7CFF', text: '#FFFFFF' };
+  }
+};
+
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: 'transparent' },
+  screen: { flex: 1 },
   safe: { flex: 1 },
-  content: { padding: Spacing.lg, paddingBottom: Spacing.xxl, gap: Spacing.lg },
-  headerCard: {
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.3)',
+  scroll: {
     padding: Spacing.lg,
-    gap: Spacing.md,
+    gap: Spacing.lg,
   },
-  headerTexts: { gap: Spacing.xs },
-  headerGreeting: { fontSize: 20, fontWeight: '800', color: C.ink },
-  headerSub: { color: C.gray600, fontSize: 13, lineHeight: 18 },
-  balanceCard: {
-    borderRadius: Radius.md,
-    backgroundColor: 'rgba(255,255,255,0.85)',
+  heroCard: {
+    borderRadius: 32,
     padding: Spacing.lg,
-    gap: Spacing.xs,
+    gap: Spacing.sm,
+    elevation: 8,
   },
-  balanceLabel: { color: C.gray600, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
-  balanceValue: { fontSize: 28, fontWeight: '800', color: C.ink },
-  balanceButton: { alignSelf: 'flex-start', marginTop: Spacing.sm },
-  balanceHint: { color: C.gray500, fontSize: 12 },
-  payoutRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  payoutLabel: { color: C.gray600, fontSize: 13 },
-  payoutValue: { color: C.primary, fontWeight: '700' },
-  pointsCard: {
-    borderRadius: Radius.lg,
+  heroHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  heroTitleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  heroLogo: { width: 28, height: 28, resizeMode: 'contain' },
+  heroTitle: { fontSize: 20, fontWeight: '800', color: '#FFFFFF' },
+  heroSubtitle: { color: 'rgba(255,255,255,0.8)', fontSize: 13 },
+  heroBalance: { fontSize: 36, fontWeight: '800', color: '#FFFFFF' },
+  heroActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
+  heroActionPrimary: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: Radius.pill,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  heroActionPrimaryText: { color: C.ink, fontWeight: '700' },
+  heroActionSecondary: {
+    flex: 1,
+    borderRadius: Radius.pill,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.3)',
+    borderColor: 'rgba(255,255,255,0.8)',
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  heroActionSecondaryText: { color: '#FFFFFF', fontWeight: '700' },
+  contentCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
     padding: Spacing.lg,
     gap: Spacing.sm,
   },
-  pointsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  pointsTitle: { fontWeight: '800', color: C.ink, fontSize: 16 },
-  pointsToggle: { color: C.primary, fontWeight: '700' },
-  pointsValue: { fontSize: 32, fontWeight: '800', color: C.secondary },
-  pointsSub: { color: C.gray600, fontSize: 12 },
-  pointsList: { gap: Spacing.xs, marginTop: Spacing.sm },
-  pointsRow: {
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  cardTitle: { fontSize: 16, fontWeight: '800', color: C.ink },
+  cardAction: { fontSize: 22, color: C.primary },
+  cardList: { gap: Spacing.sm },
+  methodRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    backgroundColor: C.gray100,
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: 'rgba(248,249,255,0.95)',
     borderRadius: Radius.md,
-    padding: Spacing.sm,
+    padding: Spacing.md,
   },
-  pointsRowLabel: { color: C.gray600, fontWeight: '700' },
-  pointsRowValue: { color: C.gray600 },
-  pointsHint: { color: C.gray500, fontSize: 12 },
-  checklistCard: {
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.3)',
-    padding: Spacing.lg,
-    gap: Spacing.md,
-  },
-  sectionTitle: { fontWeight: '800', color: C.ink, fontSize: 16 },
-  sectionSubtitle: { color: C.gray600, fontSize: 12, lineHeight: 18 },
-  checklistRow: { flexDirection: 'row', gap: Spacing.sm, alignItems: 'center' },
-  checklistCheckbox: {
-    width: 20,
-    height: 20,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: C.gray400,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.8)',
-  },
-  checklistCheckboxDone: {
-    backgroundColor: C.successLight,
-    borderColor: C.success,
-  },
-  checklistMark: { color: C.success, fontWeight: '800', fontSize: 12 },
-  checklistLabel: { color: C.gray700, fontSize: 13, fontWeight: '600' },
-  checklistHint: { color: C.gray500, fontSize: 12 },
-  packCard: {
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.3)',
-    padding: Spacing.lg,
-    gap: Spacing.md,
-  },
-  packRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    paddingVertical: Spacing.xs,
-  },
-  packTitle: { fontWeight: '700', color: C.ink },
-  packSubtitle: { color: C.gray600, fontSize: 12 },
-  packActions: { flexDirection: 'row', gap: Spacing.sm },
-  transactionsCard: {
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.3)',
-    padding: Spacing.lg,
-    gap: Spacing.md,
-  },
-  transactionHeader: { gap: Spacing.sm },
-  filterRow: { flexDirection: 'row', gap: Spacing.sm },
-  filterChip: {
-    borderRadius: Radius.pill,
-    paddingVertical: 6,
+  methodBadge: {
     paddingHorizontal: Spacing.md,
-    borderWidth: 1,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.md,
   },
-  filterChipIdle: { borderColor: C.gray300, backgroundColor: 'rgba(255,255,255,0.75)' },
-  filterChipSelected: { borderColor: C.primary, backgroundColor: C.primaryLight },
-  filterChipText: { fontSize: 12, fontWeight: '700' },
-  filterChipTextIdle: { color: C.gray600 },
-  filterChipTextSelected: { color: C.primaryDark },
+  methodBadgeText: { fontWeight: '800', fontSize: 14 },
+  methodLabel: { fontWeight: '700', color: C.ink },
+  methodHint: { color: C.gray500, fontSize: 12 },
+  methodDefault: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(103,195,135,0.2)',
+    color: '#1F9D55',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  methodEmpty: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(21,23,43,0.15)',
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    alignItems: 'center',
+  },
+  methodEmptyText: { color: C.primary, fontWeight: '700' },
+  transactionsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: Spacing.lg,
+    gap: Spacing.md,
+  },
+  sectionTitle: { fontSize: 16, fontWeight: '800', color: C.ink },
   transactionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
     paddingVertical: Spacing.xs,
   },
+  transactionIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconCredit: { backgroundColor: 'rgba(92,225,143,0.25)' },
+  iconDebit: { backgroundColor: 'rgba(241,107,107,0.2)' },
   transactionDescription: { color: C.ink, fontWeight: '600' },
   transactionMeta: { color: C.gray500, fontSize: 12 },
-  transactionAmount: { fontWeight: '700', fontSize: 13 },
-  transactionCredit: { color: C.success },
-  transactionDebit: { color: C.danger },
-  emptyTransactions: { color: C.gray500, fontSize: 12 },
+  transactionAmount: { fontWeight: '700', fontSize: 14 },
+  amountCredit: { color: '#1F9D55' },
+  amountDebit: { color: '#D33F3F' },
+  emptyTransactions: { textAlign: 'center', color: C.gray500 },
+  flowHero: {
+    borderRadius: 32,
+    padding: Spacing.lg,
+    gap: Spacing.xs,
+  },
+  flowSubtitle: { color: 'rgba(255,255,255,0.9)' },
+  inputCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  inputLabel: { fontWeight: '700', color: C.ink },
+  amountField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C.gray100,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+  },
+  amountInput: { flex: 1, fontSize: 32, fontWeight: '800', color: C.ink },
+  amountSuffix: { fontSize: 20, fontWeight: '700', color: C.gray600 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  chip: {
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderWidth: 1,
+    borderColor: C.gray200,
+  },
+  chipSelected: { borderColor: C.primary, backgroundColor: 'rgba(255,131,71,0.15)' },
+  chipText: { color: C.gray700, fontWeight: '600' },
+  chipTextSelected: { color: C.primary },
+  paymentCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  paymentTitle: { fontWeight: '700', color: C.ink },
+  paymentDetail: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: 'rgba(248,249,255,0.95)',
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+  },
+  paymentName: { fontWeight: '700', color: C.ink },
+  paymentHint: { color: C.gray500, fontSize: 12 },
+  paymentAction: { color: C.primary, fontWeight: '700' },
+  paymentSelector: {
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(21,23,43,0.15)',
+    padding: Spacing.md,
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  paymentSelectorIcon: {
+    width: 36,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255,131,71,0.4)',
+  },
+  paymentSelectorText: { color: C.gray600, fontWeight: '700' },
+  summaryCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  summaryTitle: { fontWeight: '800', color: C.ink },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  summaryLabel: { color: C.gray600 },
+  summaryValue: { color: C.ink, fontWeight: '700' },
+  summarySuccess: { color: '#1F9D55' },
+  summaryHighlight: { color: C.primary },
+  primaryButton: {
+    borderRadius: Radius.pill,
+    backgroundColor: C.primary,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    marginTop: Spacing.sm,
+  },
+  primaryButtonText: { color: '#FFFFFF', fontWeight: '700' },
+  balanceSummary: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: Spacing.lg,
+    alignItems: 'center',
+  },
+  balanceSummaryLabel: { color: C.gray600, fontSize: 12 },
+  balanceSummaryValue: { fontSize: 32, fontWeight: '800', color: C.ink },
+  infoCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  infoTitle: { fontWeight: '700', color: C.ink },
+  noticeCard: {
+    backgroundColor: 'rgba(231,237,255,0.9)',
+    borderRadius: 20,
+    padding: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  noticeTitle: { fontWeight: '700', color: '#1F5FD0' },
+  noticeText: { color: '#1F5FD0', fontSize: 12 },
 });

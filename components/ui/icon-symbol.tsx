@@ -20,11 +20,22 @@ const MAPPING = {
   'camera.fill': 'photo-camera',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
+  'chevron.left': 'chevron-left',
+  'chevron.left.circle.fill': 'arrow-circle-left',
+  'chevron.up': 'keyboard-arrow-up',
+  'chevron.down': 'keyboard-arrow-down',
   'bubble.left.and.bubble.right.fill': 'forum',
   'car.fill': 'directions-car',
   'shield.checkerboard': 'shield',
   'checkmark.seal.fill': 'verified',
   'exclamationmark.triangle': 'warning',
+  'location.fill': 'location-on',
+  'calendar': 'calendar-today',
+  'clock': 'access-time',
+  'questionmark.circle': 'help-outline',
+  'envelope.fill': 'mail',
+  'phone.fill': 'phone',
+  'magnifyingglass': 'search',
 } as IconMapping;
 
 /**

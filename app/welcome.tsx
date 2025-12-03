@@ -1,38 +1,27 @@
 import { router } from 'expo-router';
-import { Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientButton } from '@/components/ui/gradient-button';
-import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Spacing, Typography } from '@/app/ui/theme';
 
 export default function WelcomeScreen() {
   const goToSignUp = () => router.push('/sign-up');
   const goToSignIn = () => router.push('/sign-in');
+  const carIllustration = require('@/assets/images/Bienvenue.png');
+  const logo = require('@/assets/images/logo.png');
 
   return (
     <AppBackground colors={Gradients.twilight}>
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.content}>
-          <View style={styles.badge}>
-            <IconSymbol name="graduationcap.fill" size={26} color={Colors.secondary} />
-            <IconSymbol name="mappin.and.ellipse" size={20} color={Colors.primary} />
-          </View>
+          <Image source={logo} style={styles.logo} resizeMode="contain" />
           <Text style={styles.title}>Facilitez vos trajets vers le campus</Text>
           <Text style={styles.subtitle}>
             CampusRide connecte les étudiants conducteurs et passagers en quelques minutes.
           </Text>
           <View style={styles.illustration}>
-            <View style={styles.illustrationCar}>
-              <IconSymbol name="person.fill" size={26} color={Colors.white} />
-              <IconSymbol name="car.fill" size={40} color={Colors.white} />
-              <IconSymbol name="person.fill" size={26} color={Colors.white} />
-            </View>
-            <View style={styles.illustrationDots}>
-              <View style={styles.dot} />
-              <View style={[styles.dot, styles.dotMedium]} />
-              <View style={[styles.dot, styles.dotSmall]} />
-            </View>
+            <Image source={carIllustration} style={styles.heroImage} resizeMode="contain" />
           </View>
           <View style={styles.actions}>
             <GradientButton
@@ -58,13 +47,10 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.xl,
+    backgroundColor: 'transparent',
   },
   content: {
     flex: 1,
-    borderRadius: 32,
-    backgroundColor: 'rgba(255,255,255,0.14)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.3)',
     padding: Spacing.xl,
     alignItems: 'center',
     justifyContent: 'center',
@@ -83,46 +69,20 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.9)',
     textAlign: 'center',
   },
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.pill,
+  logo: {
+    width: 100,
+    height: 100,
+    marginBottom: Spacing.sm,
   },
   illustration: {
     width: '100%',
     alignItems: 'center',
-    gap: Spacing.md,
   },
-  illustrationCar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-    width: '100%',
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.lg,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-  },
-  illustrationDots: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-  },
-  dot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: 'rgba(255,255,255,0.55)',
-  },
-  dotMedium: {
-    width: 16,
-    height: 16,
-  },
-  dotSmall: {
-    width: 8,
-    height: 8,
+  heroImage: {
+    width: '90%',
+    maxWidth: 320,
+    height: undefined,
+    aspectRatio: 1,
   },
   actions: {
     width: '100%',

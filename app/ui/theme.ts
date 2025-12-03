@@ -40,16 +40,16 @@ export const Gradients: Record<
   GradientStops
 > = {
   sunset: ['#FF8347', '#FF9864', '#F1B6FF'],
-  twilight: ['#F1B6FF', '#DCA7FF', '#B08CFF'],
+  twilight: ['#7A5FFF', '#7A5FFF', '#F1B6FF'],
   lavender: ['#F1B6FF', '#F9D6FF', '#FFFFFF'],
   cta: ['#FF8347', '#FF965B', '#FFB686'],
   card: ['#FFFFFF', '#FFF7FF', '#F9ECFF'],
   soft: ['#FFF4EC', '#FFF2FF', '#F8F9FF'],
   danger: ['#F16B6B', '#FF7F7F', '#FF9D9D'],
   success: ['#4CC38A', '#5ED09B', '#8BE7BB'],
-  background: ['#7A5FFF', '#9374FF', '#F1B6FF'],
-  tabBar: ['#7A5FFF', '#8A70FF', '#F1B6FF'],
-  ocean: ['#7A5FFF', '#8A70FF', '#F1B6FF'],
+  background: ['#7A5FFF', '#7A5FFF', '#F1B6FF'],
+  tabBar: ['#7A5FFF', '#7A5FFF', '#F1B6FF'],
+  ocean: ['#7A5FFF', '#7A5FFF', '#F1B6FF'],
 };
 
 export const Spacing = {
