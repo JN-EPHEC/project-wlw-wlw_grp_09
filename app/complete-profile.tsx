@@ -1,5 +1,5 @@
 import { Redirect, router } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -89,6 +89,19 @@ export default function CompleteProfile() {
   const selfieAttemptRef = useRef(0);
   const [submitting, setSubmitting] = useState(false);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const safeSetUploadMessage = useCallback((value: string | null) => {
+    if (mountedRef.current) {
+      setUploadMessage(value);
+    }
+  }, []);
 
   const phoneValid = useMemo(() => /^(\+?\d{8,15})$/.test(phone.trim()), [phone]);
   const infoValid =
