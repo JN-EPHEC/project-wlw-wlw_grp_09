@@ -219,56 +219,88 @@ export default function CompleteProfile() {
 
   const onSubmit = async () => {
     if (!session.email || !formValid) return;
-    try {
-      setSubmitting(true);
+    const pendingStudentCard = studentCardUri;
+    const pendingSelfie = selfieUri;
+    const normalizedFirstName = firstName.trim();
+    const normalizedLastName = lastName.trim();
+    const normalizedName = `${normalizedFirstName} ${normalizedLastName}`.trim();
+    const normalizedCampus = campus.trim();
+    const normalizedPhone = phone.trim();
+    const userEmail = session.email;
 
-      const uploadIfNeeded = async (
-        uri: string | null,
-        uploader: (localUri: string) => Promise<string>
-      ) => {
-        if (!uri) return null;
-        if (isRemoteUri(uri)) return uri;
-        return uploader(uri);
-      };
+    const uploadIfNeeded = async (
+      uri: string | null,
+      uploader: (localUri: string) => Promise<string>
+    ) => {
+      if (!uri) return null;
+      if (isRemoteUri(uri)) return uri;
+      return uploader(uri);
+    };
 
-      let studentCardUrl: string | null = null;
-      let profileSelfieUrl: string | null = null;
+    const finalizeDocuments = async () => {
+      if (!userEmail) return;
+      const [studentCardUrl, profileSelfieUrl] = await Promise.all([
+        uploadIfNeeded(pendingStudentCard, (uri) => uploadStudentCard({ email: userEmail, uri })),
+        uploadIfNeeded(pendingSelfie, (uri) => uploadProfileSelfie({ email: userEmail, uri })),
+      ]);
 
-      try {
-        setUploadMessage('Téléversement des documents…');
-        [studentCardUrl, profileSelfieUrl] = await Promise.all([
-          uploadIfNeeded(studentCardUri, (uri) =>
-            uploadStudentCard({ email: session.email, uri })
-          ),
-          uploadIfNeeded(selfieUri, (uri) =>
-            uploadProfileSelfie({ email: session.email, uri })
-          ),
-        ]);
-      } finally {
-        setUploadMessage(null);
-      }
+      if (!studentCardUrl && !profileSelfieUrl) return;
 
-      await Auth.updateProfile(session.email, {
-        name: `${firstName.trim()} ${lastName.trim()}`,
-        address: campus.trim(),
-        phone: phone.trim(),
-        studentCardUrl: studentCardUrl ?? '',
-        avatarUrl: profileSelfieUrl ?? '',
+      await Auth.updateProfile(userEmail, {
+        name: normalizedName,
+        address: normalizedCampus,
+        phone: normalizedPhone,
+        studentCardUrl: studentCardUrl ?? pendingStudentCard ?? '',
+        avatarUrl: profileSelfieUrl ?? pendingSelfie ?? '',
       });
+
       await updatePassengerProfile({
-        email: session.email,
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        campus: campus.trim(),
-        phone: phone.trim(),
+        email: userEmail,
+        firstName: normalizedFirstName,
+        lastName: normalizedLastName,
+        campus: normalizedCampus,
+        phone: normalizedPhone,
         studentCardUrl: studentCardUrl ?? undefined,
         selfieUrl: profileSelfieUrl ?? undefined,
       });
+    };
+
+    try {
+      setSubmitting(true);
+      setUploadMessage('Préparation de ton profil…');
+
+      await Auth.updateProfile(userEmail, {
+        name: normalizedName,
+        address: normalizedCampus,
+        phone: normalizedPhone,
+        studentCardUrl: pendingStudentCard ?? '',
+        avatarUrl: pendingSelfie ?? '',
+      });
+
+      await updatePassengerProfile({
+        email: userEmail,
+        firstName: normalizedFirstName,
+        lastName: normalizedLastName,
+        campus: normalizedCampus,
+        phone: normalizedPhone,
+      });
+
+      setUploadMessage('Téléversement de tes documents…');
+      await finalizeDocuments();
+
       router.replace('/profile-welcome');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Impossible de mettre à jour le profil.';
-      Alert.alert('Erreur', message);
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Impossible de mettre à jour le profil. Vérifie ta connexion et réessaie.';
+      console.warn('Failed to compléter le profil', error);
+      Alert.alert(
+        'Envoi interrompu',
+        `${message}\nAssure-toi d’avoir une bonne connexion puis relance l’enregistrement.`
+      );
     } finally {
+      setUploadMessage(null);
       setSubmitting(false);
     }
   };
