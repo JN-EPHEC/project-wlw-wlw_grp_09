@@ -15,7 +15,7 @@ import {
 
 import * as Auth from '@/app/services/auth';
 import { Colors, Gradients } from '@/app/ui/theme';
-import { isStudentEmail, sanitizeEmail } from '@/app/validators';
+import { sanitizeEmail } from '@/app/validators';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
@@ -35,8 +35,8 @@ export default function SignInScreen() {
   }
 
   const onSubmit = async () => {
-    if (!email || !isStudentEmail(email)) {
-      return Alert.alert('Adresse invalide', 'Utilise ton e-mail universitaire pour te connecter.');
+    if (!email) {
+      return Alert.alert('Adresse requise', 'Entre l’e-mail associé à ton compte pour te connecter.');
     }
     if (!password.trim()) {
       return Alert.alert('Mot de passe manquant', 'Entre ton mot de passe pour poursuivre.');
@@ -59,6 +59,12 @@ export default function SignInScreen() {
           break;
         case 'INVALID_CREDENTIALS':
           Alert.alert('Connexion refusée', 'Le mot de passe est incorrect. Réessaie.');
+          break;
+        case 'PASSWORD_NOT_SET':
+          Alert.alert(
+            'Mise à jour requise',
+            'Ton compte doit être réinitialisé. Crée un nouveau compte avec la même adresse.'
+          );
           break;
         default:
           Alert.alert(

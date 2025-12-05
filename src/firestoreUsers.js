@@ -10,6 +10,7 @@ import {
 import { db } from "./firebase";
 
 const usersCol = collection(db, "users");
+const VERIFICATION_EXPIRATION_MS = 10 * 60 * 1000;
 
 export async function savePassenger({
   firstName,
@@ -19,6 +20,9 @@ export async function savePassenger({
   campus = "",
   studentCardUrl,
   selfieUrl,
+  verified = false,
+  verificationCode = null,
+  verificationExpiresAt = null,
 }) {
   const payload = {
     firstName,
@@ -28,6 +32,9 @@ export async function savePassenger({
     campus,
     role: "passenger",
     createdAt: serverTimestamp(),
+    verified,
+    verificationCode,
+    verificationExpiresAt,
   };
 
   if (studentCardUrl) payload.studentCardUrl = studentCardUrl;
@@ -103,6 +110,37 @@ export async function updatePassengerProfile({
   await updateDoc(existing.ref, payload);
 
   return existing.id;
+}
+
+export async function getPassengerProfile(email) {
+  const existing = await findUserDocByEmail(email);
+  if (!existing) return null;
+  return { id: existing.id, ...existing.data() };
+}
+
+export async function setPassengerVerificationCode(email, code) {
+  const existing = await findUserDocByEmail(email);
+  if (!existing) throw new Error("Utilisateur introuvable pour la vérification.");
+  const expiresAt = Date.now() + VERIFICATION_EXPIRATION_MS;
+  await updateDoc(existing.ref, {
+    verificationCode: code,
+    verificationExpiresAt: expiresAt,
+    verified: false,
+    updatedAt: serverTimestamp(),
+  });
+  return { id: existing.id, expiresAt };
+}
+
+export async function markPassengerVerified(email) {
+  const existing = await findUserDocByEmail(email);
+  if (!existing) throw new Error("Utilisateur introuvable pour la vérification.");
+  await updateDoc(existing.ref, {
+    verified: true,
+    verificationCode: null,
+    verificationExpiresAt: null,
+    updatedAt: serverTimestamp(),
+  });
+  return { id: existing.id };
 }
 
 export async function saveDriverDocuments(email, data) {
