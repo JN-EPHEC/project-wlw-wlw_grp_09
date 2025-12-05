@@ -16,6 +16,17 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npx expo start
    ```
 
+### Configure Firebase
+
+Copy `.env.example` to `.env` (or `.env.local`) and fill it with the credentials from your Firebase project. The Firebase SDK reads every variable prefixed with `EXPO_PUBLIC_` at runtime:
+
+```bash
+cp .env.example .env
+# edit .env with real values
+```
+
+Restart Expo after updating the env file so the new variables are picked up.
+
 In the output, you'll find options to open the app in a
 
 - [development build](https://docs.expo.dev/develop/development-builds/introduction/)

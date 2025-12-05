@@ -609,7 +609,7 @@ export default function ProfileScreen() {
         key: 'settings',
         label: 'Paramètres',
         icon: 'gearshape.fill',
-        image: require('@/assets/images/Paramètres.png'),
+        image: require('@/assets/images/Parametres.png'),
         tint: 'rgba(58,76,110,0.12)',
         iconColor: Colors.gray600,
         onPress: handleOpenSettings,
