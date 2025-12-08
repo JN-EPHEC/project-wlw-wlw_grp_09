@@ -239,30 +239,38 @@ export default function CompleteProfile() {
 
     const finalizeDocuments = async () => {
       if (!userEmail) return;
-      const [studentCardUrl, profileSelfieUrl] = await Promise.all([
-        uploadIfNeeded(pendingStudentCard, (uri) => uploadStudentCard({ email: userEmail, uri })),
-        uploadIfNeeded(pendingSelfie, (uri) => uploadProfileSelfie({ email: userEmail, uri })),
-      ]);
+      try {
+        const [studentCardUrl, profileSelfieUrl] = await Promise.all([
+          uploadIfNeeded(pendingStudentCard, (uri) => uploadStudentCard({ email: userEmail, uri })),
+          uploadIfNeeded(pendingSelfie, (uri) => uploadProfileSelfie({ email: userEmail, uri })),
+        ]);
 
-      if (!studentCardUrl && !profileSelfieUrl) return;
+        if (!studentCardUrl && !profileSelfieUrl) return;
 
-      await Auth.updateProfile(userEmail, {
-        name: normalizedName,
-        address: normalizedCampus,
-        phone: normalizedPhone,
-        studentCardUrl: studentCardUrl ?? pendingStudentCard ?? '',
-        avatarUrl: profileSelfieUrl ?? pendingSelfie ?? '',
-      });
+        await Auth.updateProfile(userEmail, {
+          name: normalizedName,
+          address: normalizedCampus,
+          phone: normalizedPhone,
+          studentCardUrl: studentCardUrl ?? undefined,
+          avatarUrl: profileSelfieUrl ?? undefined,
+        });
 
-      await updatePassengerProfile({
-        email: userEmail,
-        firstName: normalizedFirstName,
-        lastName: normalizedLastName,
-        campus: normalizedCampus,
-        phone: normalizedPhone,
-        studentCardUrl: studentCardUrl ?? undefined,
-        selfieUrl: profileSelfieUrl ?? undefined,
-      });
+        await updatePassengerProfile({
+          email: userEmail,
+          firstName: normalizedFirstName,
+          lastName: normalizedLastName,
+          campus: normalizedCampus,
+          phone: normalizedPhone,
+          studentCardUrl: studentCardUrl ?? undefined,
+          selfieUrl: profileSelfieUrl ?? undefined,
+        });
+      } catch (error) {
+        console.warn('Failed to upload verification documents', error);
+        Alert.alert(
+          'Synchronisation retardée',
+          'Tes documents seront téléversés dès que possible. Réessaie depuis ton profil si nécessaire.'
+        );
+      }
     };
 
     try {
@@ -273,8 +281,6 @@ export default function CompleteProfile() {
         name: normalizedName,
         address: normalizedCampus,
         phone: normalizedPhone,
-        studentCardUrl: pendingStudentCard ?? '',
-        avatarUrl: pendingSelfie ?? '',
       });
 
       await updatePassengerProfile({
@@ -286,7 +292,7 @@ export default function CompleteProfile() {
       });
 
       setUploadMessage('Téléversement de tes documents…');
-      await finalizeDocuments();
+      void finalizeDocuments();
 
       router.replace('/profile-welcome');
     } catch (error) {
