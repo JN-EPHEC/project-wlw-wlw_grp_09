@@ -27,6 +27,16 @@ cp .env.example .env
 
 Restart Expo after updating the env file so the new variables are picked up.
 
+### Debugger la vérification e-mail
+
+Pendant les tests, tu peux forcer l’affichage du « Code DEV » (habituellement limité à `__DEV__`) en ajoutant dans ton `.env` :
+
+```bash
+EXPO_PUBLIC_FORCE_DEV_VERIFICATION=1
+```
+
+Redémarre ensuite Expo : le code de vérification s’affichera dans l’écran `/verify-email`, même sur un build preview.
+
 In the output, you'll find options to open the app in a
 
 - [development build](https://docs.expo.dev/develop/development-builds/introduction/)

@@ -37,6 +37,15 @@ const MAPPING = {
   'phone.fill': 'phone',
   'magnifyingglass': 'search',
   'ellipsis.vertical': 'more-vert',
+  'bell.fill': 'notifications',
+  'speaker.wave.2.fill': 'volume-up',
+  'lock.fill': 'lock',
+  'eye.fill': 'visibility',
+  'shield.fill': 'shield',
+  'moon.stars.fill': 'nightlight-round',
+  'globe': 'public',
+  'iphone': 'smartphone',
+  'doc.text': 'description',
 } as IconMapping;
 
 /**

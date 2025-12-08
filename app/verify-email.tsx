@@ -17,6 +17,13 @@ import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { Colors, Gradients } from './ui/theme';
 
+// Allows QA/review builds to display verification codes without __DEV__.
+const shouldExposeDevCode = (() => {
+  if (__DEV__) return true;
+  const flag = process.env.EXPO_PUBLIC_FORCE_DEV_VERIFICATION ?? '';
+  return flag === '1' || flag.toLowerCase() === 'true';
+})();
+
 export default function VerifyEmail() {
   const { email } = useLocalSearchParams() as { email?: string };
   const [loading, setLoading] = useState(false);
@@ -43,7 +50,7 @@ export default function VerifyEmail() {
   }, [normalizedEmail]);
 
   useEffect(() => {
-    if (!__DEV__ || !normalizedEmail) return;
+    if (!shouldExposeDevCode || !normalizedEmail) return;
     setDevCode(Auth.getPendingVerificationCode(normalizedEmail));
   }, [normalizedEmail]);
   useEffect(() => {
@@ -110,7 +117,7 @@ export default function VerifyEmail() {
       void Haptics.selectionAsync();
       setResending(true);
       const result = await Auth.sendVerificationEmail(normalizedEmail);
-      if (__DEV__) setDevCode(result.code);
+      if (shouldExposeDevCode) setDevCode(result.code);
       setCode('');
       setCodeError(null);
       setResendTimer(RESEND_DELAY);
@@ -172,7 +179,7 @@ export default function VerifyEmail() {
             />
           </Pressable>
           {codeError ? <Text style={styles.error}>{codeError}</Text> : null}
-          {__DEV__ && devCode ? <Text style={styles.devHint}>Code DEV : {devCode}</Text> : null}
+          {shouldExposeDevCode && devCode ? <Text style={styles.devHint}>Code DEV : {devCode}</Text> : null}
 
           {status === 'verified' ? (
             <View style={styles.feedbackBox}>

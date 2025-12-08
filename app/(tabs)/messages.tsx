@@ -87,6 +87,11 @@ export default function MessagesScreen() {
     return unsubscribe;
   }, [activeThreadId, session.email]);
 
+  const activeThread = useMemo(
+    () => threads.find((thread) => thread.id === activeThreadId) ?? null,
+    [threads, activeThreadId]
+  );
+
   useEffect(() => {
     if (!activeThreadId || !session.email) return;
     markThreadAsRead(activeThreadId, session.email);
@@ -99,11 +104,6 @@ export default function MessagesScreen() {
   const selectThread = useCallback((id: string) => {
     setActiveThreadId(id);
   }, []);
-
-  const activeThread = useMemo(
-    () => threads.find((thread) => thread.id === activeThreadId) ?? null,
-    [threads, activeThreadId]
-  );
 
   const myEmail = session.email ?? '';
   const myEmailKey = myEmail.toLowerCase();

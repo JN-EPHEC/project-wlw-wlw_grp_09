@@ -37,11 +37,12 @@ export default function ReviewRideScreen() {
   const [ride, setRide] = useState<Ride | null>(() =>
     rideId ? getRide(String(rideId)) ?? null : null
   );
-  const [rating, setRating] = useState(4.5);
+  const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
   const [existingReview, setExistingReview] = useState<Review | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ratingError, setRatingError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!rideId) return;
@@ -66,6 +67,7 @@ export default function ReviewRideScreen() {
       setExistingReview(mine);
       setRating(mine.rating);
       setComment(mine.comment);
+      setRatingError(null);
     });
     return unsubscribe;
   }, [rideId, session.email]);
@@ -78,6 +80,10 @@ export default function ReviewRideScreen() {
     }
     if (!session.email) {
       router.push('/sign-up');
+      return;
+    }
+    if (rating < 0.5) {
+      setRatingError('Sélectionne une note entre 1 et 5.');
       return;
     }
     if (!departed) {
@@ -99,7 +105,7 @@ export default function ReviewRideScreen() {
         rating,
         comment: trimmed,
       });
-      Alert.alert('Merci pour ton avis', 'Ton retour aide la communauté CampusRide.', [
+      Alert.alert('Avis envoyé', 'Ton retour aide la communauté CampusRide.', [
         {
           text: 'OK',
           onPress: () => router.back(),
@@ -117,6 +123,11 @@ export default function ReviewRideScreen() {
   const onChangeComment = (value: string) => {
     if (error) setError(null);
     setComment(value);
+  };
+
+  const onChangeRating = (value: number) => {
+    if (ratingError) setRatingError(null);
+    setRating(value);
   };
 
   if (!rideId) {
@@ -213,10 +224,13 @@ export default function ReviewRideScreen() {
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Ta note</Text>
-            <RatingStars value={rating} editable onChange={setRating} size={32} />
+            <RatingStars value={rating} editable onChange={onChangeRating} size={32} />
             <Text style={styles.sectionHint}>
-              {rating.toFixed(1)}/5 • 1 = trajet à améliorer, 5 = expérience parfaite
+              {rating >= 0.5
+                ? `${rating.toFixed(1)}/5 • 1 = trajet à améliorer, 5 = expérience parfaite`
+                : 'Choisis entre 1 et 5 étoiles'}
             </Text>
+            {ratingError ? <Text style={styles.errorText}>{ratingError}</Text> : null}
           </View>
 
           <View style={styles.section}>
@@ -235,12 +249,19 @@ export default function ReviewRideScreen() {
           </View>
 
           <Pressable
-            style={[styles.primaryButton, submitting && styles.buttonDisabled]}
+            style={[
+              styles.primaryButton,
+              (submitting || rating < 0.5) && styles.buttonDisabled,
+            ]}
             onPress={onSubmit}
-            disabled={submitting}
+            disabled={submitting || rating < 0.5}
           >
             <Text style={styles.primaryButtonText}>
-              {submitting ? 'Envoi en cours…' : existingReview ? 'Mettre à jour mon avis' : 'Publier mon avis'}
+              {submitting
+                ? 'Envoi en cours…'
+                : existingReview
+                ? 'Mettre à jour mon avis'
+                : 'Publier mon avis'}
             </Text>
           </Pressable>
         </ScrollView>

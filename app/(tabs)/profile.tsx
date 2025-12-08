@@ -330,8 +330,8 @@ export default function ProfileScreen() {
   }, [router]);
 
   const handleOpenSettings = useCallback(() => {
-    Alert.alert('Paramètres', 'Personnalise ton expérience prochainement dans cette section.');
-  }, []);
+    router.push('/settings');
+  }, [router]);
 
   const handleOpenWallet = useCallback(() => {
     router.push('/wallet');

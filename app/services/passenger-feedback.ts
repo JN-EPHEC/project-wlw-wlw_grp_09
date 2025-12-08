@@ -1,6 +1,9 @@
 // app/services/passenger-feedback.ts
 // Notes laissées par le conducteur à destination des passagers.
 
+import { getRide, hasRideDeparted } from './rides';
+import { moderateComment } from './review-moderation';
+
 export type PassengerFeedback = {
   id: string;
   rideId: string;
@@ -10,6 +13,8 @@ export type PassengerFeedback = {
   comment: string | null;
   createdAt: number;
   updatedAt: number;
+  driverName: string;
+  driverAvatarColor: string;
 };
 
 type Listener = (feedback: PassengerFeedback[]) => void;
@@ -23,6 +28,8 @@ const randomId = () => Math.random().toString(36).slice(2, 11);
 const normaliseEmail = (value: string) => value.trim().toLowerCase();
 
 const clone = (items: PassengerFeedback[]) => items.map((item) => ({ ...item }));
+const sortFeedback = (items: PassengerFeedback[]) =>
+  [...items].sort((a, b) => b.createdAt - a.createdAt);
 
 const validateRating = (rating: number) => {
   if (!Number.isFinite(rating)) throw new Error('Note invalide');
@@ -31,11 +38,37 @@ const validateRating = (rating: number) => {
   return rounded;
 };
 
-const sanitiseComment = (comment: string | undefined) => {
-  if (!comment) return null;
-  const trimmed = comment.trim();
-  if (!trimmed) return null;
-  return trimmed.slice(0, 500);
+const sanitiseComment = (comment: string | undefined) => moderateComment(comment);
+
+const AVATAR_COLORS = ['#8F8DFF', '#FF9EBB', '#FFD18C', '#4FC1A6', '#91CBFF', '#C898F9'];
+
+const buildAvatarColor = (email: string) => {
+  const key = normaliseEmail(email);
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash << 5) - hash + key.charCodeAt(i);
+    hash |= 0;
+  }
+  const index = Math.abs(hash) % AVATAR_COLORS.length;
+  return AVATAR_COLORS[index];
+};
+
+const ensureRideEligibility = (rideId: string, driverEmail: string, passengerEmail: string) => {
+  const ride = getRide(rideId);
+  if (!ride) {
+    throw new Error('Trajet introuvable pour noter ce passager.');
+  }
+  if (!hasRideDeparted(ride)) {
+    throw new Error('Attends la fin du trajet pour le noter.');
+  }
+  const rideOwner = normaliseEmail(ride.ownerEmail);
+  if (rideOwner !== driverEmail) {
+    throw new Error('Seul le conducteur peut noter ses passagers.');
+  }
+  const passengerExists = ride.passengers.map(normaliseEmail).includes(passengerEmail);
+  if (!passengerExists) {
+    throw new Error('Impossible de noter un étudiant qui n’était pas sur ce trajet.');
+  }
 };
 
 const ensurePassengerListeners = (email: string) => {
@@ -71,9 +104,13 @@ export const submitPassengerFeedback = (params: {
 }) => {
   const passengerEmail = normaliseEmail(params.passengerEmail);
   const driverEmail = normaliseEmail(params.driverEmail);
+  ensureRideEligibility(params.rideId, driverEmail, passengerEmail);
   const rating = validateRating(params.rating);
   const comment = sanitiseComment(params.comment);
   const now = Date.now();
+  const ride = getRide(params.rideId);
+  const driverName = ride?.driver ?? params.driverEmail.split('@')[0] ?? 'Conducteur';
+  const driverAvatarColor = buildAvatarColor(driverEmail);
 
   const existing = feedbackStore.find(
     (entry) =>
@@ -86,6 +123,8 @@ export const submitPassengerFeedback = (params: {
     existing.rating = rating;
     existing.comment = comment;
     existing.updatedAt = now;
+    existing.driverName = driverName;
+    existing.driverAvatarColor = driverAvatarColor;
     notifyPassenger(passengerEmail);
     notifyDriver(driverEmail);
     return existing;
@@ -100,6 +139,8 @@ export const submitPassengerFeedback = (params: {
     comment,
     createdAt: now,
     updatedAt: now,
+    driverName,
+    driverAvatarColor,
   };
   feedbackStore.unshift(feedback);
   notifyPassenger(passengerEmail);
@@ -109,12 +150,12 @@ export const submitPassengerFeedback = (params: {
 
 export const getFeedbackForPassenger = (passengerEmail: string) => {
   const key = normaliseEmail(passengerEmail);
-  return clone(feedbackStore.filter((entry) => entry.passengerEmail === key));
+  return clone(sortFeedback(feedbackStore.filter((entry) => entry.passengerEmail === key)));
 };
 
 export const getFeedbackByDriver = (driverEmail: string) => {
   const key = normaliseEmail(driverEmail);
-  return clone(feedbackStore.filter((entry) => entry.driverEmail === key));
+  return clone(sortFeedback(feedbackStore.filter((entry) => entry.driverEmail === key)));
 };
 
 export const getPassengerFeedbackSummary = (passengerEmail: string) => {
