@@ -566,6 +566,7 @@ export default function Home() {
     session.isDriver && !session.isPassenger ? 'driver' : 'passenger'
   );
   const [driverReviews, setDriverReviews] = useState<Review[]>([]);
+  const autoPromptedReviews = useRef<Set<string>>(new Set());
   const driverSecurity = useDriverSecurity(session.email);
   const handleOpenBusiness = useCallback(() => {
     router.push('/business-partnership');
@@ -853,6 +854,16 @@ export default function Home() {
   const openReviewForm = (rideId: string) => {
     router.push({ pathname: '/review/[rideId]', params: { rideId } });
   };
+
+  useEffect(() => {
+    if (!session.email) return;
+    const target = ridesToRate[0];
+    if (!target) return;
+    if (autoPromptedReviews.current.has(target.id)) return;
+    autoPromptedReviews.current.add(target.id);
+    const timer = setTimeout(() => openReviewForm(target.id), 600);
+    return () => clearTimeout(timer);
+  }, [ridesToRate, session.email]);
 
   const rideAlerts = useMemo(
     () => notifications.filter((notif) => notif.metadata?.action === 'ride-published'),

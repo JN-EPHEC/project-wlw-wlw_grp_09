@@ -2,6 +2,8 @@
 // Service en mémoire pour gérer les avis conducteurs côté client.
 
 import { pushNotification } from './notifications';
+import { getRide, hasRideDeparted } from './rides';
+import { moderateComment } from './review-moderation';
 
 export type Review = {
   id: string;
@@ -32,6 +34,7 @@ const passengerListeners: Record<string, Listener[]> = {};
 const randomId = () => Math.random().toString(36).slice(2, 11);
 
 const normaliseEmail = (value: string) => value.trim().toLowerCase();
+const disabledReviewers = new Set<string>();
 
 const clone = (items: Review[]): Review[] =>
   items.map((item) => ({
@@ -39,6 +42,21 @@ const clone = (items: Review[]): Review[] =>
     response: item.response ? { ...item.response } : undefined,
   }));
 
+const filterActiveReviews = (items: Review[]) =>
+  items.filter((review) => !disabledReviewers.has(review.passengerEmail));
+
+const sortReviews = (items: Review[]) =>
+  [...items].sort((a, b) => b.createdAt - a.createdAt);
+
+const snapshot = (items: Review[]) => clone(sortReviews(filterActiveReviews(items)));
+
+export const disableReviewerAccount = (email: string) => {
+  disabledReviewers.add(normaliseEmail(email));
+};
+
+export const restoreReviewerAccount = (email: string) => {
+  disabledReviewers.delete(normaliseEmail(email));
+};
 const AVATAR_COLORS = ['#8F8DFF', '#FF9EBB', '#FFD18C', '#4FC1A6', '#91CBFF', '#C898F9'];
 
 const toDisplayName = (value: string) =>
@@ -115,33 +133,49 @@ const validateRating = (rating: number) => {
   return rounded;
 };
 
-const sanitiseComment = (comment: string | undefined) => {
-  if (comment == null) return null;
-  const value = comment.trim();
-  if (!value) {
-    return null;
+const sanitiseComment = (comment: string | undefined) => moderateComment(comment);
+
+const ensureRideEligibility = (rideId: string, driverEmail: string, passengerEmail: string) => {
+  const ride = getRide(rideId);
+  if (!ride) {
+    throw new Error('Trajet introuvable pour laisser un avis.');
   }
-  if (value.length > 600) {
-    return value.slice(0, 600);
+  if (!hasRideDeparted(ride)) {
+    throw new Error('Tu pourras noter ce trajet une fois terminé.');
   }
-  return value;
+  const rideOwner = normaliseEmail(ride.ownerEmail);
+  const driverMatches = rideOwner === driverEmail;
+  if (!driverMatches) {
+    throw new Error('Impossible de noter ce conducteur pour un autre trajet.');
+  }
+  const passengerInRide = ride.passengers.map(normaliseEmail).includes(passengerEmail);
+  if (!passengerInRide) {
+    throw new Error('Tu dois avoir participé à ce trajet pour le noter.');
+  }
+  const canceled = ride.canceledPassengers.map(normaliseEmail);
+  if (canceled.includes(passengerEmail)) {
+    throw new Error('Les passagers qui ont annulé ne peuvent pas noter ce trajet.');
+  }
+  if (driverEmail === passengerEmail) {
+    throw new Error('Impossible de t’auto-noter.');
+  }
 };
 
-export const getAllReviews = () => clone(reviews);
+export const getAllReviews = () => snapshot(reviews);
 
 export const getReviewsForDriver = (driverEmail: string) => {
   const key = normaliseEmail(driverEmail);
-  return clone(reviews.filter((review) => review.driverEmail === key));
+  return snapshot(reviews.filter((review) => review.driverEmail === key));
 };
 
 export const getReviewsForRide = (rideId: string) => {
   const key = rideId.trim();
-  return clone(reviews.filter((review) => review.rideId === key));
+  return snapshot(reviews.filter((review) => review.rideId === key));
 };
 
 export const getReviewsForPassenger = (passengerEmail: string) => {
   const key = normaliseEmail(passengerEmail);
-  return clone(reviews.filter((review) => review.passengerEmail === key));
+  return snapshot(reviews.filter((review) => review.passengerEmail === key));
 };
 
 export const findReview = (rideId: string, passengerEmail: string) => {
@@ -154,7 +188,9 @@ export const findReview = (rideId: string, passengerEmail: string) => {
 };
 
 export const getDriverRatingSummary = (driverEmail: string) => {
-  const driverReviews = getReviewsForDriver(driverEmail);
+  const driverReviews = snapshot(
+    reviews.filter((review) => review.driverEmail === normaliseEmail(driverEmail))
+  );
   if (driverReviews.length === 0) {
     return { average: 0, count: 0 };
   }
@@ -215,6 +251,7 @@ export const submitReview = (payload: ReviewPayload) => {
   const rideId = payload.rideId.trim();
   const driverEmail = normaliseEmail(payload.driverEmail);
   const passengerEmail = normaliseEmail(payload.passengerEmail);
+  ensureRideEligibility(rideId, driverEmail, passengerEmail);
   const rating = validateRating(payload.rating);
   const comment = sanitiseComment(payload.comment);
   const passengerName = buildPassengerName(passengerEmail, payload.passengerName);

@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 
 import { ReviewCard } from '@/components/review-card';
+import { PassengerFeedbackCard } from '@/components/passenger-feedback-card';
 import { AppBackground } from '@/components/ui/app-background';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import {
@@ -22,6 +23,10 @@ import {
   subscribeDriverReviews,
   type Review,
 } from '@/app/services/reviews';
+import {
+  subscribePassengerFeedback,
+  type PassengerFeedback,
+} from '@/app/services/passenger-feedback';
 import { createReport } from '@/app/services/reports';
 import {
   Colors,
@@ -39,6 +44,7 @@ export default function DriverReviewsScreen() {
   const driverEmail = (email ?? '').toLowerCase();
 
   const [reviews, setReviews] = useState<Review[]>([]);
+  const [passengerFeedback, setPassengerFeedback] = useState<PassengerFeedback[]>([]);
   const [respondTarget, setRespondTarget] = useState<Review | null>(null);
   const [responseDraft, setResponseDraft] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -50,12 +56,35 @@ export default function DriverReviewsScreen() {
     return unsubscribe;
   }, [driverEmail]);
 
-  const ratingSummary = useMemo(() => {
+  useEffect(() => {
+    if (!driverEmail) return;
+    const unsubscribe = subscribePassengerFeedback(driverEmail, setPassengerFeedback);
+    return unsubscribe;
+  }, [driverEmail]);
+
+  const driverSummary = useMemo(() => {
     if (reviews.length === 0) return { average: 0, count: 0 };
     const total = reviews.reduce((acc, review) => acc + review.rating, 0);
     const average = Math.round((total / reviews.length) * 10) / 10;
     return { average, count: reviews.length };
   }, [reviews]);
+
+  const passengerSummary = useMemo(() => {
+    if (passengerFeedback.length === 0) return { average: 0, count: 0 };
+    const total = passengerFeedback.reduce((acc, entry) => acc + entry.rating, 0);
+    const average = Math.round((total / passengerFeedback.length) * 10) / 10;
+    return { average, count: passengerFeedback.length };
+  }, [passengerFeedback]);
+
+  const aggregatedSummary = useMemo(() => {
+    const totalCount = driverSummary.count + passengerSummary.count;
+    if (totalCount === 0) return { average: 0, count: 0 };
+    const totalScore =
+      driverSummary.average * driverSummary.count +
+      passengerSummary.average * passengerSummary.count;
+    const average = Math.round((totalScore / totalCount) * 10) / 10;
+    return { average, count: totalCount };
+  }, [driverSummary, passengerSummary]);
 
   const canRespond = session.email?.toLowerCase() === driverEmail;
 
@@ -150,24 +179,65 @@ export default function DriverReviewsScreen() {
           </Pressable>
           <Text style={styles.title}>Avis sur {driverDisplay}</Text>
           <Text style={styles.subtitle}>
-            {ratingSummary.count > 0
-              ? `${ratingSummary.average.toFixed(1)}/5 • ${ratingSummary.count} avis`
+            {aggregatedSummary.count > 0
+              ? `${aggregatedSummary.average.toFixed(1)}/5 • ${aggregatedSummary.count} avis`
               : 'Aucun avis pour le moment.'}
           </Text>
         </View>
 
-        {reviews.length > 0 ? (
-          reviews.map((review) => (
-            <ReviewCard
-              key={review.id}
-              review={review}
-              onRespond={canRespond ? openRespondModal : undefined}
-              onReport={reportReview}
-            />
-          ))
-        ) : (
-          <Text style={styles.empty}>Ce conducteur n’a pas encore reçu d’avis.</Text>
-        )}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Expérience en tant que conducteur</Text>
+          <Text style={styles.sectionSubtitle}>
+            {driverSummary.count > 0
+              ? `${driverSummary.average.toFixed(1)}/5 • ${driverSummary.count} avis`
+              : 'Pas encore de note côté conducteur'}
+          </Text>
+          {reviews.length > 0 ? (
+            reviews.map((review) => (
+              <ReviewCard
+                key={review.id}
+                review={review}
+                onRespond={canRespond ? openRespondModal : undefined}
+                onReport={reportReview}
+              />
+            ))
+          ) : (
+            <Text style={styles.empty}>Ce conducteur n’a pas encore reçu d’avis.</Text>
+          )}
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Fiabilité en tant que passager</Text>
+          <Text style={styles.sectionSubtitle}>
+            {passengerSummary.count > 0
+              ? `${passengerSummary.average.toFixed(1)}/5 • ${passengerSummary.count} avis`
+              : 'Pas encore d’avis côté passager'}
+          </Text>
+          {passengerFeedback.length > 0 ? (
+            passengerFeedback.map((entry) => (
+              <PassengerFeedbackCard
+                key={entry.id}
+                feedback={entry}
+                onReport={(feedback) => {
+                  if (!session.email) {
+                    router.push('/sign-up');
+                    return;
+                  }
+                  createReport({
+                    reporterEmail: session.email,
+                    targetEmail: feedback.driverEmail,
+                    rideId: feedback.rideId,
+                    reason: 'inappropriate-behaviour',
+                    metadata: { context: 'passenger-feedback', driverEmail },
+                  });
+                  Alert.alert('Signalement envoyé', 'Notre équipe va analyser cet avis.');
+                }}
+              />
+            ))
+          ) : (
+            <Text style={styles.empty}>Aucun avis laissé par les conducteurs pour ce membre.</Text>
+          )}
+        </View>
         </ScrollView>
       </SafeAreaView>
 
@@ -274,6 +344,18 @@ const styles = StyleSheet.create({
   subtitle: {
     color: C.gray600,
     fontSize: 14,
+  },
+  section: {
+    gap: Spacing.sm,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: C.ink,
+  },
+  sectionSubtitle: {
+    color: C.gray600,
+    fontSize: 13,
   },
   empty: {
     color: C.gray600,
