@@ -172,6 +172,7 @@ export default function SignUp() {
         email,
         phone: "",
         campus: "",
+        rgpdAccepted: true,
       });
 
       // 2. Envoi de l’e-mail de vérification Firebase

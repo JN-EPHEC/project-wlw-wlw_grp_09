@@ -46,6 +46,7 @@ export default function VerifyEmail() {
     if (!__DEV__ || !normalizedEmail) return;
     setDevCode(Auth.getPendingVerificationCode(normalizedEmail));
   }, [normalizedEmail]);
+
   useEffect(() => {
     let mounted = true;
     const check = () => {
@@ -110,7 +111,9 @@ export default function VerifyEmail() {
       void Haptics.selectionAsync();
       setResending(true);
       const result = await Auth.sendVerificationEmail(normalizedEmail);
-      if (__DEV__) setDevCode(result.code);
+      if (__DEV__) {
+        setDevCode(result?.code ?? null);
+      }
       setCode('');
       setCodeError(null);
       setResendTimer(RESEND_DELAY);
@@ -323,9 +326,5 @@ const styles = StyleSheet.create({
     width: 0,
   },
   error: { color: Colors.danger, marginTop: 6 },
-  devHint: {
-    marginTop: 6,
-    fontSize: 12,
-    color: Colors.gray500,
-  },
+  devHint: { marginTop: 6, fontSize: 12, color: Colors.gray500 },
 });

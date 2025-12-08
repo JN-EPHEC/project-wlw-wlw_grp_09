@@ -19,6 +19,7 @@ export async function savePassenger({
   campus = "",
   studentCardUrl,
   selfieUrl,
+  rgpdAccepted = false,
 }) {
   const payload = {
     firstName,
@@ -32,6 +33,10 @@ export async function savePassenger({
 
   if (studentCardUrl) payload.studentCardUrl = studentCardUrl;
   if (selfieUrl) payload.selfieUrl = selfieUrl;
+  if (rgpdAccepted) {
+    payload.rgpdAccepted = true;
+    payload.rgpdAcceptedAt = serverTimestamp();
+  }
 
   const docRef = await addDoc(usersCol, payload);
 
@@ -86,6 +91,7 @@ export async function updatePassengerProfile({
       campus,
       studentCardUrl,
       selfieUrl,
+      rgpdAccepted: true,
     });
   }
 

@@ -1,8 +1,8 @@
 import { router } from 'expo-router';
 import { Image, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
-import { AppBackground } from '@/components/ui/app-background';
 import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
+import { AppBackground } from '@/components/ui/app-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 
 export default function AccountCompleteScreen() {
