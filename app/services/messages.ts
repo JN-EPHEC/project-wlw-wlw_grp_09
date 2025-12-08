@@ -282,6 +282,7 @@ export const ensureDemoThreads = (email: string) => {
         { author: 'amelie@students.ephec.be', body: 'Hello ! Je peux embarquer ma valise cabine ?', offsetHours: -6 },
         { author: key, body: 'Oui bien sûr, je te garde la place arrière gauche.', offsetHours: -6 + 0.05 },
         { author: 'amelie@students.ephec.be', body: 'Merci ! On se retrouve sur le parking vélo.', offsetHours: -5.5 },
+        { author: key, body: 'Parfait, j’y serai 10 minutes avant.', offsetHours: -5.25 },
       ],
     },
     {
@@ -294,6 +295,24 @@ export const ensureDemoThreads = (email: string) => {
       messages: [
         { author: key, body: 'Salut Louis, est-ce que je peux prendre la place fenêtre ?', offsetHours: -12 },
         { author: 'louis@students.ephec.be', body: 'Yes, tu peux te mettre à l’arrière droite 👍', offsetHours: -12 + 0.15 },
+        { author: key, body: 'Top, je passerai prendre un café en route.', offsetHours: -11.5 },
+        { author: 'louis@students.ephec.be', body: 'Préviens-moi si tu es en avance 😉', offsetHours: -11.45 },
+      ],
+    },
+    {
+      rideId: 'ride-campus-tour',
+      route: 'EPHEC LLN → Mons Expo',
+      participants: [
+        { email: key, name: 'Toi', role: 'passenger' },
+        { email: 'charlotte@campusride.be', name: 'Charlotte', role: 'driver' },
+      ],
+      messages: [
+        { author: 'charlotte@campusride.be', body: 'Hey ! Départ à 14h20 pile, ça te convient ?', offsetHours: -30 },
+        { author: key, body: "Oui ça marche, je finis mon cours à 14h, je te rejoins direct.", offsetHours: -29.8 },
+        { author: 'charlotte@campusride.be', body: 'Super, ramène ton badge étudiant pour le parking.', offsetHours: -29.75 },
+        { author: key, body: 'Merci du rappel 🙌', offsetHours: -29.7 },
+        { author: 'charlotte@campusride.be', body: 'Je t’enverrai ma plaque dans le chat plus tard.', offsetHours: -24 },
+        { author: key, body: 'Reçu, à tout à l’heure !', offsetHours: -23.5 },
       ],
     },
   ];

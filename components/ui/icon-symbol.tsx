@@ -36,6 +36,7 @@ const MAPPING = {
   'envelope.fill': 'mail',
   'phone.fill': 'phone',
   'magnifyingglass': 'search',
+  'ellipsis.vertical': 'more-vert',
 } as IconMapping;
 
 /**
