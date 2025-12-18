@@ -28,6 +28,7 @@ const MAPPING = {
   'car.fill': 'directions-car',
   'shield.checkerboard': 'shield',
   'checkmark.seal.fill': 'verified',
+  'star.fill': 'star',
   'exclamationmark.triangle': 'warning',
   'location.fill': 'location-on',
   'calendar': 'calendar-today',
@@ -46,6 +47,14 @@ const MAPPING = {
   'globe': 'public',
   'iphone': 'smartphone',
   'doc.text': 'description',
+  'graduationcap.fill': 'school',
+  'arrow.up.arrow.down': 'swap-vert',
+  'sparkles': 'auto-awesome',
+  'person.fill': 'person',
+  'creditcard.fill': 'credit-card',
+  'arrow.up.right.square': 'open-in-new',
+  'lock.shield.fill': 'admin-panel-settings',
+  plus: 'add',
 } as IconMapping;
 
 /**

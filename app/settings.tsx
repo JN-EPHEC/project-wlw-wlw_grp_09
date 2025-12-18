@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { ReactNode, useMemo, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Pressable,
@@ -14,6 +14,14 @@ import {
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { Colors, Gradients, Radius, Shadows, Spacing, Typography } from '@/app/ui/theme';
+import PrivacyPolicyModal from '@/components/privacy-policy-modal';
+import { useAuthSession } from '@/hooks/use-auth-session';
+import {
+  getNotificationPreferences,
+  subscribeNotificationPreferences,
+  updateNotificationPreferences,
+  type NotificationPreferences,
+} from '@/app/services/notifications';
 
 const C = Colors;
 
@@ -24,23 +32,75 @@ const useSettingSwitch = (initial: boolean): [boolean, (value: boolean) => void]
 };
 
 export default function SettingsScreen() {
-  const [pushEnabled, setPushEnabled] = useSettingSwitch(true);
-  const [soundEnabled, setSoundEnabled] = useSettingSwitch(true);
+  const session = useAuthSession();
+  const email = session.email;
+  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPreferences | null>(null);
+  const [soundEnabledLocal, setSoundEnabledLocal] = useState(true);
+  const [remindersEnabledLocal, setRemindersEnabledLocal] = useState(true);
+
+  useEffect(() => {
+    if (!email) {
+      setNotificationPrefs(null);
+      setSoundEnabledLocal(true);
+      setRemindersEnabledLocal(true);
+      return;
+    }
+    const current = getNotificationPreferences(email);
+    setNotificationPrefs(current);
+    setSoundEnabledLocal(current.soundEnabled);
+    setRemindersEnabledLocal(current.remindersEnabled);
+    const unsubscribe = subscribeNotificationPreferences(email, (prefs) => {
+      setNotificationPrefs(prefs);
+      setSoundEnabledLocal(prefs.soundEnabled);
+      setRemindersEnabledLocal(prefs.remindersEnabled);
+    });
+    return unsubscribe;
+  }, [email]);
+
   const [locationSharing, setLocationSharing] = useSettingSwitch(true);
+  const [privacyVisible, setPrivacyVisible] = useState(false);
 
   const aboutVersion = useMemo(() => '1.0.0', []);
 
-  const openChangePassword = () =>
-    Alert.alert('Changer le mot de passe', 'Fonctionnalité disponible très bientôt.');
+  const openChangePassword = () => router.push('/change-password');
 
-  const openPrivacyPolicy = () =>
-    Alert.alert('Politique de confidentialité', 'Retrouve toutes les infos très bientôt.');
+  const openPrivacyPolicy = () => setPrivacyVisible(true);
+  const closePrivacyPolicy = () => setPrivacyVisible(false);
 
   const openLanguageSelector = () =>
     Alert.alert('Langue', 'Les autres langues arrivent prochainement.');
 
   const openTerms = () =>
     Alert.alert('Conditions d’utilisation', 'Document disponible prochainement.');
+
+  const handlePushChange = (value: boolean) => {
+    if (!email) {
+      Alert.alert('Connexion requise', 'Connecte-toi pour modifier les notifications.');
+      return;
+    }
+    updateNotificationPreferences(email, { pushEnabled: value });
+  };
+
+  const handleSoundChange = (value: boolean) => {
+    if (!email) {
+      Alert.alert('Connexion requise', 'Connecte-toi pour modifier les notifications.');
+      return;
+    }
+    setSoundEnabledLocal(value);
+    updateNotificationPreferences(email, { soundEnabled: value });
+  };
+
+  const handleReminderChange = (value: boolean) => {
+    if (!email) {
+      Alert.alert('Connexion requise', 'Connecte-toi pour modifier les notifications.');
+      return;
+    }
+    setRemindersEnabledLocal(value);
+    updateNotificationPreferences(email, { remindersEnabled: value });
+  };
+
+  const pushEnabled = notificationPrefs?.pushEnabled ?? false;
+  const remindersEnabled = notificationPrefs?.remindersEnabled ?? remindersEnabledLocal;
 
   return (
     <GradientBackground colors={Gradients.background} style={styles.gradient}>
@@ -66,16 +126,30 @@ export default function SettingsScreen() {
               <ToggleCard
                 icon="bell.fill"
                 title="Notifications push"
-                subtitle="Recevoir les alertes de trajets"
+                subtitle={
+                  email
+                    ? 'Recevoir les alertes de trajets'
+                    : 'Connecte-toi pour activer'
+                }
                 value={pushEnabled}
-                onChange={setPushEnabled}
+                onChange={handlePushChange}
+                disabled={!email}
+              />
+              <ToggleCard
+                icon="clock"
+                title="Rappels de trajet"
+                subtitle="Notification 30 min avant le départ"
+                value={remindersEnabled && pushEnabled}
+                onChange={handleReminderChange}
+                disabled={!email || !pushEnabled}
               />
               <ToggleCard
                 icon="speaker.wave.2.fill"
                 title="Sons"
                 subtitle="Sons des notifications"
-                value={soundEnabled}
-                onChange={setSoundEnabled}
+                value={soundEnabledLocal && pushEnabled}
+                onChange={handleSoundChange}
+                disabled={!email || !pushEnabled}
               />
             </SettingsSection>
 
@@ -126,6 +200,7 @@ export default function SettingsScreen() {
               <NavigationRow title="Conditions d'utilisation" onPress={openTerms} />
             </View>
           </View>
+          <PrivacyPolicyModal visible={privacyVisible} onClose={closePrivacyPolicy} />
         </ScrollView>
       </SafeAreaView>
     </GradientBackground>
@@ -249,7 +324,7 @@ const styles = StyleSheet.create({
     letterSpacing: Typography.heading.letterSpacing,
   },
   card: {
-    marginTop: Spacing.xl,
+    marginTop: Spacing.xxl,
     backgroundColor: '#fff',
     borderRadius: 36,
     padding: Spacing.xl,

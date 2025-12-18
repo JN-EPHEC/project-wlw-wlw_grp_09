@@ -251,7 +251,12 @@ export const submitReview = (payload: ReviewPayload) => {
   const rideId = payload.rideId.trim();
   const driverEmail = normaliseEmail(payload.driverEmail);
   const passengerEmail = normaliseEmail(payload.passengerEmail);
-  ensureRideEligibility(rideId, driverEmail, passengerEmail);
+  const manualEntry = rideId.startsWith('manual-');
+  if (!manualEntry) {
+    ensureRideEligibility(rideId, driverEmail, passengerEmail);
+  } else if (driverEmail === passengerEmail) {
+    throw new Error('Impossible de t’auto-noter.');
+  }
   const rating = validateRating(payload.rating);
   const comment = sanitiseComment(payload.comment);
   const passengerName = buildPassengerName(passengerEmail, payload.passengerName);
@@ -371,9 +376,9 @@ export const estimateRatingConfidence = ({ completedRides, averageRating }: Rati
     {
       id: 'review-seed-1',
       rideId: 'seed-1',
-      driverEmail: 'lina.dupont@ephec.be',
+      driverEmail: 'lina.dupont@students.ephec.be',
       driverName: 'Lina Dupont',
-      passengerEmail: 'marc.durand@ephec.be',
+      passengerEmail: 'marc.durand@students.ephec.be',
       passengerName: 'Marc',
       rating: 4.8,
       comment: 'Trajet très agréable, véhicule propre et arrivée à l’heure.',
@@ -388,9 +393,9 @@ export const estimateRatingConfidence = ({ completedRides, averageRating }: Rati
     {
       id: 'review-seed-2',
       rideId: 'seed-2',
-      driverEmail: 'bilal.nasser@ephec.be',
+      driverEmail: 'bilal.nasser@students.ephec.be',
       driverName: 'Bilal Nasser',
-      passengerEmail: 'lea.fernandez@ephec.be',
+      passengerEmail: 'lea.fernandez@students.ephec.be',
       passengerName: 'Léa',
       rating: 4.6,
       comment: 'Bonne ambiance dans la voiture, Bilal est très sympa.',

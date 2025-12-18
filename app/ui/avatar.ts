@@ -16,8 +16,11 @@ const clampSize = (size: number) => Math.max(48, Math.min(256, Math.round(size))
 
 const PRESET_AVATARS: Record<string, string> = {
   'bilal.nasser@ephec.be': 'https://randomuser.me/api/portraits/men/52.jpg',
+  'bilal.nasser@students.ephec.be': 'https://randomuser.me/api/portraits/men/52.jpg',
   'lina.dupont@ephec.be': 'https://randomuser.me/api/portraits/women/68.jpg',
+  'lina.dupont@students.ephec.be': 'https://randomuser.me/api/portraits/women/68.jpg',
   'eya.azouzi@ephec.be': 'https://randomuser.me/api/portraits/women/24.jpg',
+  'eya.azouzi@students.ephec.be': 'https://randomuser.me/api/portraits/women/24.jpg',
 };
 
 const PRESET_BY_NAME: Record<string, string> = {

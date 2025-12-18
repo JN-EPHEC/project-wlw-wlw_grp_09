@@ -1,6 +1,6 @@
 import { ref, uploadString, getDownloadURL } from "firebase/storage";
 import * as FileSystem from "expo-file-system";
-import { storage } from "./firebase";
+import { auth, storage } from "./firebase";
 
 const MIME_BY_EXTENSION = {
   jpg: "image/jpeg",
@@ -26,8 +26,7 @@ const DEFAULT_MIME = "image/jpeg";
 
 const sanitizeSegment = (value) =>
   value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-");
 
@@ -70,19 +69,31 @@ const uploadDataUrl = async (dataUrl, path) => {
   return getDownloadURL(storageRef);
 };
 
-const buildPath = (email, folder, label, extension) => {
-  const safeEmail = sanitizeSegment(email);
+const requireCurrentUserContext = (email) => {
+  const user = auth.currentUser;
+  if (!user || !user.uid) {
+    throw new Error("Authentification requise pour l'upload.");
+  }
+  const targetEmail = email?.trim() || user.email;
+  if (!targetEmail) {
+    throw new Error("Adresse email requise pour l'upload.");
+  }
+  return { uid: user.uid, email: targetEmail };
+};
+
+const buildPath = (uid, folder, label, extension) => {
+  const safeFolder = sanitizeSegment(folder);
   const safeLabel = sanitizeSegment(label);
   const timestamp = Date.now();
-  return `users/${safeEmail}/${folder}/${safeLabel}-${timestamp}.${extension}`;
+  return `users/${uid}/${safeFolder}/${safeLabel}-${timestamp}.${extension}`;
 };
 
 export const uploadUserDocument = async ({ email, folder, label, uri }) => {
-  if (!email) throw new Error("Adresse email requise pour l'upload.");
   if (!uri) throw new Error("Fichier manquant.");
+  const { uid } = requireCurrentUserContext(email);
   const { dataUrl, mimeType } = await toDataUrl(uri);
   const extension = EXTENSION_BY_MIME[mimeType] ?? "jpg";
-  const path = buildPath(email, folder, label, extension);
+  const path = buildPath(uid, folder, label, extension);
   return uploadDataUrl(dataUrl, path);
 };
 

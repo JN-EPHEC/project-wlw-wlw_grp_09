@@ -19,6 +19,7 @@ import {
   View,
 } from 'react-native';
 import { PinchGestureHandler, State } from 'react-native-gesture-handler';
+import * as Location from 'expo-location';
 
 import { RideMap } from '../../components/ride-map';
 import { AppBackground } from '@/components/ui/app-background';
@@ -61,6 +62,7 @@ import {
 import { getDistanceKm, getDurationMinutes } from '../services/distance';
 import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
 import { getAvatarUrl } from '../ui/avatar';
+import { BRUSSELS_COMMUNES } from '@/constants/communes';
 
 const DefaultColors = {
   primary: '#E63946',
@@ -140,6 +142,49 @@ const RESULT_FILTERS = [
 
 type ResultFilterId = (typeof RESULT_FILTERS)[number]['id'];
 type ResultsFilterAnchor = 'search';
+type ExploreParams = { edit?: string; depart?: string; campus?: string };
+
+const derivePseudoRating = (ride: Ride) => {
+  const seed = ride.driver.length + ride.destination.length;
+  const base = 4 + (seed % 10) / 20;
+  return Math.min(4.9, Math.round(base * 10) / 10);
+};
+
+type PriceFilterId = 'all' | 'lt4' | '4to6' | 'gt6';
+const PRICE_FILTERS: { id: PriceFilterId; label: string; predicate: (price: number) => boolean }[] = [
+  { id: 'all', label: 'Tous', predicate: () => true },
+  { id: 'lt4', label: '<4€', predicate: (price) => price < 4 },
+  { id: '4to6', label: '4€-6€', predicate: (price) => price >= 4 && price <= 6 },
+  { id: 'gt6', label: '>6€', predicate: (price) => price > 6 },
+];
+
+type DurationFilterId = 'all' | 'short' | 'medium' | 'long';
+const DURATION_FILTERS: { id: DurationFilterId; label: string; predicate: (minutes: number) => boolean }[] = [
+  { id: 'all', label: 'Toutes', predicate: () => true },
+  { id: 'short', label: '<30 min', predicate: (minutes) => minutes > 0 && minutes < 30 },
+  { id: 'medium', label: '30-45 min', predicate: (minutes) => minutes >= 30 && minutes <= 45 },
+  { id: 'long', label: '>45 min', predicate: (minutes) => minutes > 45 },
+];
+
+type HourFilterId = 'all' | 'morning' | 'afternoon' | 'evening' | 'night';
+const HOUR_FILTERS: { id: HourFilterId; label: string; range: [number, number] | null }[] = [
+  { id: 'all', label: 'Toutes', range: null },
+  { id: 'morning', label: 'Matin', range: [5 * 60, 11 * 60] },
+  { id: 'afternoon', label: 'Après-midi', range: [11 * 60, 16 * 60] },
+  { id: 'evening', label: 'Soir', range: [16 * 60, 21 * 60] },
+  { id: 'night', label: 'Nuit', range: [21 * 60, 24 * 60] },
+];
+
+const normalizeText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+const timeToMinutes = (value: string) => {
+  const [hours, minutes] = value.split(':').map((part) => parseInt(part, 10) || 0);
+  return hours * 60 + minutes;
+};
 
 const isTime = (s: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
 type QuickSuggestion = {
@@ -152,16 +197,25 @@ type QuickSuggestion = {
 
 export default function ExplorePublish() {
   const session = useAuthSession();
+  const params = useLocalSearchParams<ExploreParams>();
   const passengerOnly = session.isPassenger && !session.isDriver;
+  const initialDepart = typeof params.depart === 'string' ? params.depart : undefined;
+  const initialDestination = typeof params.campus === 'string' ? params.campus : undefined;
+  const editId = typeof params.edit === 'string' ? params.edit : undefined;
   if (passengerOnly) {
-    return <PassengerPublishScreen session={session} />;
+    return (
+      <PassengerPublishScreen
+        session={session}
+        initialDepart={initialDepart}
+        initialDestination={initialDestination}
+      />
+    );
   }
-  return <DriverPublishScreen session={session} />;
+  return <DriverPublishScreen session={session} params={{ edit: editId }} />;
 }
 
-function DriverPublishScreen({ session }: { session: AuthSnapshot }) {
+function DriverPublishScreen({ session, params }: { session: AuthSnapshot; params: { edit?: string } }) {
   const router = useRouter();
-  const params = useLocalSearchParams<{ edit?: string }>();
   const driverSecurity = useDriverSecurity(session.email);
   const contentBottomInset = useTabBarInset(Spacing.xl);
   const openDriverVerification = useCallback(() => {
@@ -875,7 +929,15 @@ function DriverPublishScreen({ session }: { session: AuthSnapshot }) {
   );
 }
 
-function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
+function PassengerPublishScreen({
+  session,
+  initialDepart,
+  initialDestination,
+}: {
+  session: AuthSnapshot;
+  initialDepart?: string;
+  initialDestination?: string;
+}) {
   const router = useRouter();
   const scrollRef = useRef<ScrollView | null>(null);
   const tabBarInset = useTabBarInset(Spacing.xl);
@@ -922,8 +984,8 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
     next.setHours(0, 0, 0, 0);
     return next;
   }, []);
-  const [fromCampus, setFromCampus] = useState('Ixelles');
-  const [toCampus, setToCampus] = useState('EPHEC Woluwe');
+  const [fromCampus, setFromCampus] = useState(initialDepart || 'Ixelles');
+  const [toCampus, setToCampus] = useState(initialDestination || 'EPHEC Woluwe');
   const [selectedDate, setSelectedDate] = useState(defaultTomorrow);
   const [travelTime, setTravelTime] = useState('09:00');
   const [showDestList, setShowDestList] = useState(false);
@@ -932,9 +994,11 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(selectedDate.getMonth());
   const [calendarYear, setCalendarYear] = useState(selectedDate.getFullYear());
-  const campusOptions = ['EPHEC Woluwe', 'EPHEC Delta', 'EPHEC LLN', 'EPHEC Schaerbeek'];
-  const communeOptions = ['Ma position actuelle', 'Woluwe-Saint-Lambert', 'Jette', 'Parc du Cinquantenaire', 'Ixelles', 'Schaerbeek'];
+  const campusOptions = ['EPHEC Woluwe', 'EPHEC Delta', 'EPHEC Louvain-la-Neuve', 'EPHEC Schaerbeek'];
+  const campusFilterOptions = useMemo(() => ['all', ...campusOptions], [campusOptions]);
   const [rides, setRides] = useState<Ride[]>([]);
+  const [ridesReady, setRidesReady] = useState(false);
+  const [locationLoading, setLocationLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<Ride[]>([]);
   const [resultsFilterState, setResultsFilterState] = useState<{
     visible: boolean;
@@ -942,11 +1006,29 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
   }>({ visible: false, anchor: 'search' });
   const [activeResultFilter, setActiveResultFilter] = useState<ResultFilterId>('recommended');
   const [onlyAvailableSeats, setOnlyAvailableSeats] = useState(true);
+  const [priceFilter, setPriceFilter] = useState<PriceFilterId>('all');
+  const [durationFilter, setDurationFilter] = useState<DurationFilterId>('all');
+  const [campusFilter, setCampusFilter] = useState<string>('all');
+  const [hourFilter, setHourFilter] = useState<HourFilterId>('all');
   const [searchPerformed, setSearchPerformed] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [searchInstance, setSearchInstance] = useState(0);
   const [resultsOffset, setResultsOffset] = useState<number | null>(null);
   const [showAllRides, setShowAllRides] = useState(false);
+  const initialSearchTriggered = useRef(false);
+  const fromBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (initialDepart) {
+      setFromCampus(initialDepart);
+    }
+  }, [initialDepart]);
+
+  useEffect(() => {
+    if (initialDestination) {
+      setToCampus(initialDestination);
+    }
+  }, [initialDestination]);
   const filterPanelAnchor = resultsFilterState.visible ? resultsFilterState.anchor : null;
   const toggleResultsFilters = useCallback(
     (anchor: ResultsFilterAnchor) => {
@@ -986,6 +1068,11 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
     if (!Number.isFinite(distance)) return Number.MAX_SAFE_INTEGER;
     return distance;
   }, []);
+  const getRideDuration = useCallback((ride: Ride) => {
+    const minutes = getDurationMinutes(ride.depart, ride.destination);
+    if (!Number.isFinite(minutes)) return Number.MAX_SAFE_INTEGER;
+    return minutes;
+  }, []);
   const upcomingHomeRides = useMemo(
     () =>
       rides
@@ -1019,6 +1106,43 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
       if (onlyAvailableSeats) {
         filtered = filtered.filter((ride) => ride.passengers.length < ride.seats);
       }
+      if (priceFilter !== 'all') {
+        const predicate = PRICE_FILTERS.find((entry) => entry.id === priceFilter)?.predicate;
+        if (predicate) {
+          filtered = filtered.filter((ride) => predicate(ride.price));
+        }
+      }
+      if (durationFilter !== 'all') {
+        const predicate = DURATION_FILTERS.find((entry) => entry.id === durationFilter)?.predicate;
+        if (predicate) {
+          filtered = filtered.filter((ride) => {
+            const minutes = getRideDuration(ride);
+            if (minutes === Number.MAX_SAFE_INTEGER) return false;
+            return predicate(minutes);
+          });
+        }
+      }
+      if (campusFilter !== 'all') {
+        const campusKey = normalizeText(campusFilter);
+        filtered = filtered.filter((ride) =>
+          normalizeText(ride.destination).includes(campusKey)
+        );
+      }
+      if (hourFilter !== 'all') {
+        const entry = HOUR_FILTERS.find((item) => item.id === hourFilter);
+        filtered = filtered.filter((ride) => {
+          const minutes = timeToMinutes(ride.time);
+          if (!Number.isFinite(minutes)) return false;
+          if (!entry || !entry.range) return true;
+          const [start, end] = entry.range;
+          if (hourFilter === 'night') {
+            const wrapLimit = 5 * 60;
+            if (minutes >= start) return true;
+            return minutes < wrapLimit;
+          }
+          return minutes >= start && minutes < end;
+        });
+      }
       switch (activeResultFilter) {
         case 'earliest':
           filtered.sort((a, b) => a.departureAt - b.departureAt);
@@ -1041,7 +1165,16 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
       }
       return filtered;
     },
-    [onlyAvailableSeats, activeResultFilter, getRideDistance]
+    [
+      onlyAvailableSeats,
+      activeResultFilter,
+      getRideDistance,
+      priceFilter,
+      durationFilter,
+      campusFilter,
+      hourFilter,
+      getRideDuration,
+    ]
   );
   const filteredSearchResults = useMemo(
     () => applyRideFilters(scopedResults),
@@ -1123,16 +1256,72 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
     setShowDestList(false);
     setShowFromList(false);
   }, [animateDropdown]);
-  const toggleFromList = useCallback(() => {
-    animateDropdown();
-    setShowFromList((prev) => {
-      const next = !prev;
-      if (next) {
-        setShowDestList(false);
+  const communeSuggestions = useMemo(() => {
+    const query = fromCampus.trim().toLowerCase();
+    const base =
+      query.length === 0
+        ? BRUSSELS_COMMUNES.slice(0, 6)
+        : BRUSSELS_COMMUNES.filter((commune) => commune.toLowerCase().includes(query)).slice(0, 10);
+    const unique = Array.from(new Set(base));
+    return ['Ma position actuelle', ...unique];
+  }, [fromCampus]);
+
+  const handleUseLocation = useCallback(async () => {
+    try {
+      setLocationLoading(true);
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== Location.PermissionStatus.GRANTED) {
+        Alert.alert(
+          'Localisation désactivée',
+          'Active la localisation pour suggérer automatiquement ta commune.'
+        );
+        return;
       }
-      return next;
-    });
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      const places = await Location.reverseGeocodeAsync(position.coords);
+      const raw = places[0];
+      const resolveMatch = () => {
+        const candidates = [raw?.district, raw?.city, raw?.subregion, raw?.region];
+        for (const candidate of candidates) {
+          if (!candidate) continue;
+          const key = candidate.toLowerCase();
+          const match = BRUSSELS_COMMUNES.find((commune) => key.includes(commune.toLowerCase()));
+          if (match) return match;
+        }
+        return candidates.find((candidate) => !!candidate) ?? 'Bruxelles';
+      };
+      const resolved = resolveMatch();
+      setFromCampus(resolved);
+      setShowFromList(false);
+      setShowDestList(false);
+    } catch {
+      Alert.alert(
+        'Position indisponible',
+        'Impossible de récupérer ta position actuelle. Réessaie dans un instant.'
+      );
+    } finally {
+      setLocationLoading(false);
+    }
+  }, []);
+
+  const handleFromFocus = useCallback(() => {
+    if (fromBlurTimeout.current) {
+      clearTimeout(fromBlurTimeout.current);
+      fromBlurTimeout.current = null;
+    }
+    animateDropdown();
+    setShowFromList(true);
+    setShowDestList(false);
   }, [animateDropdown]);
+
+  const handleFromBlur = useCallback(() => {
+    fromBlurTimeout.current = setTimeout(() => {
+      setShowFromList(false);
+    }, 120);
+  }, []);
+
   const toggleDestList = useCallback(() => {
     animateDropdown();
     setShowDestList((prev) => {
@@ -1145,12 +1334,15 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
   }, [animateDropdown]);
   const selectFromCommune = useCallback(
     (commune: string) => {
-      const value = commune === 'Ma position actuelle' ? 'Woluwe-Saint-Lambert' : commune;
-      setFromCampus(value);
+      if (commune === 'Ma position actuelle') {
+        handleUseLocation();
+        return;
+      }
+      setFromCampus(commune);
       animateDropdown();
       setShowFromList(false);
     },
-    [animateDropdown]
+    [animateDropdown, handleUseLocation]
   );
   const selectDestinationCampus = useCallback(
     (campus: string) => {
@@ -1160,12 +1352,6 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
     },
     [animateDropdown]
   );
-  const normalizeText = useCallback((value: string) => {
-    return value
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
-  }, []);
   const timeOptions = useMemo(() => {
     const slots: string[] = [];
     for (let hour = 6; hour <= 22; hour++) {
@@ -1203,10 +1389,6 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
   );
   const isSameDay = useCallback((a: Date, b: Date) => {
     return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-  }, []);
-  const timeToMinutes = useCallback((value: string) => {
-    const [hours, minutes] = value.split(':').map((part) => parseInt(part, 10) || 0);
-    return hours * 60 + minutes;
   }, []);
   const formatDeparture = useCallback(
     (timestamp: number) => {
@@ -1414,13 +1596,20 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
     }
   }, [paymentRide, paymentMethodChoice, cardNumber, cardExpiry, cardCvv, handleReserveRide, closePaymentSheet]);
 
-  const renderRideResult = useCallback((ride: Ride) => {
+  const renderRideResult = useCallback(
+    (ride: Ride) => {
       const seatsLeft = Math.max(0, ride.seats - ride.passengers.length);
       const distanceLabel = (() => {
         const km = getRideDistance(ride);
         if (!Number.isFinite(km) || km === Number.MAX_SAFE_INTEGER) return 'Trajet';
         return `${km.toFixed(1)} km`;
       })();
+      const durationMinutes = getRideDuration(ride);
+      const durationLabel =
+        durationMinutes === Number.MAX_SAFE_INTEGER
+          ? 'Durée estimée'
+          : `${Math.round(durationMinutes)} min`;
+      const ratingValue = derivePseudoRating(ride);
       const avatarUri = getAvatarUrl(ride.ownerEmail, 72);
       const reserving = reservingRideId === ride.id;
       return (
@@ -1440,6 +1629,16 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
               </View>
               <View style={passengerStyles.resultPricePill}>
                 <Text style={passengerStyles.resultPriceValue}>€{ride.price.toFixed(2)}</Text>
+              </View>
+            </View>
+            <View style={passengerStyles.resultStatsRow}>
+              <View style={passengerStyles.resultStatPill}>
+                <IconSymbol name="star.fill" size={14} color={Colors.secondary} />
+                <Text style={passengerStyles.resultStatText}>{ratingValue.toFixed(1)} / 5</Text>
+              </View>
+              <View style={passengerStyles.resultStatPill}>
+                <IconSymbol name="clock" size={14} color={Colors.gray500} />
+                <Text style={passengerStyles.resultStatText}>{durationLabel}</Text>
               </View>
             </View>
             <Text style={passengerStyles.resultSchedule}>
@@ -1473,7 +1672,7 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
         </GradientBackground>
       );
     },
-    [formatDeparture, getRideDistance, openRide, startPaymentFlow, reservingRideId]
+    [formatDeparture, getRideDistance, getRideDuration, openRide, startPaymentFlow, reservingRideId]
   );
 
   const renderResultsFilters = () => (
@@ -1499,6 +1698,107 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
             </Pressable>
           );
         })}
+      </View>
+      <View style={passengerStyles.filterGroup}>
+        <Text style={passengerStyles.filterGroupLabel}>Prix</Text>
+        <View style={passengerStyles.filterChipsRow}>
+          {PRICE_FILTERS.map((filter) => {
+            const selected = priceFilter === filter.id;
+            return (
+              <Pressable
+                key={filter.id}
+                style={[passengerStyles.filterChip, selected && passengerStyles.filterChipActive]}
+                onPress={() => setPriceFilter(filter.id)}
+                accessibilityRole="button"
+              >
+                <Text
+                  style={[
+                    passengerStyles.filterChipLabel,
+                    selected && passengerStyles.filterChipLabelActive,
+                  ]}
+                >
+                  {filter.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+      <View style={passengerStyles.filterGroup}>
+        <Text style={passengerStyles.filterGroupLabel}>Durée</Text>
+        <View style={passengerStyles.filterChipsRow}>
+          {DURATION_FILTERS.map((filter) => {
+            const selected = durationFilter === filter.id;
+            return (
+              <Pressable
+                key={filter.id}
+                style={[passengerStyles.filterChip, selected && passengerStyles.filterChipActive]}
+                onPress={() => setDurationFilter(filter.id)}
+                accessibilityRole="button"
+              >
+                <Text
+                  style={[
+                    passengerStyles.filterChipLabel,
+                    selected && passengerStyles.filterChipLabelActive,
+                  ]}
+                >
+                  {filter.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+      <View style={passengerStyles.filterGroup}>
+        <Text style={passengerStyles.filterGroupLabel}>Campus</Text>
+        <View style={passengerStyles.filterChipsRow}>
+          {campusFilterOptions.map((option) => {
+            const selected = campusFilter === option;
+            const label = option === 'all' ? 'Tous' : option.replace('EPHEC ', '');
+            return (
+              <Pressable
+                key={option}
+                style={[passengerStyles.filterChip, selected && passengerStyles.filterChipActive]}
+                onPress={() => setCampusFilter(option)}
+                accessibilityRole="button"
+              >
+                <Text
+                  style={[
+                    passengerStyles.filterChipLabel,
+                    selected && passengerStyles.filterChipLabelActive,
+                  ]}
+                >
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+      <View style={passengerStyles.filterGroup}>
+        <Text style={passengerStyles.filterGroupLabel}>Heure</Text>
+        <View style={passengerStyles.filterChipsRow}>
+          {HOUR_FILTERS.map((filter) => {
+            const selected = hourFilter === filter.id;
+            return (
+              <Pressable
+                key={filter.id}
+                style={[passengerStyles.filterChip, selected && passengerStyles.filterChipActive]}
+                onPress={() => setHourFilter(filter.id)}
+                accessibilityRole="button"
+              >
+                <Text
+                  style={[
+                    passengerStyles.filterChipLabel,
+                    selected && passengerStyles.filterChipLabelActive,
+                  ]}
+                >
+                  {filter.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </View>
       <Pressable
         style={passengerStyles.filterToggle}
@@ -1545,7 +1845,7 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
     </View>
   );
 
-  const onSearch = () => {
+  const onSearch = useCallback(() => {
     closeDropdowns();
     setSearchPerformed(true);
     setIsSearching(true);
@@ -1569,7 +1869,23 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
       .sort((a, b) => a.departureAt - b.departureAt);
     setSearchResults(filtered);
     setIsSearching(false);
-  };
+  }, [
+    closeDropdowns,
+    travelTime,
+    fromCampus,
+    toCampus,
+    rides,
+    isSameDay,
+    selectedDate,
+  ]);
+
+  useEffect(() => {
+    if (initialSearchTriggered.current) return;
+    if (!ridesReady) return;
+    if (!initialDepart && !initialDestination) return;
+    initialSearchTriggered.current = true;
+    onSearch();
+  }, [initialDepart, initialDestination, onSearch, ridesReady]);
 
   useEffect(() => {
     if (!searchPerformed) return;
@@ -1580,7 +1896,10 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
   }, [searchPerformed, resultsOffset, searchInstance]);
 
   useEffect(() => {
-    const unsubscribe = subscribeRides(setRides);
+    const unsubscribe = subscribeRides((items) => {
+      setRides(items);
+      setRidesReady(true);
+    });
     return unsubscribe;
   }, []);
 
@@ -1651,18 +1970,44 @@ function PassengerPublishScreen({ session }: { session: AuthSnapshot }) {
                 <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperTop]}>
                   <View style={passengerStyles.inputWrapper}>
                     <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+                    <TextInput
+                      style={passengerStyles.dropdownTextInput}
+                      value={fromCampus}
+                      onChangeText={(value) => {
+                        setFromCampus(value);
+                        if (!showFromList) {
+                          animateDropdown();
+                          setShowFromList(true);
+                        }
+                      }}
+                      placeholder="Votre commune de départ"
+                      placeholderTextColor={Colors.gray400}
+                      onFocus={handleFromFocus}
+                      onBlur={handleFromBlur}
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                      returnKeyType="done"
+                    />
+                  </View>
+                  <View style={passengerStyles.locationHelperRow}>
                     <Pressable
-                      style={passengerStyles.dropdownTrigger}
-                      onPress={toggleFromList}
+                      style={[
+                        passengerStyles.locationChip,
+                        locationLoading && passengerStyles.locationChipDisabled,
+                      ]}
+                      onPress={handleUseLocation}
+                      disabled={locationLoading}
                       accessibilityRole="button"
-                      accessibilityLabel="Choisir votre point de départ"
                     >
-                      <Text style={passengerStyles.dropdownText}>{fromCampus}</Text>
+                      <IconSymbol name="location.fill" size={14} color={Colors.secondary} />
+                      <Text style={passengerStyles.locationChipText}>
+                        {locationLoading ? 'Localisation…' : 'Utiliser ma position'}
+                      </Text>
                     </Pressable>
                   </View>
-                  {showFromList ? (
+                  {showFromList && communeSuggestions.length > 0 ? (
                     <View style={passengerStyles.dropdownList}>
-                      {communeOptions.map((commune) => (
+                      {communeSuggestions.map((commune) => (
                         <Pressable
                           key={commune}
                           style={passengerStyles.dropdownItem}
@@ -2395,6 +2740,36 @@ const passengerStyles = StyleSheet.create({
     color: Colors.ink,
     fontWeight: '600',
   },
+  dropdownTextInput: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: Spacing.sm,
+    fontSize: 16,
+    color: Colors.ink,
+    fontWeight: '600',
+  },
+  locationHelperRow: {
+    paddingHorizontal: Spacing.sm,
+    marginTop: Spacing.xs,
+  },
+  locationChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: R.pill,
+    backgroundColor: '#F1F5FF',
+    alignSelf: 'flex-start',
+  },
+  locationChipDisabled: {
+    opacity: 0.6,
+  },
+  locationChipText: {
+    color: Colors.gray700,
+    fontSize: 12,
+    fontWeight: '600',
+  },
   actionsColumn: {
     justifyContent: 'flex-start',
     alignItems: 'center',
@@ -2815,6 +3190,16 @@ const passengerStyles = StyleSheet.create({
     marginTop: Spacing.md,
     gap: Spacing.sm,
   },
+  filterGroup: {
+    gap: Spacing.xs,
+  },
+  filterGroupLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.gray500,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
   filterChipsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -2915,6 +3300,25 @@ const passengerStyles = StyleSheet.create({
     color: Colors.gray600,
     fontSize: 12,
     marginTop: 2,
+  },
+  resultStatsRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: 4,
+  },
+  resultStatPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    backgroundColor: Colors.gray150,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+  },
+  resultStatText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.gray600,
   },
   resultPricePill: {
     paddingHorizontal: Spacing.md,

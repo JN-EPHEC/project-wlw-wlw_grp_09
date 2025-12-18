@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import NotificationCenter from '@/components/notification-center';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -14,6 +15,7 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+      <NotificationCenter />
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="welcome" options={{ headerShown: false }} />
         <Stack.Screen name="sign-up" options={{ headerShown: false }} />

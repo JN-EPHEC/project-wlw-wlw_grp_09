@@ -25,7 +25,7 @@ export default function HelpScreen() {
     }
   }, [router]);
 
-  const openSupportChat = () => router.push('/(tabs)/messages');
+  const openSupportChat = () => router.push('/help-chat');
   const openSupportEmail = () =>
     Linking.openURL('mailto:support@campusride.be').catch(() =>
       Alert.alert('Email indisponible', 'Impossible d’ouvrir ton application email.')
