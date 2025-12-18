@@ -2,6 +2,7 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -17,9 +18,13 @@ import {
 import { ReviewCard } from '@/components/review-card';
 import { PassengerFeedbackCard } from '@/components/passenger-feedback-card';
 import { AppBackground } from '@/components/ui/app-background';
+import { GradientBackground } from '@/components/ui/gradient-background';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { RatingStars } from '@/components/ui/rating-stars';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import {
   respondToReview,
+  submitReview,
   subscribeDriverReviews,
   type Review,
 } from '@/app/services/reviews';
@@ -30,11 +35,14 @@ import {
 import { createReport } from '@/app/services/reports';
 import {
   Colors,
+  Gradients,
   Radius,
+  Shadows,
   Spacing,
   Typography,
 } from '@/app/ui/theme';
 import { buildSmartReplies } from '@/app/utils/ai-reply';
+import { getAvatarUrl } from '@/app/ui/avatar';
 
 const C = Colors;
 
@@ -49,6 +57,11 @@ export default function DriverReviewsScreen() {
   const [responseDraft, setResponseDraft] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const [newReviewVisible, setNewReviewVisible] = useState(false);
+  const [newReviewRating, setNewReviewRating] = useState(4.5);
+  const [newReviewComment, setNewReviewComment] = useState('');
+  const [newReviewError, setNewReviewError] = useState<string | null>(null);
+  const [isPublishingReview, setIsPublishingReview] = useState(false);
 
   useEffect(() => {
     if (!driverEmail) return;
@@ -85,6 +98,15 @@ export default function DriverReviewsScreen() {
     const average = Math.round((totalScore / totalCount) * 10) / 10;
     return { average, count: totalCount };
   }, [driverSummary, passengerSummary]);
+
+  const driverAlias = driverEmail
+    ? (driverEmail.split('@')[0] ?? driverEmail).replace(/[._-]+/g, ' ')
+    : 'Conducteur';
+  const driverDisplay = driverAlias
+    .split(/\s+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+  const driverAvatar = getAvatarUrl(driverEmail || driverDisplay || 'driver', 160);
 
   const canRespond = session.email?.toLowerCase() === driverEmail;
 
@@ -158,13 +180,97 @@ export default function DriverReviewsScreen() {
     );
   };
 
-  const driverAlias = driverEmail
-    ? (driverEmail.split('@')[0] ?? driverEmail).replace(/[._-]+/g, ' ')
-    : 'Conducteur';
-  const driverDisplay = driverAlias
-    .split(/\s+/)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-    .join(' ');
+  const openNewReviewModal = () => {
+    if (!session.email) {
+      router.push('/sign-up');
+      return;
+    }
+    setNewReviewVisible(true);
+    setNewReviewRating(4.5);
+    setNewReviewComment('');
+    setNewReviewError(null);
+  };
+
+  const closeNewReviewModal = () => {
+    setNewReviewVisible(false);
+    setNewReviewComment('');
+    setNewReviewError(null);
+    setIsPublishingReview(false);
+  };
+
+  const submitNewReview = () => {
+    if (!session.email) {
+      router.push('/sign-up');
+      return;
+    }
+    if (newReviewRating < 1) {
+      setNewReviewError('Choisis une note entre 1 et 5.');
+      return;
+    }
+    const trimmed = newReviewComment.trim();
+    if (trimmed.length > 0 && trimmed.length < 5) {
+      setNewReviewError('Ajoute au moins 5 caractères ou laisse vide.');
+      return;
+    }
+    try {
+      setIsPublishingReview(true);
+      submitReview({
+        rideId: `manual-${Date.now()}`,
+        driverEmail,
+        driverName: driverDisplay,
+        passengerEmail: session.email,
+        passengerName: session.name ?? undefined,
+        rating: newReviewRating,
+        comment: trimmed,
+      });
+      Alert.alert('Merci pour ton avis', 'Ton expérience vient d’être partagée à la communauté.');
+      closeNewReviewModal();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Impossible de publier l’avis.';
+      Alert.alert('Erreur', message);
+      setIsPublishingReview(false);
+    }
+  };
+
+  const reportDriver = () => {
+    if (!session.email) {
+      router.push('/sign-up');
+      return;
+    }
+    Alert.alert(
+      'Signaler ce conducteur',
+      'Explique brièvement ce qui s’est passé.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Signaler',
+          style: 'destructive',
+          onPress: () =>
+            createReport({
+              reporterEmail: session.email!,
+              targetEmail: driverEmail,
+              reason: 'inappropriate-behaviour',
+              metadata: { context: 'driver-profile' },
+            }),
+        },
+      ]
+    );
+  };
+
+  const overviewStats = [
+    {
+      label: 'Note globale',
+      value: aggregatedSummary.count > 0 ? `${aggregatedSummary.average.toFixed(1)}/5` : '—',
+    },
+    {
+      label: 'Avis conducteur',
+      value: driverSummary.count,
+    },
+    {
+      label: 'Avis passager',
+      value: passengerSummary.count,
+    },
+  ];
 
   return (
     <AppBackground>
@@ -173,73 +279,199 @@ export default function DriverReviewsScreen() {
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
         >
-        <View style={styles.header}>
-        <Pressable style={styles.backLink} onPress={() => router.back()}>
-          <Text style={styles.backLinkText}>←</Text>
-          </Pressable>
-          <Text style={styles.title}>Avis sur {driverDisplay}</Text>
-          <Text style={styles.subtitle}>
-            {aggregatedSummary.count > 0
-              ? `${aggregatedSummary.average.toFixed(1)}/5 • ${aggregatedSummary.count} avis`
-              : 'Aucun avis pour le moment.'}
-          </Text>
+        <GradientBackground colors={Gradients.background} style={styles.hero}>
+          <View style={styles.heroNav}>
+            <Pressable style={styles.backPill} onPress={() => router.back()}>
+              <IconSymbol name="chevron.left" size={18} color={Colors.white} />
+              <Text style={styles.backText}>Retour</Text>
+            </Pressable>
+            {session.email ? (
+              <Pressable style={styles.addButton} onPress={openNewReviewModal}>
+                <IconSymbol name="plus" size={18} color="#fff" />
+                <Text style={styles.addButtonText}>Avis</Text>
+              </Pressable>
+            ) : (
+              <View style={{ width: 80 }} />
+            )}
+          </View>
+          <View style={styles.heroContent}>
+            <Image source={{ uri: driverAvatar }} style={styles.heroAvatar} />
+            <View style={styles.heroInfo}>
+              <Text style={styles.heroTitle}>{driverDisplay}</Text>
+              <Text style={styles.heroSubtitle}>{driverEmail || 'Email indisponible'}</Text>
+              <View style={styles.heroRatingRow}>
+                <RatingStars value={aggregatedSummary.average} size={20} />
+                <Text style={styles.heroRatingValue}>
+                  {aggregatedSummary.count > 0
+                    ? `${aggregatedSummary.average.toFixed(1)}/5 • ${aggregatedSummary.count} avis`
+                    : 'Aucun avis pour le moment.'}
+                </Text>
+              </View>
+            </View>
+          </View>
+          <View style={styles.heroActions}>
+            <Pressable
+              style={[styles.heroPrimaryButton, !session.email && styles.heroPrimaryButtonDisabled]}
+              onPress={session.email ? openNewReviewModal : () => router.push('/sign-up')}
+            >
+              <Text style={styles.heroPrimaryText}>
+                {session.email ? 'Ajouter un avis' : 'Connecte-toi pour noter'}
+              </Text>
+            </Pressable>
+            <Pressable style={styles.heroSecondaryButton} onPress={reportDriver}>
+              <IconSymbol name="exclamationmark.triangle" size={16} color={Colors.primary} />
+              <Text style={styles.heroSecondaryText}>Signaler</Text>
+            </Pressable>
+          </View>
+        </GradientBackground>
+
+        <View style={styles.statsRow}>
+          {overviewStats.map((stat) => (
+            <View key={stat.label} style={styles.statCard}>
+              <Text style={styles.statValue}>{stat.value}</Text>
+              <Text style={styles.statLabel}>{stat.label}</Text>
+            </View>
+          ))}
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Expérience en tant que conducteur</Text>
-          <Text style={styles.sectionSubtitle}>
-            {driverSummary.count > 0
-              ? `${driverSummary.average.toFixed(1)}/5 • ${driverSummary.count} avis`
-              : 'Pas encore de note côté conducteur'}
-          </Text>
-          {reviews.length > 0 ? (
-            reviews.map((review) => (
-              <ReviewCard
-                key={review.id}
-                review={review}
-                onRespond={canRespond ? openRespondModal : undefined}
-                onReport={reportReview}
-              />
-            ))
-          ) : (
-            <Text style={styles.empty}>Ce conducteur n’a pas encore reçu d’avis.</Text>
-          )}
+        <View style={styles.sectionCard}>
+          <View style={styles.sectionHeaderRow}>
+            <View>
+              <Text style={styles.sectionTitle}>Expérience en tant que conducteur</Text>
+              <Text style={styles.sectionSubtitle}>
+                {driverSummary.count > 0
+                  ? `${driverSummary.average.toFixed(1)}/5 • ${driverSummary.count} avis`
+                  : 'Pas encore de note côté conducteur'}
+              </Text>
+            </View>
+            <View style={styles.sectionBadge}>
+              <Text style={styles.sectionBadgeText}>{driverSummary.count}</Text>
+            </View>
+          </View>
+          <View style={styles.sectionBody}>
+            {reviews.length > 0 ? (
+              reviews.map((review) => (
+                <ReviewCard
+                  key={review.id}
+                  review={review}
+                  onRespond={canRespond ? openRespondModal : undefined}
+                  onReport={reportReview}
+                />
+              ))
+            ) : (
+              <Text style={styles.empty}>Ce conducteur n’a pas encore reçu d’avis.</Text>
+            )}
+          </View>
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Fiabilité en tant que passager</Text>
-          <Text style={styles.sectionSubtitle}>
-            {passengerSummary.count > 0
-              ? `${passengerSummary.average.toFixed(1)}/5 • ${passengerSummary.count} avis`
-              : 'Pas encore d’avis côté passager'}
-          </Text>
-          {passengerFeedback.length > 0 ? (
-            passengerFeedback.map((entry) => (
-              <PassengerFeedbackCard
-                key={entry.id}
-                feedback={entry}
-                onReport={(feedback) => {
-                  if (!session.email) {
-                    router.push('/sign-up');
-                    return;
-                  }
-                  createReport({
-                    reporterEmail: session.email,
-                    targetEmail: feedback.driverEmail,
-                    rideId: feedback.rideId,
-                    reason: 'inappropriate-behaviour',
-                    metadata: { context: 'passenger-feedback', driverEmail },
-                  });
-                  Alert.alert('Signalement envoyé', 'Notre équipe va analyser cet avis.');
-                }}
-              />
-            ))
-          ) : (
-            <Text style={styles.empty}>Aucun avis laissé par les conducteurs pour ce membre.</Text>
-          )}
+        <View style={styles.sectionCard}>
+          <View style={styles.sectionHeaderRow}>
+            <View>
+              <Text style={styles.sectionTitle}>Fiabilité en tant que passager</Text>
+              <Text style={styles.sectionSubtitle}>
+                {passengerSummary.count > 0
+                  ? `${passengerSummary.average.toFixed(1)}/5 • ${passengerSummary.count} avis`
+                  : 'Pas encore d’avis côté passager'}
+              </Text>
+            </View>
+            <View style={styles.sectionBadge}>
+              <Text style={styles.sectionBadgeText}>{passengerSummary.count}</Text>
+            </View>
+          </View>
+          <View style={styles.sectionBody}>
+            {passengerFeedback.length > 0 ? (
+              passengerFeedback.map((entry) => (
+                <PassengerFeedbackCard
+                  key={entry.id}
+                  feedback={entry}
+                  onReport={(feedback) => {
+                    if (!session.email) {
+                      router.push('/sign-up');
+                      return;
+                    }
+                    createReport({
+                      reporterEmail: session.email,
+                      targetEmail: feedback.driverEmail,
+                      rideId: feedback.rideId,
+                      reason: 'inappropriate-behaviour',
+                      metadata: { context: 'passenger-feedback', driverEmail },
+                    });
+                    Alert.alert('Signalement envoyé', 'Notre équipe va analyser cet avis.');
+                  }}
+                />
+              ))
+            ) : (
+              <Text style={styles.empty}>Aucun avis laissé par les conducteurs pour ce membre.</Text>
+            )}
+          </View>
         </View>
         </ScrollView>
       </SafeAreaView>
+
+      <Modal
+        visible={newReviewVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeNewReviewModal}
+      >
+        <View style={styles.modalBackdrop}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.modalContainer}
+          >
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Partager mon avis</Text>
+              <Text style={styles.modalSubtitle}>
+                Donne une note à {driverDisplay} sur ton dernier trajet.
+              </Text>
+              <RatingStars
+                value={newReviewRating}
+                onChange={(value) => {
+                  setNewReviewRating(value);
+                  if (newReviewError) setNewReviewError(null);
+                }}
+                editable
+                size={32}
+              />
+              <TextInput
+                value={newReviewComment}
+                onChangeText={(value) => {
+                  setNewReviewComment(value);
+                  if (newReviewError) setNewReviewError(null);
+                }}
+                placeholder="Partage ton ressenti (facultatif)…"
+                placeholderTextColor={C.gray400}
+                style={styles.modalInput}
+                multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+              />
+              {newReviewError ? <Text style={styles.errorText}>{newReviewError}</Text> : null}
+              <View style={styles.modalActions}>
+                <Pressable
+                  style={[styles.modalButton, styles.modalButtonSecondary]}
+                  onPress={closeNewReviewModal}
+                >
+                  <Text style={styles.modalButtonSecondaryText}>Annuler</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.modalButton,
+                    styles.modalButtonPrimary,
+                    isPublishingReview && styles.modalButtonDisabled,
+                  ]}
+                  onPress={submitNewReview}
+                  disabled={isPublishingReview}
+                >
+                  <Text style={styles.modalButtonPrimaryText}>
+                    {isPublishingReview ? 'Envoi…' : 'Publier'}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
 
       <Modal
         visible={!!respondTarget}
@@ -323,30 +555,142 @@ const styles = StyleSheet.create({
   },
   scroll: {
     padding: Spacing.xl,
-    gap: Spacing.lg,
+    gap: Spacing.xl,
+    paddingBottom: Spacing.xxl,
   },
-  header: {
-    gap: Spacing.sm,
+  hero: {
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.md,
   },
-  backLink: {
-    alignSelf: 'flex-start',
+  heroNav: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  backLinkText: {
-    color: C.secondary,
+  backPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+  },
+  backText: {
+    color: Colors.white,
     fontWeight: '700',
   },
-  title: {
-    fontSize: 24,
+  addButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    backgroundColor: C.primary,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+  },
+  addButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  heroContent: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    alignItems: 'center',
+  },
+  heroAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.6)',
+  },
+  heroInfo: {
+    flex: 1,
+    gap: Spacing.xs,
+  },
+  heroTitle: {
+    fontSize: 22,
     fontWeight: '800',
-    color: C.ink,
-    letterSpacing: Typography.heading.letterSpacing,
+    color: Colors.white,
   },
-  subtitle: {
-    color: C.gray600,
-    fontSize: 14,
+  heroSubtitle: {
+    color: 'rgba(255,255,255,0.85)',
   },
-  section: {
+  heroRatingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: Spacing.sm,
+  },
+  heroRatingValue: {
+    color: 'rgba(255,255,255,0.85)',
+    fontWeight: '600',
+  },
+  heroActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  heroPrimaryButton: {
+    flex: 1,
+    backgroundColor: Colors.white,
+    borderRadius: Radius.pill,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  heroPrimaryButtonDisabled: {
+    opacity: 0.6,
+  },
+  heroPrimaryText: {
+    color: Colors.primary,
+    fontWeight: '700',
+  },
+  heroSecondaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.5)',
+  },
+  heroSecondaryText: {
+    color: Colors.white,
+    fontWeight: '600',
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  statCard: {
+    flex: 1,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.card,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    ...Shadows.card,
+  },
+  statValue: {
+    fontWeight: '800',
+    fontSize: 18,
+    color: C.ink,
+  },
+  statLabel: {
+    color: C.gray600,
+    fontSize: 12,
+  },
+  sectionCard: {
+    backgroundColor: Colors.card,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.md,
+    ...Shadows.card,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   sectionTitle: {
     fontSize: 18,
@@ -357,9 +701,26 @@ const styles = StyleSheet.create({
     color: C.gray600,
     fontSize: 13,
   },
+  sectionBadge: {
+    borderRadius: Radius.pill,
+    backgroundColor: C.gray100,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+  },
+  sectionBadgeText: {
+    color: C.gray700,
+    fontWeight: '700',
+  },
+  sectionBody: {
+    gap: Spacing.md,
+  },
   empty: {
-    color: C.gray600,
+    color: C.gray500,
     fontSize: 14,
+  },
+  errorText: {
+    color: C.danger,
+    fontSize: 12,
   },
   modalBackdrop: {
     flex: 1,

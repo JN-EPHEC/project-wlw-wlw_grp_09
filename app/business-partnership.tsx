@@ -13,9 +13,9 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
+import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
 import { AppBackground } from '@/components/ui/app-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
 
 const C = Colors;
 

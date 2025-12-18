@@ -56,9 +56,12 @@ import { useBreakpoints } from '@/hooks/use-breakpoints';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { AvatarCropperModal } from '@/components/avatar-cropper';
 import { captureProfilePhoto, pickProfileImage, pickProfileDocument, persistAvatarImage } from '@/app/utils/image-picker';
+import { uploadProfileSelfie } from '@/src/storageUploads';
 
 const C = Colors;
 const R = Radius;
+const isRemoteUri = (uri: string | null | undefined) =>
+  typeof uri === 'string' && /^https?:\/\//.test(uri);
 
 
 export default function ProfileScreen() {
@@ -199,13 +202,18 @@ export default function ProfileScreen() {
       if (!session.email) return false;
       setIsSavingAvatar(true);
       try {
-        await Auth.updateProfile(session.email, { avatarUrl: uri ?? '' });
+        let nextUri = uri;
+        if (uri && !isRemoteUri(uri)) {
+          nextUri = await uploadProfileSelfie({ email: session.email, uri });
+        }
+        await Auth.updateProfile(session.email, { avatarUrl: nextUri ?? '' });
         Alert.alert(
           'Photo de profil',
-          uri ? 'Ton avatar a été mis à jour.' : 'Ta photo a été supprimée.'
+          nextUri ? 'Ton avatar a été mis à jour.' : 'Ta photo a été supprimée.'
         );
         return true;
-      } catch {
+      } catch (error) {
+        console.warn('avatar update failed', error);
         Alert.alert('Erreur', 'Impossible de mettre à jour la photo de profil.');
         return false;
       } finally {
@@ -976,7 +984,7 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   scroll: {
-    paddingTop: Spacing.xl,
+    paddingTop: Spacing.xxl * 2,
     paddingBottom: Spacing.xxl,
     gap: Spacing.lg,
   },

@@ -180,7 +180,11 @@ export default function DriverVerificationScreen() {
                 <View style={styles.licenseRow}>
                   <View style={styles.licenseRowInfo}>
                     <Text style={styles.licenseRowLabel}>Recto</Text>
-                    <IconSymbol name="checkmark.seal.fill" size={16} color={Colors.success} />
+                    {hasLicenseFront ? (
+                      <View style={styles.licenseBadge}>
+                        <Text style={styles.licenseBadgeText}>V</Text>
+                      </View>
+                    ) : null}
                   </View>
                   <Pressable
                     style={[
@@ -203,7 +207,11 @@ export default function DriverVerificationScreen() {
                 <View style={styles.licenseRow}>
                   <View style={styles.licenseRowInfo}>
                     <Text style={styles.licenseRowLabel}>Verso</Text>
-                    <IconSymbol name="checkmark.seal.fill" size={16} color={Colors.success} />
+                    {hasLicenseBack ? (
+                      <View style={styles.licenseBadge}>
+                        <Text style={styles.licenseBadgeText}>V</Text>
+                      </View>
+                    ) : null}
                   </View>
                   <Pressable
                     style={[
@@ -361,6 +369,19 @@ const styles = StyleSheet.create({
   licenseRowLabel: {
     fontWeight: '700',
     color: Colors.ink,
+  },
+  licenseBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.success,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  licenseBadgeText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 12,
   },
   cardButton: {
     marginTop: Spacing.sm,

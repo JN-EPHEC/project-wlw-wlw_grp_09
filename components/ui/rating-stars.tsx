@@ -41,8 +41,8 @@ function RatingStarsComponent({
 
   const handleChange = (next: number) => {
     if (!editable || !onChange) return;
-    const rounded = Math.round(next * 10) / 10;
-    const clamped = clamp(rounded, 0.5, max);
+    const rounded = Math.round(next);
+    const clamped = clamp(rounded, 1, max);
     onChange(clamped);
   };
 
@@ -72,10 +72,9 @@ function RatingStarsComponent({
             <MaterialIcons name="star" size={size} color={color} />
           </View>
           {editable ? (
-            <View style={styles.hitbox}>
-              <Pressable style={styles.half} onPress={() => handleChange(index + 0.5)} />
-              <Pressable style={styles.half} onPress={() => handleChange(index + 1)} />
-            </View>
+            <Pressable style={styles.hitbox} onPress={() => handleChange(index + 1)}>
+              <View />
+            </Pressable>
           ) : null}
         </View>
       ))}
@@ -106,9 +105,5 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    flexDirection: 'row',
-  },
-  half: {
-    flex: 1,
   },
 });

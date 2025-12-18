@@ -82,7 +82,7 @@ export default function ReviewRideScreen() {
       router.push('/sign-up');
       return;
     }
-    if (rating < 0.5) {
+    if (rating < 1) {
       setRatingError('Sélectionne une note entre 1 et 5.');
       return;
     }
@@ -226,7 +226,7 @@ export default function ReviewRideScreen() {
             <Text style={styles.sectionTitle}>Ta note</Text>
             <RatingStars value={rating} editable onChange={onChangeRating} size={32} />
             <Text style={styles.sectionHint}>
-              {rating >= 0.5
+              {rating >= 1
                 ? `${rating.toFixed(1)}/5 • 1 = trajet à améliorer, 5 = expérience parfaite`
                 : 'Choisis entre 1 et 5 étoiles'}
             </Text>
@@ -251,10 +251,10 @@ export default function ReviewRideScreen() {
           <Pressable
             style={[
               styles.primaryButton,
-              (submitting || rating < 0.5) && styles.buttonDisabled,
+              (submitting || rating < 1) && styles.buttonDisabled,
             ]}
             onPress={onSubmit}
-            disabled={submitting || rating < 0.5}
+            disabled={submitting || rating < 1}
           >
             <Text style={styles.primaryButtonText}>
               {submitting

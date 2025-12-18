@@ -1,5 +1,5 @@
 import { useLocalSearchParams, router } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Image,
@@ -7,14 +7,19 @@ import {
   Modal,
   Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  TouchableOpacity,
+  useWindowDimensions,
 } from 'react-native';
 
-import { RideMap } from '../../components/ride-map';
+import { AppBackground } from '@/components/ui/app-background';
+import { GradientBackground } from '@/components/ui/gradient-background';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { RatingStars } from '@/components/ui/rating-stars';
 import {
@@ -34,7 +39,7 @@ import {
   type Review,
 } from '@/app/services/reviews';
 import { evaluateRewards } from '@/app/services/rewards';
-import { Colors, Shadows, Spacing, Radius, Typography } from '@/app/ui/theme';
+import { Colors, Gradients, Shadows, Spacing, Radius, Typography } from '@/app/ui/theme';
 import { getAvatarColor, getAvatarUrl } from '@/app/ui/avatar';
 import {
   submitPassengerFeedback,
@@ -42,15 +47,36 @@ import {
   type PassengerFeedback,
 } from '@/app/services/passenger-feedback';
 import { createReport } from '@/app/services/reports';
+import type { ReportReason } from '@/app/services/reports';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { CAMPUSRIDE_COMMISSION_RATE } from '@/app/constants/fuel';
 
 const C = Colors;
 const S = Shadows;
 
+const ensureStudentEmail = (email: string) => {
+  if (!email) return '';
+  const local = email.split('@')[0]?.toLowerCase() ?? email;
+  return `${local}@students.ephec.be`;
+};
+
+const formatBelgianPlate = (value: string | undefined | null) => {
+  if (!value) return '2-AAA-001';
+  const clean = value
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  if (clean.length < 7) return clean || '2-AAA-001';
+  const segmentA = clean.slice(0, 1);
+  const segmentB = clean.slice(1, 4);
+  const segmentC = clean.slice(4, 7);
+  return `${segmentA}-${segmentB}-${segmentC}`;
+};
+
 export default function RideDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const session = useAuthSession();
+  const { width } = useWindowDimensions();
+  const isCompact = width < 420;
   const [ride, setRide] = useState<Ride | null>(() => (id ? getRide(String(id)) ?? null : null));
   const [driverCompleted, setDriverCompleted] = useState(0);
   const [driverRating, setDriverRating] = useState<{ average: number; count: number }>({
@@ -66,6 +92,15 @@ export default function RideDetailScreen() {
   const [feedbackRating, setFeedbackRating] = useState(4.5);
   const [feedbackComment, setFeedbackComment] = useState('');
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const [reportTarget, setReportTarget] = useState<{
+    email: string;
+    alias: string;
+    type: 'driver' | 'passenger';
+  } | null>(null);
+  const [reportReason, setReportReason] = useState<ReportReason>('inappropriate-behaviour');
+  const [reportComment, setReportComment] = useState('');
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const reportCommentRef = useRef<TextInput | null>(null);
 
   const platformFeePerPassenger = useMemo(() => {
     if (!ride) return 0;
@@ -403,320 +438,420 @@ export default function RideDetailScreen() {
     setSubmittingFeedback(false);
   };
 
+  const ensureCanReport = () => {
+    if (!session.email) {
+      Alert.alert(
+        'Connexion requise',
+        'Connecte-toi pour signaler un conducteur ou un passager.',
+        [
+          { text: 'Annuler', style: 'cancel' },
+          { text: 'Se connecter', onPress: () => router.push('/sign-in') },
+        ]
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const openReportModal = (target: { email: string; alias: string; type: 'driver' | 'passenger' }) => {
+    if (!ride || !ensureCanReport()) return;
+    setReportTarget(target);
+    setReportReason('inappropriate-behaviour');
+    setReportComment('');
+  };
+
   const reportPassenger = (passengerEmail: string) => {
-    if (!session.email || !ride) return;
+    if (!ride) return;
     const alias = formatAlias(passengerEmail);
-    const reasons = [
-      { label: 'Comportement inapproprié', value: 'inappropriate-behaviour' },
-      { label: 'Absence au rendez-vous', value: 'no-show' },
-      { label: 'Annulation tardive', value: 'late-cancellation' },
-      { label: 'Autre', value: 'other' },
-    ];
-    Alert.alert(
-      `Signaler ${alias}`,
-      'Choisis la raison du signalement.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        ...reasons.map((reason) => ({
-          text: reason.label,
-          onPress: () =>
-            createReport({
-              reporterEmail: session.email!,
-              targetEmail: passengerEmail,
-              rideId: ride.id,
-              reason: reason.value as any,
-              metadata: { context: 'driver-report' },
-            }),
-        })),
-      ]
-    );
+    openReportModal({ email: passengerEmail, alias, type: 'passenger' });
   };
 
   const reportDriver = () => {
-    if (!session.email || !ride) return;
-    const reasons = [
-      { label: 'Comportement inapproprié', value: 'inappropriate-behaviour' },
-      { label: 'Conduite dangereuse', value: 'unsafe-driving' },
-      { label: 'Retard important', value: 'late-cancellation' },
-      { label: 'Autre', value: 'other' },
-    ];
-    Alert.alert(
-      'Signaler ce conducteur',
-      'Choisis la raison du signalement.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        ...reasons.map((reason) => ({
-          text: reason.label,
-          onPress: () =>
-            createReport({
-              reporterEmail: session.email!,
-              targetEmail: ride.ownerEmail,
-              rideId: ride.id,
-              reason: reason.value as any,
-              metadata: { context: 'passenger-report' },
-            }),
-        })),
-      ]
-    );
+    if (!ride) return;
+    openReportModal({ email: ride.ownerEmail, alias: ride.driver, type: 'driver' });
   };
+
+  const closeReportModal = () => {
+    setReportTarget(null);
+    setReportComment('');
+    setReportSubmitting(false);
+  };
+
+  const submitReport = () => {
+    if (!reportTarget || !ride || !session.email) return;
+    try {
+      setReportSubmitting(true);
+      createReport({
+        reporterEmail: session.email,
+        targetEmail: reportTarget.email,
+        rideId: ride.id,
+        reason: reportReason,
+        comment: reportComment.trim() || undefined,
+        metadata: {
+          context: reportTarget.type === 'driver' ? 'passenger-report' : 'driver-report',
+        },
+      });
+      Alert.alert('Signalement envoyé', 'Notre équipe va examiner ta demande.');
+      closeReportModal();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Impossible de signaler pour le moment.';
+      Alert.alert('Erreur', message);
+      setReportSubmitting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!reportTarget) return;
+    const timeout = setTimeout(() => {
+      reportCommentRef.current?.focus();
+    }, 200);
+    return () => clearTimeout(timeout);
+  }, [reportTarget]);
+
+  const heroStatusLabel = departed
+    ? 'Trajet terminé'
+    : seatsLeft > 0
+    ? 'Places disponibles'
+    : 'Complet';
+  const heroStatusIcon = departed
+    ? 'checkmark.seal.fill'
+    : seatsLeft > 0
+    ? 'sparkles'
+    : 'exclamationmark.triangle';
+  const driverStudentEmail = ensureStudentEmail(ride.ownerEmail);
+const statHighlights = [
+    {
+      key: 'price',
+      icon: 'creditcard.fill' as const,
+      label: 'Tarif',
+      value: `${ride.price.toFixed(2)} €`,
+      hint: 'par passager',
+    },
+    {
+      key: 'seats',
+      icon: 'person.fill' as const,
+      label: 'Places',
+      value: `${ride.passengers.length}/${ride.seats}`,
+      hint: seatsLeft > 0 ? `${seatsLeft} restante(s)` : 'Complet',
+    },
+    {
+      key: 'time',
+      icon: 'clock' as const,
+      label: 'Départ',
+      value: ride.time,
+      hint: departureDayLabel,
+    },
+];
+const REPORT_REASONS: { label: string; value: ReportReason }[] = [
+  { label: 'Comportement inapproprié', value: 'inappropriate-behaviour' },
+  { label: 'Conduite dangereuse', value: 'unsafe-driving' },
+  { label: 'Retard / annulation tardive', value: 'late-cancellation' },
+  { label: 'Absence au rendez-vous', value: 'no-show' },
+  { label: 'Autre', value: 'other' },
+];
 
   return (
     <>
-      <ScrollView contentContainerStyle={styles.scroll}>
-      <View style={styles.header}> 
-        <Pressable onPress={() => router.back()} style={styles.backButton}>
-          <Text style={styles.backButtonText}>← Retour</Text>
-        </Pressable>
-        <Text style={styles.title}>Trajet vers {ride.destination}</Text>
-        <Text style={styles.subtitle}>
-          {ride.depart} • {ride.time} • {departureDayLabel}
-        </Text>
-      </View>
-
-      <View style={styles.driverCard}>
-        <View style={[styles.driverAvatar, { backgroundColor: driverAvatarBg }]}>
-          <Image source={{ uri: driverAvatarUri }} style={styles.driverAvatarImage} />
-        </View>
-        <View style={styles.driverInfo}>
-          <Text style={styles.driverName}>{ride.driver}</Text>
-          <View style={styles.driverRatingRow}>
-            <RatingStars value={driverRating.count > 0 ? driverRating.average : 0} size={20} editable={false} />
-            <Text style={styles.driverRatingText}>{driverMetaLabel}</Text>
-          </View>
-          <Text style={styles.driverMeta}>{driverCompletedLabel}</Text>
-          {reward.badgeLabel ? (
-            <View style={styles.driverBadge}>
-              <Text style={styles.driverBadgeText}>{reward.badgeLabel}</Text>
-            </View>
-          ) : null}
-          {reward.highlight ? <Text style={styles.driverHighlight}>{reward.highlight}</Text> : null}
-          <Pressable style={styles.driverReviewsLink} onPress={() => router.push({ pathname: '/reviews/[email]', params: { email: ride.ownerEmail } })}>
-            <Text style={styles.driverReviewsText}>Voir les avis du conducteur</Text>
-          </Pressable>
-        </View>
-        {!amOwner ? (
-          <Pressable style={styles.driverReportButton} onPress={reportDriver}>
-            <Text style={styles.driverReportText}>Signaler ce conducteur</Text>
-          </Pressable>
-        ) : null}
-      </View>
-
-      <View style={styles.infoCard}>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Conducteur</Text>
-          <Text style={styles.infoValue}>{ride.driver}</Text>
-        </View>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Plaque</Text>
-          <Text style={styles.infoValue}>{ride.plate}</Text>
-        </View>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Départ</Text>
-          <Text style={styles.infoValue}>{ride.depart}</Text>
-        </View>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Destination</Text>
-          <Text style={styles.infoValue}>{ride.destination}</Text>
-        </View>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Tarif indicatif</Text>
-          <Text style={styles.infoValue}>€{ride.price.toFixed(2)} / passager</Text>
-        </View>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Places</Text>
-          <Text style={styles.infoValue}>
-            {ride.passengers.length}/{ride.seats} ({seatsLeft}{' '}
-            restante{seatsLeft > 1 ? 's' : ''})
-          </Text>
-        </View>
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Statut</Text>
-          <Text style={styles.infoValue}>{departed ? 'Trajet terminé' : seatsLeft > 0 ? 'Places disponibles' : 'Complet'}</Text>
-        </View>
-      </View>
-
-      <View style={styles.priceBreakCard}>
-        <Text style={styles.priceBreakTitle}>Transparence paiement</Text>
-        <View style={styles.priceBreakRow}>
-          <Text style={styles.priceBreakLabel}>Montant par passager</Text>
-          <Text style={styles.priceBreakValue}>€{ride.price.toFixed(2)}</Text>
-        </View>
-        <View style={styles.priceBreakRow}>
-          <Text style={styles.priceBreakLabel}>CampusRide (20 %)</Text>
-          <Text style={[styles.priceBreakValue, styles.priceBreakFee]}>€{platformFeePerPassenger.toFixed(2)}</Text>
-        </View>
-        <View style={styles.priceBreakRow}>
-          <Text style={styles.priceBreakLabel}>Versé au conducteur</Text>
-          <Text style={styles.priceBreakValue}>€{driverNetPerPassenger.toFixed(2)}</Text>
-        </View>
-        <Text style={styles.priceBreakHint}>
-          Ce détail apparaît avant toute confirmation afin que tu saches exactement ce qui est prélevé.
-        </Text>
-      </View>
-
-      <View style={styles.mapCard}>
-        <RideMap rides={[ride]} />
-      </View>
-
-      <View style={styles.actions}>
-        {departed ? (
-          <Text style={styles.statusText}>Ce trajet est terminé.</Text>
-        ) : amOwner ? (
-          <>
-            <GradientButton
-              title="Modifier"
-              size="sm"
-              variant="lavender"
-              fullWidth
-              style={styles.actionButton}
-              onPress={() => router.push({ pathname: '/explore', params: { edit: ride.id } })}
-              accessibilityRole="button"
-            />
-            <GradientButton
-              title="Supprimer"
-              size="sm"
-              variant="danger"
-              fullWidth
-              style={styles.actionButton}
-              onPress={onDelete}
-              accessibilityRole="button"
-            />
-          </>
-        ) : amPassenger ? (
-          <GradientButton
-            title="Annuler ma réservation"
-            size="sm"
-            variant="lavender"
-            fullWidth
-            style={styles.actionButton}
-            onPress={onCancel}
-            accessibilityRole="button"
-          />
-        ) : (
-          <GradientButton
-            title={seatsLeft > 0 ? 'Réserver ma place' : 'Complet'}
-            size="sm"
-            variant="cta"
-            fullWidth
-            style={styles.actionButton}
-            onPress={onReserve}
-            disabled={seatsLeft <= 0}
-            accessibilityRole="button"
-          />
-        )}
-      </View>
-
-      {session.email && (amPassenger || hasReview) ? (
-        <View style={styles.reviewCard}>
-          <Text style={styles.reviewTitle}>Ton avis</Text>
-          <Text style={styles.reviewSubtitle}>
-            {hasReview
-              ? 'Merci ! Tu peux mettre à jour ton commentaire à tout moment.'
-              : 'Partage ton expérience avec les prochains passagers.'}
-          </Text>
-          <Pressable
-            style={[styles.reviewButton, reviewDisabled && styles.reviewButtonDisabled]}
-            onPress={onOpenReview}
-            disabled={reviewDisabled}
+      <AppBackground colors={Gradients.background}>
+        <SafeAreaView style={styles.safe}>
+          <ScrollView
+            contentContainerStyle={[styles.scroll, isCompact && styles.scrollCompact]}
+            showsVerticalScrollIndicator={false}
           >
-            <Text
-              style={[
-                styles.reviewButtonText,
-                reviewDisabled && styles.reviewButtonTextDisabled,
-              ]}
+            <GradientBackground
+              colors={Gradients.background}
+              style={[styles.heroCard, isCompact && styles.heroCardCompact]}
             >
-              {reviewDisabled ? reviewHint : reviewLabel}
-            </Text>
-          </Pressable>
-          {!reviewDisabled && !hasReview ? (
-            <Text style={styles.reviewHint}>{'Prends une minute pour laisser un commentaire détaillé.'}</Text>
-          ) : reviewHint && reviewDisabled ? (
-            <Text style={styles.reviewHint}>{reviewHint}</Text>
-          ) : null}
-          {hasReview && myReview ? (
-            <View style={styles.reviewPreview}>
-              <View style={styles.reviewPreviewHeader}>
-                <RatingStars value={myReview.rating} size={16} editable={false} />
-                <Text style={styles.reviewPreviewMeta}>
-                  {myReview.rating.toFixed(1)}/5 • {new Date(myReview.updatedAt).toLocaleDateString('fr-BE', {
-                    day: 'numeric',
-                    month: 'short',
-                  })}
-                </Text>
-              </View>
-              {myReview.comment ? (
-                <Text style={styles.reviewPreviewText}>{myReview.comment}</Text>
-              ) : null}
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-
-      <View style={styles.passengersCard}>
-        <Text style={styles.passengerTitle}>Passagers confirmés</Text>
-        {ride.passengers.length === 0 ? (
-          <Text style={styles.passengerEmpty}>Personne n’a encore réservé. Sois le premier !</Text>
-        ) : (
-          ride.passengers.map((mail) => {
-            const alias = formatAlias(mail);
-            const feedback = passengerFeedbackMap.get(mail);
-            const canEvaluate = amOwner && departed;
-            return (
-              <View key={mail} style={styles.passengerRow}>
-                <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={styles.passengerName}>{alias}</Text>
-                  <Text style={styles.passengerMeta}>
-                    {feedback
-                      ? `${feedback.rating.toFixed(1)}/5 • ${new Date(feedback.updatedAt).toLocaleDateString('fr-BE', {
-                          day: 'numeric',
-                          month: 'short',
-                        })}`
-                      : 'Pas encore évalué'}
+              <View style={[styles.heroHeader, isCompact && styles.heroHeaderCompact]}>
+                <Pressable style={styles.heroBackButton} onPress={() => router.back()}>
+                  <IconSymbol name="chevron.left" size={18} color={Colors.white} />
+                  <Text style={styles.heroBackText}>Retour</Text>
+                </Pressable>
+                <View style={styles.heroHeaderText}>
+                  <Text style={styles.heroTitle}>Trajet vers {ride.destination}</Text>
+                  <Text style={styles.heroSubtitle}>
+                    {ride.depart} • {ride.time} • {departureDayLabel}
                   </Text>
-                  {feedback?.comment ? (
-                    <Text style={styles.passengerComment}>{feedback.comment}</Text>
+                </View>
+                <View style={[styles.heroStatusPill, isCompact && styles.heroStatusPillCompact]}>
+                  <IconSymbol name={heroStatusIcon} size={16} color={Colors.white} />
+                  <Text style={styles.heroStatusText}>{heroStatusLabel}</Text>
+                </View>
+              </View>
+              <View style={[styles.heroDriverRow, isCompact && styles.heroDriverRowCompact]}>
+                <View style={[styles.heroAvatar, { backgroundColor: driverAvatarBg }]}>
+                  <Image source={{ uri: driverAvatarUri }} style={styles.heroAvatarImage} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.heroDriverName}>{ride.driver}</Text>
+                  <Text style={styles.heroDriverEmail}>{driverStudentEmail}</Text>
+                  <View style={styles.heroRatingRow}>
+                    <RatingStars
+                      value={driverRating.count > 0 ? driverRating.average : 0}
+                      size={18}
+                      editable={false}
+                    />
+                    <Text style={styles.heroRatingText}>{driverMetaLabel}</Text>
+                  </View>
+                  <Text style={styles.heroDriverMeta}>{driverCompletedLabel}</Text>
+                  <Pressable
+                    style={styles.heroReviewsLink}
+                    onPress={() =>
+                      router.push({ pathname: '/reviews/[email]', params: { email: ride.ownerEmail } })
+                    }
+                  >
+                    <Text style={styles.heroReviewsText}>Voir les avis du conducteur</Text>
+                  </Pressable>
+                </View>
+                {!amOwner ? (
+                  <Pressable
+                    style={[styles.heroReportButton, isCompact && styles.heroReportButtonCompact]}
+                    onPress={reportDriver}
+                  >
+                    <IconSymbol name="exclamationmark.triangle" size={16} color={Colors.white} />
+                    <Text style={styles.heroReportText}>Signaler</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              {reward.badgeLabel ? (
+                <View style={styles.heroReward}>
+                  <Text style={styles.heroRewardText}>{reward.badgeLabel}</Text>
+                  {reward.highlight ? (
+                    <Text style={styles.heroRewardHint}>{reward.highlight}</Text>
                   ) : null}
                 </View>
-                {amOwner ? (
-                  <View style={styles.passengerActions}>
-                    <Pressable
-                      style={[
-                        styles.passengerActionPrimary,
-                        !canEvaluate && styles.passengerActionDisabled,
-                      ]}
-                      onPress={() => openPassengerFeedbackModal(mail)}
-                      disabled={!canEvaluate}
-                    >
-                      <Text style={styles.passengerActionPrimaryText}>
-                        {feedback ? 'Modifier' : 'Noter'}
+              ) : null}
+            </GradientBackground>
+
+            <View style={[styles.statsRow, isCompact && styles.statsRowCompact]}>
+              {statHighlights.map((stat) => (
+                <View key={stat.key} style={[styles.statCard, isCompact && styles.statCardCompact]}>
+                  <IconSymbol name={stat.icon} size={20} color={Colors.primary} />
+                  <Text style={styles.statLabel}>{stat.label}</Text>
+                  <Text style={styles.statValue}>{stat.value}</Text>
+                  <Text style={styles.statHint}>{stat.hint}</Text>
+                </View>
+              ))}
+            </View>
+
+            <View style={[styles.sectionCard, isCompact && styles.sectionCardCompact]}>
+              <Text style={styles.sectionTitle}>Informations trajet</Text>
+              <View style={styles.infoRow}>
+                <IconSymbol name="person.crop.circle" size={18} color={Colors.gray500} />
+                <Text style={styles.infoLabel}>Conducteur</Text>
+                <Text style={styles.infoValue}>{ride.driver}</Text>
+              </View>
+              <View style={styles.infoRow}>
+                <IconSymbol name="doc.text" size={18} color={Colors.gray500} />
+                <Text style={styles.infoLabel}>Plaque</Text>
+                <Text style={styles.infoValue}>{formatBelgianPlate(ride.plate)}</Text>
+              </View>
+              <View style={styles.infoRow}>
+                <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+                <Text style={styles.infoLabel}>Départ</Text>
+                <Text style={styles.infoValue}>{ride.depart}</Text>
+              </View>
+              <View style={styles.infoRow}>
+                <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
+                <Text style={styles.infoLabel}>Destination</Text>
+                <Text style={styles.infoValue}>{ride.destination}</Text>
+              </View>
+            </View>
+
+            <View style={[styles.sectionCard, isCompact && styles.sectionCardCompact]}>
+              <Text style={styles.sectionTitle}>Transparence paiement</Text>
+              <View style={styles.priceBreakRow}>
+                <Text style={styles.priceBreakLabel}>Montant par passager</Text>
+                <Text style={styles.priceBreakValue}>€{ride.price.toFixed(2)}</Text>
+              </View>
+              <View style={styles.priceBreakRow}>
+                <Text style={styles.priceBreakLabel}>CampusRide (20 %)</Text>
+                <Text style={[styles.priceBreakValue, styles.priceBreakFee]}>
+                  €{platformFeePerPassenger.toFixed(2)}
+                </Text>
+              </View>
+              <View style={styles.priceBreakRow}>
+                <Text style={styles.priceBreakLabel}>Versé au conducteur</Text>
+                <Text style={styles.priceBreakValue}>€{driverNetPerPassenger.toFixed(2)}</Text>
+              </View>
+              <Text style={styles.priceBreakHint}>
+                Ce détail apparaît avant toute confirmation afin que tu saches exactement ce qui est prélevé.
+              </Text>
+            </View>
+
+            <View style={styles.actionStack}>
+              {departed ? (
+                <Text style={styles.statusText}>Ce trajet est terminé.</Text>
+              ) : amOwner ? (
+                <>
+                  <GradientButton
+                    title="Modifier"
+                    size="sm"
+                    variant="lavender"
+                    fullWidth
+                    style={[styles.actionButton, isCompact && styles.actionButtonFull]}
+                    onPress={() => router.push({ pathname: '/explore', params: { edit: ride.id } })}
+                    accessibilityRole="button"
+                  />
+                  <GradientButton
+                    title="Supprimer"
+                    size="sm"
+                    variant="danger"
+                    fullWidth
+                    style={[styles.actionButton, isCompact && styles.actionButtonFull]}
+                    onPress={onDelete}
+                    accessibilityRole="button"
+                  />
+                </>
+              ) : amPassenger ? (
+                <GradientButton
+                  title="Annuler ma réservation"
+                  size="sm"
+                  variant="lavender"
+                  fullWidth
+                  style={[styles.actionButton, isCompact && styles.actionButtonFull]}
+                  onPress={onCancel}
+                  accessibilityRole="button"
+                />
+              ) : (
+                <GradientButton
+                  title={seatsLeft > 0 ? 'Réserver ma place' : 'Complet'}
+                  size="sm"
+                  variant="cta"
+                  fullWidth
+                  style={[styles.actionButton, isCompact && styles.actionButtonFull]}
+                  onPress={onReserve}
+                  disabled={seatsLeft <= 0}
+                  accessibilityRole="button"
+                />
+              )}
+            </View>
+
+            {session.email && (amPassenger || hasReview) ? (
+              <View style={[styles.sectionCard, isCompact && styles.sectionCardCompact]}>
+                <Text style={styles.sectionTitle}>Ton avis</Text>
+                <Text style={styles.reviewSubtitle}>
+                  {hasReview
+                    ? 'Merci ! Tu peux mettre à jour ton commentaire à tout moment.'
+                    : 'Partage ton expérience avec les prochains passagers.'}
+                </Text>
+                <Pressable
+                  style={[styles.reviewButton, reviewDisabled && styles.reviewButtonDisabled]}
+                  onPress={onOpenReview}
+                  disabled={reviewDisabled}
+                >
+                  <Text
+                    style={[
+                      styles.reviewButtonText,
+                      reviewDisabled && styles.reviewButtonTextDisabled,
+                    ]}
+                  >
+                    {reviewDisabled ? reviewHint : reviewLabel}
+                  </Text>
+                </Pressable>
+                {!reviewDisabled && !hasReview ? (
+                  <Text style={styles.reviewHint}>
+                    Prends une minute pour laisser un commentaire détaillé.
+                  </Text>
+                ) : reviewHint && reviewDisabled ? (
+                  <Text style={styles.reviewHint}>{reviewHint}</Text>
+                ) : null}
+                {hasReview && myReview ? (
+                  <View style={styles.reviewPreview}>
+                    <View style={styles.reviewPreviewHeader}>
+                      <RatingStars value={myReview.rating} size={16} editable={false} />
+                      <Text style={styles.reviewPreviewMeta}>
+                        {myReview.rating.toFixed(1)}/5 •{' '}
+                        {new Date(myReview.updatedAt).toLocaleDateString('fr-BE', {
+                          day: 'numeric',
+                          month: 'short',
+                        })}
                       </Text>
-                    </Pressable>
-                    <Pressable
-                      style={styles.passengerActionSecondary}
-                      onPress={() => reportPassenger(mail)}
-                    >
-                      <Text style={styles.passengerActionSecondaryText}>Signaler</Text>
-                    </Pressable>
+                    </View>
+                    {myReview.comment ? (
+                      <Text style={styles.reviewPreviewText}>{myReview.comment}</Text>
+                    ) : null}
                   </View>
                 ) : null}
               </View>
-            );
-          })
-        )}
-      </View>
-    </ScrollView>
+            ) : null}
+
+            <View style={[styles.sectionCard, isCompact && styles.sectionCardCompact]}>
+              <Text style={styles.sectionTitle}>Passagers confirmés</Text>
+              {ride.passengers.length === 0 ? (
+                <Text style={styles.passengerEmpty}>
+                  Personne n’a encore réservé. Sois le premier !
+                </Text>
+              ) : (
+                ride.passengers.map((mail) => {
+                  const alias = formatAlias(mail);
+                  const feedback = passengerFeedbackMap.get(mail);
+                  const canEvaluate = amOwner && departed;
+                  return (
+                    <View key={mail} style={[styles.passengerRow, isCompact && styles.passengerRowCompact]}>
+                      <View style={{ flex: 1, gap: 4 }}>
+                        <Text style={styles.passengerName}>{alias}</Text>
+                        <Text style={styles.passengerMeta}>
+                          {feedback
+                            ? `${feedback.rating.toFixed(1)}/5 • ${new Date(
+                                feedback.updatedAt
+                              ).toLocaleDateString('fr-BE', {
+                                day: 'numeric',
+                                month: 'short',
+                              })}`
+                            : 'Pas encore évalué'}
+                        </Text>
+                        {feedback?.comment ? (
+                          <Text style={styles.passengerComment}>{feedback.comment}</Text>
+                        ) : null}
+                      </View>
+                      {amOwner ? (
+                        <View
+                          style={[
+                            styles.passengerActions,
+                            isCompact && styles.passengerActionsCompact,
+                          ]}
+                        >
+                          <Pressable
+                            style={[
+                              styles.passengerActionPrimary,
+                              !canEvaluate && styles.passengerActionDisabled,
+                            ]}
+                            onPress={() => openPassengerFeedbackModal(mail)}
+                            disabled={!canEvaluate}
+                          >
+                            <Text style={styles.passengerActionPrimaryText}>
+                              {feedback ? 'Modifier' : 'Noter'}
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            style={styles.passengerActionSecondary}
+                            onPress={() => reportPassenger(mail)}
+                          >
+                            <Text style={styles.passengerActionSecondaryText}>Signaler</Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </AppBackground>
       <Modal
         visible={!!feedbackTarget}
         animationType="slide"
         transparent
         onRequestClose={closeFeedbackModal}
       >
-        <View style={styles.modalBackdrop}>
+        <View style={[styles.modalBackdrop, isCompact && styles.modalBackdropCompact]}>
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={styles.modalContainer}
           >
-            <View style={styles.modalCard}>
+            <View style={[styles.modalCard, isCompact && styles.modalCardCompact]}>
               <Text style={styles.modalTitle}>
                 Noter {feedbackTarget?.alias}
               </Text>
@@ -752,6 +887,77 @@ export default function RideDetailScreen() {
           </KeyboardAvoidingView>
         </View>
       </Modal>
+      <Modal visible={!!reportTarget} animationType="slide" transparent onRequestClose={closeReportModal}>
+        <View style={[styles.modalBackdrop, isCompact && styles.modalBackdropCompact]}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.modalContainer}
+          >
+            <ScrollView
+              contentContainerStyle={styles.modalScroll}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={[styles.modalCard, isCompact && styles.modalCardCompact]}>
+                <Text style={styles.modalTitle}>Signaler {reportTarget?.alias}</Text>
+                <Text style={styles.modalSubtitle}>
+                  Sélectionne une raison et ajoute un commentaire pour aider notre équipe.
+                </Text>
+                <View style={styles.reportReasons}>
+                  {REPORT_REASONS.map((reason) => {
+                    const active = reason.value === reportReason;
+                    return (
+                      <TouchableOpacity
+                        key={reason.value}
+                        activeOpacity={0.7}
+                        style={[styles.reportReasonChip, active && styles.reportReasonChipActive]}
+                        onPress={() => setReportReason(reason.value)}
+                      >
+                        <Text
+                          style={[
+                            styles.reportReasonChipText,
+                            active && styles.reportReasonChipTextActive,
+                          ]}
+                        >
+                          {reason.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <TextInput
+                  ref={reportCommentRef}
+                  style={styles.modalInput}
+                  placeholder="Commentaire (optionnel)"
+                  placeholderTextColor={C.gray400}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                  value={reportComment}
+                  onChangeText={setReportComment}
+                />
+                <View style={styles.modalActions}>
+                  <Pressable style={[styles.modalButton, styles.modalButtonSecondary]} onPress={closeReportModal}>
+                    <Text style={styles.modalButtonSecondaryText}>Annuler</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.modalButton,
+                      styles.modalButtonPrimary,
+                      reportSubmitting && styles.modalButtonDisabled,
+                    ]}
+                    disabled={reportSubmitting}
+                    onPress={submitReport}
+                  >
+                    <Text style={styles.modalButtonPrimaryText}>
+                      {reportSubmitting ? 'Envoi…' : 'Envoyer'}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -765,165 +971,261 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: Spacing.md,
   },
+  safe: {
+    flex: 1,
+  },
   scroll: {
     padding: Spacing.xl,
-    backgroundColor: C.gray50,
+    gap: Spacing.xl,
+  },
+  scrollCompact: {
+    padding: Spacing.lg,
     gap: Spacing.lg,
   },
-  header: {
-    gap: Spacing.sm,
+  heroCard: {
+    borderRadius: Radius['2xl'],
+    padding: Spacing.xl,
+    gap: Spacing.lg,
   },
-  backButton: {
-    alignSelf: 'flex-start',
-    paddingVertical: Spacing.xs,
-    paddingHorizontal: Spacing.sm,
-  },
-  backButtonText: {
-    color: C.secondary,
-    fontWeight: '700',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: Typography.heading.fontWeight,
-    color: C.ink,
-    letterSpacing: Typography.heading.letterSpacing,
-  },
-  subtitle: {
-    color: C.gray600,
-    fontSize: 14,
-  },
-  driverCard: {
-    backgroundColor: C.card,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: C.gray200,
+  heroCardCompact: {
     padding: Spacing.lg,
+    gap: Spacing.md,
+  },
+  heroHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.lg,
-    ...(S.card as object),
+    flexWrap: 'wrap',
+    gap: Spacing.md,
   },
-  driverAvatar: {
+  heroHeaderCompact: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+  },
+  heroBackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingVertical: Spacing.xs,
+  },
+  heroBackText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  heroHeaderText: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
+  },
+  heroTitle: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: Typography.heading.letterSpacing,
+    flexShrink: 1,
+  },
+  heroSubtitle: {
+    color: 'rgba(255,255,255,0.85)',
+  },
+  heroStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  heroStatusPillCompact: {
+    alignSelf: 'flex-start',
+  },
+  heroStatusText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  heroDriverRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  heroDriverRowCompact: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+  },
+  heroAvatar: {
     width: 72,
     height: 72,
     borderRadius: Radius.pill,
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    overflow: 'hidden',
   },
-  driverAvatarImage: {
+  heroAvatarImage: {
     width: '100%',
     height: '100%',
   },
-  driverInfo: {
-    flex: 1,
-    gap: Spacing.xs,
-  },
-  driverName: {
+  heroDriverName: {
+    color: '#fff',
     fontSize: 18,
     fontWeight: '700',
-    color: C.ink,
   },
-  driverRatingRow: {
+  heroDriverEmail: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+  },
+  heroRatingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
+    marginTop: 4,
   },
-  driverRatingText: {
-    color: C.gray600,
+  heroRatingText: {
+    color: 'rgba(255,255,255,0.85)',
     fontSize: 12,
   },
-  driverMeta: {
-    color: C.gray600,
+  heroDriverMeta: {
+    color: 'rgba(255,255,255,0.85)',
     fontSize: 12,
+    marginTop: 2,
   },
-  driverBadge: {
-    alignSelf: 'flex-start',
-    backgroundColor: C.primaryLight,
-    borderRadius: Radius.pill,
+  heroReviewsLink: {
+    marginTop: Spacing.xs,
+  },
+  heroReviewsText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
+    textDecorationLine: 'underline',
+  },
+  heroReportButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
     paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.4)',
+    backgroundColor: 'rgba(255,255,255,0.15)',
   },
-  driverBadgeText: {
-    color: C.primaryDark,
+  heroReportButtonCompact: {
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+  },
+  heroReportText: {
+    color: '#fff',
+    fontWeight: '700',
     fontSize: 12,
+  },
+  heroReward: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    gap: 2,
+  },
+  heroRewardText: {
+    color: '#fff',
     fontWeight: '700',
   },
-  driverHighlight: {
-    color: C.secondary,
+  heroRewardHint: {
+    color: 'rgba(255,255,255,0.85)',
     fontSize: 12,
-    fontWeight: '600',
   },
-  driverReviewsLink: { marginTop: Spacing.xs },
-  driverReviewsText: { color: C.secondary, fontWeight: '700', fontSize: 12 },
-  driverReportButton: {
-    marginTop: Spacing.sm,
-    alignSelf: 'flex-start',
-    borderRadius: Radius.pill,
-    borderWidth: 1,
-    borderColor: C.danger,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
+  statsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.md,
   },
-  driverReportText: { color: C.danger, fontWeight: '700', fontSize: 12 },
-  infoCard: {
+  statsRowCompact: {
+    flexDirection: 'column',
+  },
+  statCard: {
+    flex: 1,
+    minWidth: 110,
+    borderRadius: Radius['2xl'],
     backgroundColor: C.card,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: C.gray200,
+    padding: Spacing.md,
+    gap: 4,
+    ...(S.card as object),
+  },
+  statCardCompact: {
+    flex: undefined,
+    width: '100%',
+  },
+  statLabel: {
+    color: C.gray500,
+    fontSize: 12,
+    textTransform: 'uppercase',
+  },
+  statValue: {
+    color: C.ink,
+    fontWeight: '800',
+    fontSize: 18,
+  },
+  statHint: {
+    color: C.gray500,
+    fontSize: 12,
+  },
+  sectionCard: {
+    backgroundColor: C.card,
+    borderRadius: Radius['2xl'],
     padding: Spacing.lg,
     gap: Spacing.md,
     ...(S.card as object),
   },
+  sectionCardCompact: {
+    padding: Spacing.md,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: C.ink,
+  },
   infoRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: Spacing.md,
   },
   infoLabel: {
+    flex: 1,
     color: C.gray600,
-    fontSize: 13,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
+    fontSize: 12,
   },
   infoValue: {
     color: C.ink,
     fontWeight: '700',
-    fontSize: 15,
   },
-  priceBreakCard: {
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: C.gray200,
-    padding: Spacing.lg,
-    gap: Spacing.sm,
-    ...(S.card as object),
-  },
-  priceBreakTitle: { fontWeight: '800', color: C.ink, fontSize: 16 },
   priceBreakRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  priceBreakLabel: { color: C.gray600, fontSize: 13 },
-  priceBreakValue: { color: C.ink, fontWeight: '700' },
-  priceBreakFee: { color: C.primary },
-  priceBreakHint: { color: C.gray500, fontSize: 12 },
-  mapCard: {
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: C.gray200,
-    overflow: 'hidden',
-    ...(S.card as object),
+  priceBreakLabel: {
+    color: C.gray600,
+    fontSize: 13,
   },
-  actions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  priceBreakValue: {
+    color: C.ink,
+    fontWeight: '700',
+  },
+  priceBreakFee: {
+    color: C.primary,
+  },
+  priceBreakHint: {
+    color: C.gray500,
+    fontSize: 12,
+  },
+  actionStack: {
     gap: Spacing.md,
-    marginTop: Spacing.lg,
   },
   actionButton: {
     flexGrow: 1,
     minWidth: 150,
+  },
+  actionButtonFull: {
+    width: '100%',
+    minWidth: undefined,
   },
   statusText: {
     color: C.gray600,
@@ -933,64 +1235,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
     alignSelf: 'center',
     minWidth: 160,
-  },
-  passengersCard: {
-    backgroundColor: C.card,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: C.gray200,
-    padding: Spacing.lg,
-    gap: Spacing.md,
-    ...(S.card as object),
-  },
-  passengerTitle: {
-    fontWeight: '700',
-    color: C.ink,
-  },
-  passengerEmpty: {
-    color: C.gray600,
-    fontSize: 13,
-  },
-  passengerRow: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: C.gray150,
-    paddingVertical: Spacing.sm,
-  },
-  passengerName: { color: C.ink, fontWeight: '600' },
-  passengerMeta: { color: C.gray600, fontSize: 12 },
-  passengerComment: { color: C.gray700, fontSize: 13, marginTop: 4 },
-  passengerActions: { gap: Spacing.xs, justifyContent: 'center' },
-  passengerActionPrimary: {
-    backgroundColor: C.secondary,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.pill,
-  },
-  passengerActionPrimaryText: { color: '#fff', fontWeight: '700', fontSize: 12 },
-  passengerActionSecondary: {
-    borderWidth: 1,
-    borderColor: C.danger,
-    borderRadius: Radius.pill,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-  },
-  passengerActionSecondaryText: { color: C.danger, fontWeight: '700', fontSize: 12 },
-  passengerActionDisabled: { opacity: 0.4 },
-  reviewCard: {
-    backgroundColor: C.card,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: C.gray200,
-    padding: Spacing.lg,
-    gap: Spacing.sm,
-    ...(S.card as object),
-  },
-  reviewTitle: {
-    fontWeight: '700',
-    fontSize: 16,
-    color: C.ink,
   },
   reviewSubtitle: {
     color: C.gray600,
@@ -1036,14 +1280,85 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
   },
+  passengerEmpty: {
+    color: C.gray600,
+    fontSize: 13,
+  },
+  passengerRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: C.gray150,
+    paddingVertical: Spacing.sm,
+  },
+  passengerRowCompact: {
+    flexDirection: 'column',
+  },
+  passengerName: {
+    color: C.ink,
+    fontWeight: '600',
+  },
+  passengerMeta: {
+    color: C.gray600,
+    fontSize: 12,
+  },
+  passengerComment: {
+    color: C.gray700,
+    fontSize: 13,
+    marginTop: 4,
+  },
+  passengerActions: {
+    gap: Spacing.xs,
+    justifyContent: 'center',
+  },
+  passengerActionsCompact: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-start',
+    gap: Spacing.xs,
+    marginTop: Spacing.sm,
+  },
+  passengerActionPrimary: {
+    backgroundColor: C.secondary,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+  },
+  passengerActionPrimaryText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  passengerActionSecondary: {
+    borderWidth: 1,
+    borderColor: C.danger,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+  },
+  passengerActionSecondaryText: {
+    color: C.danger,
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  passengerActionDisabled: {
+    opacity: 0.4,
+  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(16, 32, 48, 0.55)',
     padding: Spacing.xl,
     justifyContent: 'center',
   },
+  modalBackdropCompact: {
+    padding: Spacing.lg,
+  },
   modalContainer: {
     flex: 1,
+    justifyContent: 'center',
+  },
+  modalScroll: {
+    flexGrow: 1,
     justifyContent: 'center',
   },
   modalCard: {
@@ -1051,6 +1366,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     padding: Spacing.xl,
     gap: Spacing.md,
+  },
+  modalCardCompact: {
+    padding: Spacing.lg,
   },
   modalTitle: {
     color: C.ink,
@@ -1067,6 +1385,30 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     minHeight: 100,
     color: C.ink,
+  },
+  reportReasons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
+  },
+  reportReasonChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: C.gray300,
+  },
+  reportReasonChipActive: {
+    backgroundColor: C.primary,
+    borderColor: C.primary,
+  },
+  reportReasonChipText: {
+    color: C.gray600,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  reportReasonChipTextActive: {
+    color: '#fff',
   },
   modalActions: {
     flexDirection: 'row',

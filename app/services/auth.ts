@@ -1,4 +1,15 @@
-import { User, UserCredential, createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut as firebaseSignOut, updateProfile as firebaseUpdateProfile } from 'firebase/auth';
+import {
+  EmailAuthProvider,
+  User,
+  UserCredential,
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  reauthenticateWithCredential,
+  signInWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  updatePassword as firebaseUpdatePassword,
+  updateProfile as firebaseUpdateProfile,
+} from 'firebase/auth';
 
 import { auth } from '@/src/firebase';
 import {
@@ -360,6 +371,40 @@ export const verifyEmail = async (email: string, code: string) => {
     setCurrentSession(session);
   }
   return getSession();
+};
+
+export const changePassword = async (currentPassword: string, nextPassword: string) => {
+  const user = auth.currentUser;
+  if (!user || !user.email) {
+    throw authError('USER_NOT_FOUND', 'Connecte-toi pour modifier ton mot de passe.');
+  }
+  if (!currentPassword) {
+    throw authError('PASSWORD_NOT_SET', 'Ton mot de passe actuel est requis.');
+  }
+  if (!isStrongPassword(nextPassword)) {
+    throw authError(
+      'INVALID_PASSWORD',
+      'Ton nouveau mot de passe doit contenir 8 caractères, une majuscule et un chiffre.'
+    );
+  }
+  try {
+    const credential = EmailAuthProvider.credential(user.email, currentPassword);
+    await reauthenticateWithCredential(user, credential);
+  } catch {
+    throw authError('INVALID_CREDENTIALS', 'Mot de passe actuel incorrect.');
+  }
+  try {
+    await firebaseUpdatePassword(user, nextPassword);
+  } catch (error) {
+    const code = (error as FirebaseAuthError)?.code ?? '';
+    if (code === 'auth/weak-password') {
+      throw authError(
+        'INVALID_PASSWORD',
+        'Ton nouveau mot de passe doit contenir 8 caractères, une majuscule et un chiffre.'
+      );
+    }
+    throw error;
+  }
 };
 
 export const updateProfile = async (email: string, changes: ProfileChanges) => {

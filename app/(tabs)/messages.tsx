@@ -14,6 +14,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 
 import { AppBackground } from '@/components/ui/app-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -37,23 +38,40 @@ const C = Colors;
 
 export default function MessagesScreen() {
   const session = useAuthSession();
+  const params = useLocalSearchParams<{ thread?: string }>();
   const { width } = useWindowDimensions();
   const isSplitLayout = width >= 960;
   const bottomInset = useTabBarInset(Spacing.lg);
+  const threadOwnerEmail = session.email ?? 'demo@campusride.be';
   const [threads, setThreads] = useState<ThreadSnapshot[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [pendingThreadId, setPendingThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
   const [optionsVisible, setOptionsVisible] = useState(false);
 
   useEffect(() => {
-    if (!session.email) return;
-    ensureDemoThreads(session.email);
-    const unsubscribe = subscribeThreads(session.email, (items) => {
+    ensureDemoThreads(threadOwnerEmail);
+    const unsubscribe = subscribeThreads(threadOwnerEmail, (items) => {
       setThreads(items);
     });
     return unsubscribe;
-  }, [session.email]);
+  }, [threadOwnerEmail]);
+
+  useEffect(() => {
+    if (typeof params.thread === 'string' && params.thread.length > 0) {
+      setPendingThreadId(params.thread);
+    }
+  }, [params.thread]);
+
+  useEffect(() => {
+    if (!pendingThreadId) return;
+    const match = threads.find((thread) => thread.id === pendingThreadId);
+    if (match) {
+      setActiveThreadId(match.id);
+      setPendingThreadId(null);
+    }
+  }, [pendingThreadId, threads]);
 
   useEffect(() => {
     if (!threads.length) {
@@ -81,11 +99,11 @@ export default function MessagesScreen() {
     const unsubscribe = subscribeMessages(activeThreadId, (items) => {
       setMessages(items);
     });
-    if (session.email) {
-      markThreadAsRead(activeThreadId, session.email);
+    if (threadOwnerEmail) {
+      markThreadAsRead(activeThreadId, threadOwnerEmail);
     }
     return unsubscribe;
-  }, [activeThreadId, session.email]);
+  }, [activeThreadId, threadOwnerEmail]);
 
   const activeThread = useMemo(
     () => threads.find((thread) => thread.id === activeThreadId) ?? null,
@@ -93,9 +111,9 @@ export default function MessagesScreen() {
   );
 
   useEffect(() => {
-    if (!activeThreadId || !session.email) return;
-    markThreadAsRead(activeThreadId, session.email);
-  }, [messages.length, activeThreadId, session.email]);
+    if (!activeThreadId || !threadOwnerEmail) return;
+    markThreadAsRead(activeThreadId, threadOwnerEmail);
+  }, [messages.length, activeThreadId, threadOwnerEmail]);
 
   useEffect(() => {
     if (!activeThread) setOptionsVisible(false);
@@ -106,11 +124,11 @@ export default function MessagesScreen() {
   }, []);
 
   const myEmail = session.email ?? '';
-  const myEmailKey = myEmail.toLowerCase();
+  const threadEmailKey = threadOwnerEmail.toLowerCase();
 
   const conversationPartner = activeThread
     ? activeThread.participants.find(
-        (participant) => participant.email.toLowerCase() !== myEmailKey
+        (participant) => participant.email.toLowerCase() !== threadEmailKey
       ) ?? activeThread.participants[0]
     : null;
   const conversationPartnerName =
@@ -187,12 +205,12 @@ export default function MessagesScreen() {
 
   const getThreadPartnerLabel = (thread: ThreadSnapshot) => {
     const other =
-      thread.participants.find((participant) => participant.email.toLowerCase() !== myEmailKey) ??
+      thread.participants.find((participant) => participant.email.toLowerCase() !== threadEmailKey) ??
       thread.participants[0];
     return other?.name ?? other?.email ?? 'Conversation';
   };
 
-  const getUnreadCount = (thread: ThreadSnapshot) => thread.unreadBy[myEmailKey] ?? 0;
+  const getUnreadCount = (thread: ThreadSnapshot) => thread.unreadBy[threadEmailKey] ?? 0;
 
   const formatRelativeLabel = (timestamp: number | null) => {
     if (!timestamp) return null;
@@ -322,7 +340,7 @@ export default function MessagesScreen() {
                 const showSeparator =
                   !prev ||
                   new Date(prev.sentAt).toDateString() !== new Date(item.sentAt).toDateString();
-                const ownMessage = item.author.toLowerCase() === myEmailKey;
+                const ownMessage = item.author.toLowerCase() === threadEmailKey;
                 const isLast = index === messages.length - 1;
                 const statusLabel =
                   ownMessage && isLast ? getMessageStatusLabel(item.receipts) : null;

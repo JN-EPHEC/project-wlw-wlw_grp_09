@@ -6,7 +6,6 @@ import {
   Alert,
   Image,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -25,6 +24,7 @@ import { AppBackground } from "@/components/ui/app-background";
 import { GradientBackground } from "@/components/ui/gradient-background";
 import { GradientButton } from "@/components/ui/gradient-button";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import PrivacyPolicyModal from "@/components/privacy-policy-modal";
 
 import { Colors, Gradients, Radius, Spacing } from "./ui/theme";
 import {
@@ -400,6 +400,13 @@ export default function SignUp() {
                     onPress={() => setShowRgpd(true)}
                   >
                     conditions générales d'utilisation
+                  </Text>{" "}
+                  et la{" "}
+                  <Text
+                    style={styles.rgpdLink}
+                    onPress={() => setShowRgpd(true)}
+                  >
+                    politique de confidentialité
                   </Text>
                   .
                 </Text>
@@ -409,58 +416,10 @@ export default function SignUp() {
               ) : null}
 
               {/* MODAL RGPD */}
-              <Modal
+              <PrivacyPolicyModal
                 visible={showRgpd}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setShowRgpd(false)}
-              >
-                <View style={styles.rgpdOverlay}>
-                  <View style={styles.rgpdCard}>
-                    <View style={styles.rgpdHeader}>
-                      <View style={styles.rgpdBadge}>
-                        <IconSymbol
-                          name="lock.shield.fill"
-                          size={18}
-                          color={Colors.primary}
-                        />
-                        <Text style={styles.rgpdBadgeText}>
-                          Protection des données
-                        </Text>
-                      </View>
-                      <Pressable onPress={() => setShowRgpd(false)} hitSlop={12}>
-                        <Text style={styles.rgpdClose}>Fermer</Text>
-                      </Pressable>
-                    </View>
-                    <Text style={styles.rgpdTitle}>
-                      Politique RGPD CampusRide
-                    </Text>
-                    <Text style={styles.rgpdSubtitle}>
-                      Voici l’essentiel sur la façon dont nous protégeons tes
-                      informations personnelles en Belgique.
-                    </Text>
-                    <ScrollView
-                      contentContainerStyle={styles.rgpdContent}
-                      showsVerticalScrollIndicator={false}
-                    >
-                      {RGPD_SECTIONS.map((section) => (
-                        <View key={section.title} style={styles.rgpdSection}>
-                          <Text style={styles.rgpdSectionTitle}>
-                            {section.title}
-                          </Text>
-                          <Text style={styles.rgpdText}>{section.body}</Text>
-                        </View>
-                      ))}
-                    </ScrollView>
-                    <Pressable
-                      style={styles.rgpdAction}
-                      onPress={() => setShowRgpd(false)}
-                    >
-                      <Text style={styles.rgpdActionText}>J’ai compris</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </Modal>
+                onClose={() => setShowRgpd(false)}
+              />
 
               {/* CTA */}
               <GradientButton
@@ -489,70 +448,6 @@ export default function SignUp() {
   );
 }
 
-// ---------------- RGPD SECTIONS (inchangé) ----------------
-const RGPD_SECTIONS = [
-  {
-    title: "1. Responsable du traitement",
-    body:
-      "CampusRide SRL — Rue des Étudiants 42, 1050 Bruxelles, Belgique — assure la gestion de tes données. " +
-      "Pour toute question ou exercice de droits, écris à privacy@campusride.app (notre délégué à la protection des données).",
-  },
-  {
-    title: "2. Finalités et bases légales",
-    body:
-      "Nous traitons uniquement les informations nécessaires pour : (i) créer et gérer ton compte étudiant " +
-      "(base contractuelle), (ii) vérifier ton identité et sécuriser les trajets (obligation légale/intérêt légitime), " +
-      "(iii) mettre en relation conducteurs et passagers et gérer les paiements (exécution du contrat), " +
-      "(iv) assurer l’assistance, la lutte contre la fraude et l’envoi de communications opt-in (intérêt légitime ou consentement).",
-  },
-  {
-    title: "3. Données collectées",
-    body:
-      "Email universitaire, mot de passe, préférences conducteur/passager, trajets, avis, messages, historique wallet et, " +
-      "lorsque tu décides de devenir conducteur vérifié, les documents nécessaires (carte d’identité, carte étudiante, permis, selfie).",
-  },
-  {
-    title: "4. Destinataires et sous-traitants",
-    body:
-      "Seules nos équipes habilitées (support, modération, finance) et des prestataires européens conformes RGPD " +
-      "(hébergement, email transactionnel, paiement, analytics) accèdent à tes données. Des clauses contractuelles strictes sont en place.",
-  },
-  {
-    title: "5. Durées de conservation",
-    body:
-      "Compte inactif : anonymisation après 24 mois. Documents de vérification : suppression 24 mois après validation ou sur demande. " +
-      "Logs techniques : 6 mois. Données comptables : 7 ans (obligation légale). Conversations et avis : conservés tant que le compte existe ou anonymisés sous 12 mois après suppression.",
-  },
-  {
-    title: "6. Transferts hors UE",
-    body:
-      "Les serveurs sont en Europe. Si un transfert hors UE est nécessaire, nous utilisons les Clauses Contractuelles Types " +
-      "et évaluons les garanties supplémentaires pour protéger tes données.",
-  },
-  {
-    title: "7. Tes droits",
-    body:
-      "Accès, rectification, effacement, limitation, opposition, portabilité, retrait de consentement, directives post-mortem. " +
-      "Réponse sous 30 jours : privacy@campusride.app. Tu peux aussi contacter l’Autorité de Protection des Données (APD) — Rue de la Presse 35, 1000 Bruxelles.",
-  },
-  {
-    title: "8. Sécurité",
-    body:
-      "Chiffrement TLS/AES, contrôle d’accès strict, journalisation, revues régulières et plan de réponse aux incidents. " +
-      "Toute violation pertinente est notifiée aux utilisateurs et à l’APD conformément aux articles 33 et 34 du RGPD.",
-  },
-  {
-    title: "9. Public visé",
-    body:
-      "CampusRide est réservé aux étudiants majeurs. Toute inscription frauduleuse ou non autorisée est supprimée.",
-  },
-  {
-    title: "10. Mises à jour",
-    body:
-      "Nous pouvons adapter cette politique (nouveaux services, obligations légales). Tu seras informé via l’app ou par email en cas de changement majeur. " +
-      "Archive disponible sur demande.",
-  },
-];
 
 // ---------------- STYLES (inchangés) ----------------
 const styles = StyleSheet.create({
@@ -731,90 +626,9 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontWeight: "700",
   },
-  rgpdOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "flex-end",
-    padding: Spacing.lg,
-  },
-  rgpdCard: {
-    backgroundColor: Colors.card,
-    borderRadius: 28,
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.lg,
-    paddingBottom: Spacing.xl,
-    maxHeight: "85%",
-    width: "100%",
-    alignSelf: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 10,
-    gap: Spacing.md,
-  },
-  rgpdHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  rgpdBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.sm,
-    backgroundColor: Colors.gray150,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.pill,
-  },
-  rgpdBadgeText: {
-    color: Colors.gray700,
+  rgpdLink: {
+    color: Colors.primaryDark,
     fontWeight: "700",
-    fontSize: 12,
-  },
-  rgpdTitle: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: Colors.ink,
-  },
-  rgpdSubtitle: {
-    color: Colors.gray600,
-    lineHeight: 20,
-    fontSize: 13,
-  },
-  rgpdClose: {
-    color: Colors.primary,
-    fontWeight: "700",
-  },
-  rgpdContent: {
-    paddingVertical: Spacing.sm,
-    gap: Spacing.md,
-  },
-  rgpdSection: {
-    gap: Spacing.xs,
-    marginBottom: Spacing.md,
-  },
-  rgpdSectionTitle: {
-    fontWeight: "700",
-    color: Colors.ink,
-    fontSize: 15,
-  },
-  rgpdText: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: Colors.gray700,
-  },
-  rgpdAction: {
-    marginTop: Spacing.sm,
-    alignSelf: "stretch",
-    backgroundColor: Colors.primary,
-    borderRadius: Radius.pill,
-    paddingVertical: Spacing.md,
-    alignItems: "center",
-  },
-  rgpdActionText: {
-    color: Colors.white,
-    fontWeight: "700",
-    fontSize: 15,
+    textDecorationLine: "underline",
   },
 });

@@ -1,10 +1,16 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // Autoriser la lecture et l'ecriture pour tous.
-    // ATTENTION: ces regles ne sont pas securisees pour la production.
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    match /users/{userId}/{allPaths=**} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
     match /{allPaths=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

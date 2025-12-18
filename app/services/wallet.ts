@@ -14,9 +14,22 @@ export type WalletTransaction = {
   metadata?: Record<string, unknown>;
 };
 
+export type PaymentMethodType = 'card' | 'apple-pay';
+
 export type PayoutMethod = {
+  id: string;
+  type: PaymentMethodType;
   brand: string;
   last4: string;
+  addedAt: number;
+  holderName?: string;
+  expMonth?: number;
+  expYear?: number;
+};
+
+export type PayoutAccount = {
+  iban: string;
+  label: string;
   addedAt: number;
 };
 
@@ -35,6 +48,9 @@ export type WalletSnapshot = {
   points: number;
   rideCredits: number;
   payoutMethod: PayoutMethod | null;
+  paymentMethods: PayoutMethod[];
+  defaultPaymentMethodId: string | null;
+  payoutAccount: PayoutAccount | null;
   checklist: ChecklistItem[];
 };
 
@@ -46,6 +62,9 @@ type Wallet = {
   points: number;
   rideCredits: number;
   payoutMethod: PayoutMethod | null;
+  paymentMethods: PayoutMethod[];
+  defaultPaymentMethodId: string | null;
+  payoutAccount: PayoutAccount | null;
   checklist: ChecklistItem[];
   seeded?: boolean;
 };

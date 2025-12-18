@@ -144,7 +144,8 @@ export default function VerifyEmail() {
           <Text style={styles.h1}>Vérifie ton e-mail</Text>
           <Text style={styles.text}>Nous avons envoyé un code de sécurité à</Text>
           <Text style={styles.email}>{normalizedEmail || '—'}</Text>
-          <Text style={styles.text}>Entre les 4 chiffres reçus (@students.ephec.be).</Text>
+              <Text style={styles.text}>Entre les 4 chiffres reçus (@students.ephec.be).</Text>
+              <Text style={styles.subHint}>Un code vient d’être envoyé à cette adresse.</Text>
 
           <Pressable
             style={styles.codeBoxes}
@@ -189,7 +190,7 @@ export default function VerifyEmail() {
           ) : (
             <>
               <GradientButton
-                title="Confirmer le code"
+                title="Vérifier"
                 onPress={onSimulateConfirm}
                 disabled={loading}
                 style={styles.cta}
@@ -207,6 +208,11 @@ export default function VerifyEmail() {
                     : 'Renvoyer le code'
                 }
               />
+              <Text style={styles.countdownText}>
+                {resendTimer > 0
+                  ? `Nouveau code disponible dans ${resendTimer} seconde${resendTimer > 1 ? 's' : ''}.`
+                  : 'Tu peux demander un nouveau code immédiatement.'}
+              </Text>
             </>
           )}
 
@@ -275,6 +281,15 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   feedbackText: { color: Colors.gray600, fontSize: 13 },
+  subHint: {
+    color: Colors.gray600,
+    fontSize: 12,
+  },
+  countdownText: {
+    color: Colors.gray600,
+    fontSize: 12,
+    textAlign: 'center',
+  },
   note: { color: 'rgba(16,32,48,0.65)', marginTop: 12, fontSize: 12, textAlign: 'center' },
   secondaryButton: {
     marginTop: 8,

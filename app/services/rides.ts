@@ -4,7 +4,11 @@ import {
   CAMPUSPOINTS_PER_PASSENGER,
   CAMPUSRIDE_COMMISSION_RATE,
 } from '../constants/fuel';
-import { getAreaSubscribers, pushNotification } from './notifications';
+import {
+  cancelNotificationSchedule,
+  getAreaSubscribers,
+  pushNotification,
+} from './notifications';
 import { processPayment, type Payment, type PaymentMethod } from './payments';
 import { creditWallet, addPoints } from './wallet';
 import { recordCommission } from './platform';
@@ -105,6 +109,51 @@ const computeDepartureAt = (time: string, reference = Date.now()) => {
 
 export const hasRideDeparted = (ride: Ride, now = Date.now()) => now >= ride.departureAt;
 
+const reminderKey = (rideId: string, email: string, role: 'driver' | 'passenger') =>
+  `${rideId}:${email.toLowerCase()}:${role}:reminder`;
+
+const REMINDER_OFFSET_MINUTES = 30;
+
+const scheduleRideReminder = (ride: Ride, email: string, role: 'driver' | 'passenger') => {
+  const scheduleAt = ride.departureAt - REMINDER_OFFSET_MINUTES * 60 * 1000;
+  if (scheduleAt <= Date.now() + 1000) {
+    return;
+  }
+  const scheduleKey = reminderKey(ride.id, email, role);
+  cancelNotificationSchedule(scheduleKey);
+  pushNotification({
+    to: email,
+    title: 'Rappel trajet',
+    body:
+      role === 'driver'
+        ? `Tu pars bientôt vers ${ride.destination}. Pense à prévenir tes passagers.`
+        : `Ton trajet ${ride.depart} → ${ride.destination} démarre dans ${REMINDER_OFFSET_MINUTES} min.`,
+    metadata: {
+      action: 'ride-reminder',
+      rideId: ride.id,
+      role,
+      depart: ride.depart,
+      destination: ride.destination,
+      time: ride.time,
+    },
+    scheduleAt,
+    scheduleKey,
+  });
+};
+
+const cancelRideReminder = (rideId: string, email: string, role: 'driver' | 'passenger') => {
+  cancelNotificationSchedule(reminderKey(rideId, email, role));
+};
+
+const formatPassengerDisplay = (email: string) => {
+  const alias = email.split('@')[0] ?? email;
+  return alias
+    .replace(/[._-]+/g, ' ')
+    .split(/\s+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+};
+
 const buildRide = (payload: RidePayload): Ride => {
   const driver = sanitiseText('driver', payload.driver);
   const depart = sanitiseText('depart', payload.depart);
@@ -189,8 +238,8 @@ const updateRideFromPatch = (ride: Ride, patch: Partial<RidePayload>): Ride => {
       price: 4.5,
       createdAt: now - 1000 * 60 * 45,
       updatedAt: now - 1000 * 60 * 30,
-      ownerEmail: 'lina.dupont@ephec.be',
-      passengers: ['marc.durand@ephec.be'],
+      ownerEmail: 'lina.dupont@students.ephec.be',
+      passengers: ['marc.durand@students.ephec.be'],
       canceledPassengers: [],
       departureAt: computeDepartureAt('08:15', now - 1000 * 60 * 45),
       payoutProcessed: true,
@@ -207,7 +256,7 @@ const updateRideFromPatch = (ride: Ride, patch: Partial<RidePayload>): Ride => {
       price: 3.2,
       createdAt: now - 1000 * 60 * 70,
       updatedAt: now - 1000 * 60 * 70,
-      ownerEmail: 'bilal.nasser@ephec.be',
+      ownerEmail: 'bilal.nasser@students.ephec.be',
       passengers: [],
       canceledPassengers: [],
       departureAt: computeDepartureAt('09:00', now - 1000 * 60 * 70),
@@ -280,6 +329,7 @@ export const getRides = () => {
 export const addRide = (payload: RidePayload) => {
   const ride = buildRide(payload);
   rides = [ride, ...rides];
+  scheduleRideReminder(ride, ride.ownerEmail, 'driver');
   const area = resolveAreaFromPlace(ride.depart);
   if (area) {
     const recipients = getAreaSubscribers(area.id).filter((email) => email !== ride.ownerEmail);
@@ -309,8 +359,10 @@ export const addRide = (payload: RidePayload) => {
 
 export const updateRide = (id: string, patch: Partial<RidePayload>) => {
   let updated: Ride | null = null;
+  let previous: Ride | null = null;
   rides = rides.map((r) => {
     if (r.id !== id) return r;
+    previous = r;
     updated = updateRideFromPatch(r, patch);
     return updated;
   });
@@ -318,6 +370,7 @@ export const updateRide = (id: string, patch: Partial<RidePayload>) => {
     throw new Error('Trajet introuvable');
   }
   notifyRides();
+  notifyRideStatusChange(previous, updated);
   return updated;
 };
 
@@ -329,6 +382,19 @@ export const removeRide = (id: string) => {
   if (hasRideDeparted(target)) {
     throw new Error('Impossible de supprimer un trajet déjà parti.');
   }
+  target.passengers.forEach((passengerEmail) => {
+    pushNotification({
+      to: passengerEmail,
+      title: 'Trajet annulé',
+      body: `${target.driver} a annulé ${target.depart} → ${target.destination}.`,
+      metadata: {
+        action: 'ride-cancelled',
+        rideId: target.id,
+      },
+    });
+    cancelRideReminder(target.id, passengerEmail, 'passenger');
+  });
+  cancelRideReminder(target.id, target.ownerEmail, 'driver');
   rides = rides.filter((r) => r.id !== id);
   notifyRides();
 };
@@ -407,6 +473,28 @@ export const reserveSeat = (
 
   if (updated && payment) {
     notifyRides();
+    const passengerDisplay = formatPassengerDisplay(passengerEmail);
+    pushNotification({
+      to: updated.ownerEmail,
+      title: 'Nouvelle réservation confirmée',
+      body: `${passengerDisplay} rejoint ton trajet ${updated.depart} → ${updated.destination}.`,
+      metadata: {
+        action: 'reservation-confirmed',
+        rideId: updated.id,
+        passenger: passengerDisplay,
+      },
+    });
+    pushNotification({
+      to: passengerEmail,
+      title: 'Réservation confirmée',
+      body: `Ta place pour ${updated.depart} → ${updated.destination} est confirmée.`,
+      metadata: {
+        action: 'reservation-confirmed',
+        rideId: updated.id,
+        driver: updated.driver,
+      },
+    });
+    scheduleRideReminder(updated, passengerEmail, 'passenger');
     return { ok: true, ride: updated, payment };
   }
 
@@ -431,12 +519,7 @@ export const cancelReservation = (rideId: string, passengerEmail: string) => {
         updatedAt,
       };
 
-      const alias = passengerEmail.split('@')[0] ?? passengerEmail;
-      const passengerDisplay = alias
-        .replace(/[._-]+/g, ' ')
-        .split(/\s+/)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-        .join(' ');
+      const passengerDisplay = formatPassengerDisplay(passengerEmail);
 
       pushNotification({
         to: ride.ownerEmail,
@@ -457,6 +540,7 @@ export const cancelReservation = (rideId: string, passengerEmail: string) => {
           rideId: ride.id,
         },
       });
+      cancelRideReminder(ride.id, passengerEmail, 'passenger');
     }
     return updated;
   });
@@ -470,4 +554,37 @@ export const cancelReservation = (rideId: string, passengerEmail: string) => {
 export const getRide = (id: string) => {
   processRidePayouts();
   return rides.find((r) => r.id === id);
+};
+
+const notifyRideStatusChange = (previous: Ride | null, updated: Ride | null) => {
+  if (!previous || !updated) return;
+  const changed: string[] = [];
+  if (previous.time !== updated.time) changed.push(`heure ${updated.time}`);
+  if (previous.depart !== updated.depart || previous.destination !== updated.destination) {
+    changed.push('itinéraire mis à jour');
+  }
+  if (previous.seats !== updated.seats) {
+    changed.push(`${updated.seats} place(s) dispo`);
+  }
+  if (changed.length === 0) return;
+  const body = `Le trajet ${updated.depart} → ${updated.destination} a changé (${changed.join(', ')}).`;
+  updated.passengers.forEach((email) =>
+    pushNotification({
+      to: email,
+      title: 'Trajet mis à jour',
+      body,
+      metadata: {
+        action: 'ride-status-changed',
+        rideId: updated.id,
+        depart: updated.depart,
+        destination: updated.destination,
+        time: updated.time,
+      },
+    })
+  );
+  if (previous.departureAt !== updated.departureAt) {
+    cancelRideReminder(updated.id, updated.ownerEmail, 'driver');
+    scheduleRideReminder(updated, updated.ownerEmail, 'driver');
+    updated.passengers.forEach((email) => scheduleRideReminder(updated, email, 'passenger'));
+  }
 };
