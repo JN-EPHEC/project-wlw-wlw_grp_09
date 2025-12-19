@@ -36,7 +36,7 @@ export const Colors = {
 type GradientStops = readonly [string, string, string?];
 
 export const Gradients: Record<
-  'sunset' | 'twilight' | 'lavender' | 'cta' | 'card' | 'soft' | 'danger' | 'success' | 'background' | 'tabBar' | 'ocean',
+  'sunset' | 'twilight' | 'lavender' | 'cta' | 'card' | 'soft' | 'danger' | 'success' | 'background' | 'tabBar' | 'ocean' | 'driver',
   GradientStops
 > = {
   sunset: ['#FF8347', '#FF9864', '#F1B6FF'],
@@ -50,6 +50,7 @@ export const Gradients: Record<
   background: ['#7A5FFF', '#7A5FFF', '#F1B6FF'],
   tabBar: ['#7A5FFF', '#7A5FFF', '#F1B6FF'],
   ocean: ['#7A5FFF', '#7A5FFF', '#F1B6FF'],
+  driver: ['#FF9052', '#FFAA6C', '#FFD2A6'],
 };
 
 export const Spacing = {

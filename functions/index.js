@@ -1,6 +1,7 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
+const { parseMetadata, saveEncryptedFile, requestReview, parseEmail, serializeSnapshot } = require('./src/driverDocuments');
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -133,3 +134,53 @@ exports.notifyVerificationCode = functions.firestore
     }
     return null;
   });
+
+exports.driverDocuments = functions.https.onRequest(async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).send('');
+  }
+
+  if (req.method === 'GET') {
+    try {
+      const email = parseEmail(req.query.email);
+      const snapshot = await serializeSnapshot(email);
+      return res.status(200).json(snapshot);
+    } catch (error) {
+      const status = error.message === 'EMAIL_REQUIRED' ? 400 : 500;
+      return res.status(status).json({ error: error.message });
+    }
+  }
+
+  if (req.method === 'POST') {
+    try {
+      const { email, documentType, ciphertext, metadata } = req.body || {};
+      const normalizedEmail = parseEmail(email);
+      if (!documentType) {
+        return res.status(400).json({ error: 'DOCUMENT_TYPE_REQUIRED' });
+      }
+      if (!ciphertext) {
+        return res.status(400).json({ error: 'CIPHERTEXT_REQUIRED' });
+      }
+      const parsedMetadata = parseMetadata({ metadata });
+      const storagePath = await saveEncryptedFile({
+        email: normalizedEmail,
+        documentType,
+        ciphertext,
+      });
+      await requestReview(normalizedEmail, documentType, storagePath, parsedMetadata);
+      const snapshot = await serializeSnapshot(normalizedEmail);
+      return res.status(200).json(snapshot);
+    } catch (error) {
+      console.error('[driverDocuments] failed', error);
+      const status = ['FORMAT_NOT_ALLOWED', 'FILE_TOO_LARGE', 'LICENSE_EXPIRED'].includes(error.message)
+        ? 400
+        : 500;
+      return res.status(status).json({ error: error.message || 'UNKNOWN_ERROR' });
+    }
+  }
+
+  return res.status(405).json({ error: 'METHOD_NOT_ALLOWED' });
+});

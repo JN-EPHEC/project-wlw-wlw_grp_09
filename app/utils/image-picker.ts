@@ -8,6 +8,9 @@ let FileSystem: typeof import('expo-file-system') | null = null;
 const MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024;
 const PROFILE_FORMATS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic']);
 const PROFILE_VALIDATION_ERROR = 'profile-photo-invalid';
+const MAX_KYC_DOC_BYTES = 5 * 1024 * 1024;
+const KYC_FORMATS = new Set(['jpg', 'jpeg', 'png', 'heic', 'heif', 'pdf']);
+const KYC_VALIDATION_ERROR = 'kyc-document-invalid';
 
 const getAvatarFallback = () => {
   Alert.alert(
@@ -17,7 +20,10 @@ const getAvatarFallback = () => {
   return getSampleAvatarImage();
 };
 
-const pickFromWebInput = async (options?: { capture?: 'user' | 'environment' }): Promise<string | null> => {
+const pickFromWebInput = async (options?: {
+  capture?: 'user' | 'environment';
+  accept?: string;
+}): Promise<string | null> => {
   if (Platform.OS !== 'web') return null;
   const doc =
     typeof globalThis !== 'undefined' && 'document' in globalThis
@@ -33,7 +39,7 @@ const pickFromWebInput = async (options?: { capture?: 'user' | 'environment' }):
   return new Promise((resolve) => {
     const input = doc.createElement('input');
     input.type = 'file';
-    input.accept = 'image/*';
+    input.accept = options?.accept ?? 'image/*';
     if (options?.capture) {
       input.capture = options.capture;
     }
@@ -143,6 +149,14 @@ const copyAssetToDocuments = async (uri: string, folder: string, prefix: string)
       throw error;
     }
   }
+  if (folder === 'kyc' || folder === 'vehicles') {
+    try {
+      await validateKycDocument(dest);
+    } catch (error) {
+      await FS.deleteAsync(dest, { idempotent: true });
+      throw error;
+    }
+  }
   return dest;
 };
 
@@ -160,6 +174,20 @@ const validateProfilePhoto = async (path: string) => {
   if (info.exists && typeof info.size === 'number' && info.size > MAX_PROFILE_PHOTO_BYTES) {
     Alert.alert('Photo trop lourde', 'Sélectionne une image de moins de 5 Mo.');
     throw new Error(PROFILE_VALIDATION_ERROR);
+  }
+};
+
+const validateKycDocument = async (path: string) => {
+  const FS = await getFileSystem();
+  const extension = cleanExtension(path).toLowerCase();
+  if (!KYC_FORMATS.has(extension)) {
+    Alert.alert('Format non supporté', 'Formats acceptés : JPG, PNG, PDF ou HEIC.');
+    throw new Error(KYC_VALIDATION_ERROR);
+  }
+  const info = await FS.getInfoAsync(path);
+  if (info.exists && typeof info.size === 'number' && info.size > MAX_KYC_DOC_BYTES) {
+    Alert.alert('Fichier trop lourd', 'Chaque document doit faire moins de 5 Mo.');
+    throw new Error(KYC_VALIDATION_ERROR);
   }
 };
 
@@ -229,7 +257,12 @@ const pickFromGallery = async ({
   try {
     return await copyAssetToDocuments(asset.uri, folder, prefix);
   } catch (error) {
-    if (!(error instanceof Error && error.message === PROFILE_VALIDATION_ERROR)) {
+    if (
+      !(
+        error instanceof Error &&
+        (error.message === PROFILE_VALIDATION_ERROR || error.message === KYC_VALIDATION_ERROR)
+      )
+    ) {
       Alert.alert('Erreur', 'Impossible de sauvegarder la photo. Réessaie avec une autre image.');
     }
     return null;
@@ -253,7 +286,7 @@ const pickFromFiles = async ({ folder, prefix, sampleType, fallback }: FilePicke
   };
 
   if (Platform.OS === 'web') {
-    const webSelection = await pickFromWebInput();
+    const webSelection = await pickFromWebInput({ accept: 'image/*,application/pdf' });
     if (webSelection) {
       return webSelection;
     }
@@ -291,7 +324,12 @@ const pickFromFiles = async ({ folder, prefix, sampleType, fallback }: FilePicke
 
     return await copyAssetToDocuments(assetUri, folder, prefix);
   } catch (error) {
-    if (!(error instanceof Error && error.message === PROFILE_VALIDATION_ERROR)) {
+    if (
+      !(
+        error instanceof Error &&
+        (error.message === PROFILE_VALIDATION_ERROR || error.message === KYC_VALIDATION_ERROR)
+      )
+    ) {
       Alert.alert('Erreur', 'Impossible d’importer ce fichier. Réessaie plus tard.');
     }
     return fallbackSample();

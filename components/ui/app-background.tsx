@@ -2,6 +2,7 @@ import { ReactNode } from 'react';
 import { StyleSheet, StyleProp, ViewStyle } from 'react-native';
 
 import { Gradients } from '@/app/ui/theme';
+import { useAuthSession } from '@/hooks/use-auth-session';
 import { GradientBackground } from './gradient-background';
 
 type AppBackgroundProps = {
@@ -11,8 +12,10 @@ type AppBackgroundProps = {
 };
 
 export function AppBackground({ children, style, colors }: AppBackgroundProps) {
+  const session = useAuthSession();
+  const fallbackColors = session.isDriver ? Gradients.driver : Gradients.background;
   return (
-    <GradientBackground colors={colors ?? Gradients.background} style={[styles.base, style]}>
+    <GradientBackground colors={colors ?? fallbackColors} style={[styles.base, style]}>
       {children}
     </GradientBackground>
   );

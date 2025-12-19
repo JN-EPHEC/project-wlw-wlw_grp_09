@@ -18,8 +18,15 @@ import {
   savePassenger,
   setPassengerVerificationCode,
   updatePassengerProfile,
+  updateUserRoles,
 } from '@/src/firestoreUsers';
 import { isStrongPassword, isStudentEmail, sanitizeEmail, sanitizeName } from '../validators';
+import {
+  initDriverSecurity,
+  recordSelfie as recordDriverSelfie,
+  updateDriverLicense as seedDriverLicense,
+  updateVehicleInfo as seedVehicleInfo,
+} from './security';
 
 export type AuthSession = {
   email: string | null;
@@ -190,11 +197,45 @@ const refreshVerificationEntry = async (email: string) => {
   }
 };
 
+const seedDriverInfo = (
+  email: string,
+  profile: { driverVehiclePlate?: string; driverLicenseExpiryLabel?: string | null }
+) => {
+  const plate = profile.driverVehiclePlate;
+  if (!plate) return;
+  seedVehicleInfo(email, {
+    plate,
+    licenseExpiryLabel: profile.driverLicenseExpiryLabel ?? undefined,
+  });
+};
+
 const splitName = (value: string | null | undefined) => {
   const safe = sanitizeName(value ?? '').trim();
   if (!safe) return { firstName: 'Etudiant', lastName: 'CampusRide' };
   const [first, ...rest] = safe.split(/\s+/);
   return { firstName: first || 'Etudiant', lastName: rest.join(' ') };
+};
+
+const hydrateDriverSecurityFromProfile = (email: string, profile: any) => {
+  if (!email || !profile) return;
+  initDriverSecurity(email);
+  if (profile.driverLicenseFrontUrl) {
+    seedDriverLicense(email, { side: 'front', url: profile.driverLicenseFrontUrl });
+  }
+  if (profile.driverLicenseBackUrl) {
+    seedDriverLicense(email, { side: 'back', url: profile.driverLicenseBackUrl });
+  }
+  if (profile.driverVehiclePlate) {
+    seedDriverInfo(email, profile);
+  } else if (profile.carPlate) {
+    seedDriverInfo(email, {
+      driverVehiclePlate: profile.carPlate,
+      driverLicenseExpiryLabel: profile.driverLicenseExpiryLabel,
+    });
+  }
+  if (profile.driverSelfieUrl) {
+    recordDriverSelfie(email, profile.driverSelfieUrl);
+  }
 };
 
 const buildSessionFromUser = async (user: User | null): Promise<AuthSession> => {
@@ -222,8 +263,12 @@ const buildSessionFromUser = async (user: User | null): Promise<AuthSession> => 
     expiresAt: profile.verificationExpiresAt ?? null,
     verified: !!profile.verified,
   });
+  hydrateDriverSecurityFromProfile(normalized, profile);
 
   const fullName = `${profile.firstName ?? ''} ${profile.lastName ?? ''}`.trim();
+  const hasDriverFlag = Object.prototype.hasOwnProperty.call(profile, 'isDriver');
+  const isDriverFromRole = profile.role === 'driver';
+  const hasPassengerFlag = Object.prototype.hasOwnProperty.call(profile, 'isPassenger');
   return {
     email: normalized,
     verified: !!profile.verified,
@@ -232,8 +277,8 @@ const buildSessionFromUser = async (user: User | null): Promise<AuthSession> => 
     phone: profile.phone ?? null,
     studentCardUrl: profile.studentCardUrl ?? null,
     avatarUrl: profile.selfieUrl ?? user.photoURL ?? null,
-    isDriver: profile.role === 'driver' || !!profile.isDriver,
-    isPassenger: true,
+    isDriver: hasDriverFlag ? !!profile.isDriver : isDriverFromRole,
+    isPassenger: hasPassengerFlag ? !!profile.isPassenger : !isDriverFromRole,
   };
 };
 
@@ -450,6 +495,17 @@ export const updateProfile = async (email: string, changes: ProfileChanges) => {
     studentCardUrl: next.studentCardUrl,
     selfieUrl: next.selfieUrl,
   });
+
+  const roleChanges: { driver?: boolean; passenger?: boolean } = {};
+  if (Object.prototype.hasOwnProperty.call(changes, 'driver')) {
+    roleChanges.driver = !!changes.driver;
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, 'passenger')) {
+    roleChanges.passenger = !!changes.passenger;
+  }
+  if (Object.keys(roleChanges).length > 0) {
+    await updateUserRoles(normalized, roleChanges);
+  }
 
   const user = auth.currentUser;
   if (user && user.email && normalizeEmail(user.email) === normalized) {

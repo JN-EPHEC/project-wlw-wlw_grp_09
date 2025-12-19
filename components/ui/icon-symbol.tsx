@@ -52,6 +52,8 @@ const MAPPING = {
   'sparkles': 'auto-awesome',
   'person.fill': 'person',
   'creditcard.fill': 'credit-card',
+  pencil: 'edit',
+  'gearshape.fill': 'settings',
   'arrow.up.right.square': 'open-in-new',
   'lock.shield.fill': 'admin-panel-settings',
   plus: 'add',

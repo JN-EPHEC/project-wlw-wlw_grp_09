@@ -408,9 +408,9 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
         seats: '2',
       },
       {
-        label: 'Trajet express vers ULB (08:10)',
+        label: 'Trajet express vers EPHEC Louvain-la-Neuve (08:10)',
         depart: 'Ixelles',
-        destination: 'ULB - Solbosch',
+        destination: 'EPHEC Louvain-la-Neuve',
         time: '08:10',
         seats: '3',
       },
@@ -840,7 +840,7 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
           />
           <Field
             label="Destination"
-            placeholder="Ex. ULB - Solbosch"
+            placeholder="Ex. EPHEC Louvain-la-Neuve"
             value={destination}
             onChangeText={setDestination}
             error={errors.destination}
