@@ -8,6 +8,7 @@ import {
   Platform,
   Pressable,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -22,6 +23,8 @@ import { pickKycImage } from '@/app/utils/image-picker';
 import { updateDriverLicense, updateVehicleInfo } from '@/app/services/security';
 import { saveDriverDocuments } from '@/src/firestoreUsers';
 import { uploadDriverLicenseSide } from '@/src/storageUploads';
+import * as Auth from '@/app/services/auth';
+import { uploadDriverDocument } from '@/app/services/driver-documents';
 
 const BELGIAN_PLATE_PATTERN = /^[A-Z0-9][A-Z0-9]{3}[A-Z0-9]{3}$/;
 
@@ -30,6 +33,11 @@ export default function DriverVerificationScreen() {
   const security = useDriverSecurity(session.email);
   const [uploadingSide, setUploadingSide] = useState<'front' | 'back' | null>(null);
   const [vehiclePlate, setVehiclePlate] = useState('');
+  const [licenseExpiry, setLicenseExpiry] = useState('');
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  const [expiryInputWarning, setExpiryInputWarning] = useState(false);
+  const [savingVehicle, setSavingVehicle] = useState(false);
+  const [isFinishing, setIsFinishing] = useState(false);
   const lastFrontRef = useRef<string | null>(null);
   const lastBackRef = useRef<string | null>(null);
 
@@ -48,6 +56,20 @@ export default function DriverVerificationScreen() {
       formatted = `${cleaned.slice(0, 1)}-${cleaned.slice(1)}`;
     }
     setVehiclePlate(formatted);
+  };
+
+  const onLicenseExpiryChange = (value: string) => {
+    const digits = value.replace(/\D/g, '').slice(0, 4);
+    setExpiryInputWarning(/[A-Za-z]/.test(value));
+    if (!digits) {
+      setLicenseExpiry('');
+      return;
+    }
+    if (digits.length <= 2) {
+      setLicenseExpiry(digits);
+      return;
+    }
+    setLicenseExpiry(`${digits.slice(0, 2)}/${digits.slice(2)}`);
   };
 
   const runLicenseImport = useCallback(
@@ -120,25 +142,115 @@ export default function DriverVerificationScreen() {
     ]);
   };
 
-  const handleAddVehicle = () => {
-    if (!session.email) return;
+  const handleAddVehicle = async () => {
+    if (!session.email || savingVehicle) return;
     const normalized = cleanedPlate;
     if (!BELGIAN_PLATE_PATTERN.test(normalized)) {
-      Alert.alert(
-        'Format invalide',
-        'Format attendu : 1-ABC-123 (3 blocs alphanumériques).'
-      );
+      Alert.alert('Format invalide', 'Format attendu : 1-ABC-123 (3 blocs alphanumériques).');
       return;
     }
     const formatted = `${normalized.slice(0, 1)}-${normalized.slice(1, 4)}-${normalized.slice(4)}`;
-    updateVehicleInfo(session.email, { plate: formatted });
-    Alert.alert('Véhicule enregistré', 'Ta plaque a été sauvegardée.');
-    router.replace('/account-complete');
+    const expiryDigits = licenseExpiry.replace(/\D/g, '').slice(0, 4);
+    let expiryLabel: string | null = null;
+    let expiryISO: string | null = null;
+    if (expiryDigits.length === 4) {
+      const month = expiryDigits.slice(0, 2);
+      const yearRaw = expiryDigits.slice(2);
+      const monthValue = Number(month);
+      if (monthValue < 1 || monthValue > 12) {
+        Alert.alert('Date invalide', 'Format attendu : MM/AA (ex. 09/28).');
+        return;
+      }
+      const year = Number(yearRaw.length === 2 ? `20${yearRaw}` : yearRaw);
+      const expiryDate = new Date(year, monthValue - 1, 1);
+      expiryDate.setMonth(expiryDate.getMonth() + 1);
+      if (expiryDate <= new Date()) {
+        Alert.alert('Permis expiré', 'Ton permis semble expiré. Mets-le à jour avant de continuer.');
+        return;
+      }
+      const monthLabel = month.padStart(2, '0');
+      expiryLabel = `${monthLabel}/${yearRaw}`;
+      expiryISO = new Date(year, monthValue - 1, 1).toISOString();
+    }
+    setSavingVehicle(true);
+    let remoteUploadFailed = false;
+    try {
+      try {
+        await uploadDriverDocument({
+          email: session.email,
+          documentType: 'vehicle_registration',
+          rawData: JSON.stringify({ plate: formatted, expiry: expiryLabel }),
+          metadata: {
+            plate: formatted,
+            ...(expiryISO ? { licenseExpiry: expiryISO } : {}),
+          },
+        });
+      } catch (error) {
+        if (isBlockingVehicleUploadError(error)) {
+          const message = resolveVehicleError(error);
+          Alert.alert('Erreur', message);
+          return;
+        }
+        remoteUploadFailed = true;
+        console.warn('[driver-verification] véhicule non transmis au serveur', error);
+      }
+
+      updateVehicleInfo(session.email, {
+        plate: formatted,
+        licenseExpiryLabel: expiryLabel ?? undefined,
+      });
+      await saveDriverDocuments(session.email, {
+        vehiclePlate: formatted,
+        ...(expiryLabel ? { licenseExpiryLabel: expiryLabel } : {}),
+      });
+      setVehiclePlate(formatted);
+      if (expiryLabel) {
+        setLicenseExpiry(expiryLabel);
+      }
+      setValidationMessage('Plaque enregistrée. Tes documents sont en cours de validation.');
+      Alert.alert(
+        'Véhicule enregistré',
+        remoteUploadFailed
+          ? 'Ta plaque est sauvegardée. Nous réessaierons la transmission automatiquement.'
+          : 'Ta plaque a été sauvegardée et transmise à l’équipe CampusRide.'
+      );
+      router.replace('/profile-welcome');
+    } catch (error) {
+      const message = resolveVehicleError(error);
+      Alert.alert('Erreur', message);
+    } finally {
+      setSavingVehicle(false);
+    }
   };
 
   const hasLicenseFront = !!security?.driverLicenseFrontUrl;
   const hasLicenseBack = !!security?.driverLicenseBackUrl;
   const licenseComplete = hasLicenseFront && hasLicenseBack;
+  useEffect(() => {
+    if (!security) {
+      setValidationMessage('Chargement de la vérification en cours…');
+      return;
+    }
+    if (security.blockers.requiresLicense) {
+      setValidationMessage('Importe ton permis recto/verso pour continuer.');
+      return;
+    }
+    if (security.blockers.requiresVehicle) {
+      setValidationMessage('Ajoute la plaque de ton véhicule pour finaliser.');
+      return;
+    }
+    if (security.documents.license === 'pending' || security.documents.vehicle === 'pending') {
+      setValidationMessage('Documents envoyés. Vérification en cours par CampusRide.');
+      return;
+    }
+    if (security.blockers.requiresSelfie) {
+      setValidationMessage('Réalise un selfie de vérification pour activer la conduite.');
+      return;
+    }
+    setValidationMessage('Documents validés. Tu peux publier des trajets.');
+  }, [security]);
+
+  const canFinish = security ? !security.blockers.requiresLicense && !security.blockers.requiresVehicle : false;
 
   useEffect(() => {
     if (security?.vehicle.plate) {
@@ -146,9 +258,43 @@ export default function DriverVerificationScreen() {
     }
   }, [security?.vehicle.plate]);
 
+  useEffect(() => {
+    if (security?.licenseExpiryLabel) {
+      setLicenseExpiry(security.licenseExpiryLabel);
+    }
+  }, [security?.licenseExpiryLabel]);
+
+  const onConfirmVehicle = () => {
+    void handleAddVehicle();
+  };
+
+  const handleFinish = useCallback(async () => {
+    if (!session.email) return;
+    if (!canFinish || uploadingSide) {
+      Alert.alert('Vérification incomplète', 'Ajoute ton permis et ta plaque avant de terminer.');
+      return;
+    }
+    setIsFinishing(true);
+    try {
+      await Auth.updateProfile(session.email, { driver: true });
+      Alert.alert('Mode conducteur activé', 'Ton espace va s’ouvrir avec les outils conducteur.');
+      router.replace('/');
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Impossible d’activer le mode conducteur.';
+      Alert.alert('Erreur', message);
+    } finally {
+      setIsFinishing(false);
+    }
+  }, [session.email, canFinish, uploadingSide, router]);
+
   return (
     <SafeAreaView style={styles.safe}>
-      <View style={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.topBar}>
           <Pressable onPress={() => router.replace('/profile-welcome')} hitSlop={12}>
             <IconSymbol name="chevron.left" size={26} color={Colors.primary} />
@@ -246,28 +392,83 @@ export default function DriverVerificationScreen() {
               <Text style={styles.cardSubtitle}>Indique la plaque de ton véhicule</Text>
             </View>
           </View>
-          {licenseComplete ? (
-            <View style={styles.vehicleForm}>
-              <TextInput
-                placeholder="Ex : 2-GXH-231"
-                value={vehiclePlate}
-                onChangeText={onVehiclePlateChange}
-                style={styles.vehicleInput}
-                autoCapitalize="characters"
-                placeholderTextColor={Colors.gray400}
-              />
-              <Pressable style={styles.cardButton} onPress={handleAddVehicle}>
+          <View style={styles.vehicleForm}>
+            <TextInput
+              placeholder="Ex : 2-GXH-231"
+              value={vehiclePlate}
+              onChangeText={onVehiclePlateChange}
+              style={[styles.vehicleInput, savingVehicle && styles.vehicleInputDisabled]}
+              autoCapitalize="characters"
+              placeholderTextColor={Colors.gray400}
+              editable={!savingVehicle}
+            />
+            <TextInput
+              placeholder="Expiration du permis (MM/AA)"
+              value={licenseExpiry}
+              onChangeText={onLicenseExpiryChange}
+              style={[styles.vehicleInput, savingVehicle && styles.vehicleInputDisabled]}
+              keyboardType="number-pad"
+              maxLength={5}
+              placeholderTextColor={Colors.gray400}
+              editable={!savingVehicle}
+            />
+            {expiryInputWarning ? (
+              <Text style={styles.expiryWarning}>Utilise uniquement des chiffres au format MM/AA.</Text>
+            ) : null}
+            <Pressable
+              style={[styles.cardButton, savingVehicle && styles.cardButtonDisabled]}
+              onPress={onConfirmVehicle}
+              disabled={savingVehicle}
+            >
+              {savingVehicle ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
                 <Text style={styles.cardButtonLabel}>Confirmer ma plaque</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <Text style={styles.vehicleHint}>Importe d'abord le recto et le verso du permis.</Text>
-          )}
+              )}
+            </Pressable>
+          </View>
         </View>
-      </View>
+
+        {validationMessage ? (
+          <Text style={[styles.validationMessage, canFinish ? styles.validationSuccess : styles.validationWarning]}>
+            {validationMessage}
+          </Text>
+        ) : null}
+        <Pressable
+          style={[
+            styles.finishButton,
+            (!canFinish || uploadingSide || isFinishing) && styles.finishButtonDisabled,
+          ]}
+          onPress={handleFinish}
+          disabled={!canFinish || !!uploadingSide || isFinishing}
+        >
+          {isFinishing ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.finishButtonLabel}>Terminer</Text>
+          )}
+        </Pressable>
+      </ScrollView>
     </SafeAreaView>
   );
 }
+
+const resolveVehicleError = (error: unknown) => {
+  if (error instanceof Error) {
+    if (error.message === 'FORMAT_NOT_ALLOWED') {
+      return 'Le format transmis est invalide. Réessaie en saisissant ta plaque et la date.';
+    }
+    if (error.message === 'LICENSE_EXPIRED') {
+      return 'Ton permis semble expiré. Vérifie la date saisie.';
+    }
+  }
+  return "Impossible d'enregistrer ta plaque pour le moment.";
+};
+
+const isBlockingVehicleUploadError = (error: unknown) => {
+  if (!(error instanceof Error)) return false;
+  return error.message === 'FORMAT_NOT_ALLOWED' || error.message === 'LICENSE_EXPIRED';
+};
 
 const styles = StyleSheet.create({
   safe: {
@@ -405,15 +606,14 @@ const styles = StyleSheet.create({
   cardSpacer: {
     marginTop: Spacing.lg,
   },
-  vehicleHint: {
-    color: Colors.gray500,
-    fontSize: 12,
-    marginTop: Spacing.xs,
-  },
   vehicleForm: {
     width: '100%',
     gap: Spacing.sm,
     marginTop: Spacing.sm,
+  },
+  expiryWarning: {
+    color: Colors.danger,
+    fontSize: 12,
   },
   vehicleInput: {
     borderWidth: 1,
@@ -425,5 +625,34 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     color: Colors.ink,
     backgroundColor: '#fff',
+  },
+  vehicleInputDisabled: {
+    opacity: 0.5,
+  },
+  validationMessage: {
+    marginTop: Spacing.xs,
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  validationWarning: {
+    color: Colors.danger,
+  },
+  validationSuccess: {
+    color: Colors.success,
+  },
+  finishButton: {
+    marginTop: Spacing.lg,
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.pill,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  finishButtonDisabled: {
+    opacity: 0.5,
+  },
+  finishButtonLabel: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 16,
   },
 });

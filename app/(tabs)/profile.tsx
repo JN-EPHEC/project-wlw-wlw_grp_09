@@ -90,14 +90,16 @@ export default function ProfileScreen() {
   const scrollBottomInset = useTabBarInset(Spacing.xxl);
 
   const updateRoles = useCallback(
-    (changes: { driver?: boolean; passenger?: boolean }) => {
-      if (!session.email) return;
+    async (changes: { driver?: boolean; passenger?: boolean }) => {
+      if (!session.email) return false;
       try {
-        Auth.updateProfile(session.email, changes);
+        await Auth.updateProfile(session.email, changes);
+        return true;
       } catch (error) {
         const message =
           error instanceof Error ? error.message : 'Modification impossible pour le moment.';
         Alert.alert('Erreur', message);
+        return false;
       }
     },
     [session.email]
@@ -131,33 +133,16 @@ export default function ProfileScreen() {
   const enableDriverMode = useCallback(() => {
     if (!session.email) return;
     if (session.isDriver) {
-      router.push('/explore');
+      router.push('/');
       return;
     }
-    if (!driverSecurity) {
-      Alert.alert('Initialisation en cours', 'Patiente un instant avant de passer conducteur.');
-      return;
-    }
-    if (driverSecurity.blockers.requiresLicense || driverSecurity.blockers.requiresVehicle) {
-      Alert.alert(
-        'Complète ta vérification',
-        'Ajoute ton permis et ton véhicule pour garantir la sécurité de tes passagers.',
-        [
-          { text: 'Plus tard', style: 'cancel' },
-          { text: 'Compléter maintenant', onPress: openDriverVerification },
-        ]
-      );
-      return;
-    }
-    if (needsFreshSelfie(driverSecurity)) {
-      Alert.alert(
-        'Selfie requis',
-        'Réalise un selfie de vérification pour confirmer que tu es bien le conducteur.',
-        [
-          { text: 'Annuler', style: 'cancel' },
-          { text: 'Prendre un selfie', onPress: openDriverVerification },
-        ]
-      );
+    if (
+      !driverSecurity ||
+      driverSecurity.blockers.requiresLicense ||
+      driverSecurity.blockers.requiresVehicle ||
+      needsFreshSelfie(driverSecurity)
+    ) {
+      openDriverVerification();
       return;
     }
     Alert.alert(
@@ -183,15 +168,24 @@ export default function ProfileScreen() {
 
   const disableDriverMode = useCallback(() => {
     if (!session.isDriver) return;
-    Alert.alert(
-      'Désactiver le mode conducteur ?',
-      'Tu pourras toujours reproposer des trajets quand tu le souhaites.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        { text: 'Désactiver', style: 'destructive', onPress: () => updateRoles({ driver: false }) },
-      ]
-    );
-  }, [session.isDriver, updateRoles]);
+          Alert.alert(
+            'Passer en mode passager ?',
+            'Tu pourras réactiver le mode conducteur quand tu en as besoin.',
+            [
+              { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Confirmer',
+          style: 'destructive',
+          onPress: async () => {
+            const success = await updateRoles({ driver: false, passenger: true });
+            if (success) {
+              router.replace('/(tabs)');
+            }
+          },
+        },
+            ]
+          );
+  }, [session.isDriver, updateRoles, router]);
 
   const [previewAvatarUri, setPreviewAvatarUri] = useState<string | null>(null);
   const [cropSourceUri, setCropSourceUri] = useState<string | null>(null);
@@ -345,6 +339,10 @@ export default function ProfileScreen() {
     router.push('/wallet');
   }, [router]);
 
+  const handleOpenDocuments = useCallback(() => {
+    router.push('/driver-verification');
+  }, [router]);
+
   const handleOpenHelp = useCallback(() => {
     router.push('/help');
   }, [router]);
@@ -456,6 +454,36 @@ export default function ProfileScreen() {
   }, [session.name, session.email]);
   const avatarActionsDisabled = updatingAvatar || isSavingAvatar;
   const canRemoveAvatar = !!session.avatarUrl;
+  const identityName = session.name?.trim()?.length ? session.name : profileDisplayName;
+  const campusLabel = session.address?.trim() ?? 'Campus non renseigné';
+  const roleDetail =
+    session.isDriver && session.isPassenger
+      ? 'Conducteur & passager'
+      : session.isDriver
+        ? 'Conducteur'
+        : session.isPassenger
+          ? 'Passager'
+          : 'Profil inactif';
+  const emailLabel = session.email ?? 'E-mail indisponible';
+  const documentsValidated =
+    !!driverSecurity &&
+    !driverSecurity.blockers.requiresLicense &&
+    !driverSecurity.blockers.requiresVehicle &&
+    !needsFreshSelfie(driverSecurity);
+  const documentBadgeLabel = !driverSecurity
+    ? 'Validation en cours…'
+    : documentsValidated
+      ? 'Documents validés'
+      : 'Vérification requise';
+  const personalInfo = useMemo(
+    () => [
+      { key: 'name', label: 'Nom & prénom', value: identityName },
+      { key: 'campus', label: 'Campus', value: campusLabel },
+      { key: 'role', label: 'Rôle', value: roleDetail },
+      { key: 'email', label: 'E-mail', value: emailLabel },
+    ],
+    [identityName, campusLabel, roleDetail, emailLabel]
+  );
   const myRides = useMemo(
     () => rides.filter((ride) => ride.ownerEmail === session.email),
     [rides, session.email]
@@ -623,6 +651,14 @@ export default function ProfileScreen() {
         onPress: handleOpenSettings,
       },
       {
+        key: 'documents',
+        label: 'Mes documents',
+        icon: 'doc.text',
+        tint: 'rgba(122,95,255,0.18)',
+        iconColor: Colors.accent,
+        onPress: handleOpenDocuments,
+      },
+      {
         key: 'wallet',
         label: 'Wallet',
         icon: 'wallet.pass.fill',
@@ -632,15 +668,15 @@ export default function ProfileScreen() {
         onPress: handleOpenWallet,
       },
       {
-        key: 'help',
-        label: 'Aide',
+        key: 'support',
+        label: 'Contact support',
         icon: 'questionmark.circle',
         tint: 'rgba(241,107,107,0.15)',
         iconColor: Colors.danger,
         onPress: handleOpenHelp,
       },
     ],
-    [handleEditProfile, handleOpenSettings, handleOpenWallet, handleOpenHelp]
+    [handleEditProfile, handleOpenSettings, handleOpenDocuments, handleOpenWallet, handleOpenHelp]
   );
 
   const walletBalanceRowStyle = useMemo(
@@ -762,7 +798,8 @@ export default function ProfileScreen() {
                   )}
                 </View>
               </Pressable>
-              <Text style={styles.profileHeroName}>{profileDisplayName}</Text>
+              <Text style={styles.profileHeroName}>{identityName}</Text>
+              <Text style={styles.profileHeroRole}>{roleDetail}</Text>
               <View style={styles.profilePhotoActions}>
                 <Pressable
                   style={styles.photoLink}
@@ -805,6 +842,35 @@ export default function ProfileScreen() {
                   </Text>
                 </Pressable>
               </View>
+              <View style={styles.profileMetaList}>
+                <View style={styles.profileMetaRow}>
+                  <IconSymbol name="graduationcap.fill" size={16} color={C.accent} />
+                  <Text style={styles.profileMetaValue}>{campusLabel}</Text>
+                </View>
+                <View style={styles.profileMetaRow}>
+                  <IconSymbol name="envelope.fill" size={16} color={C.gray600} />
+                  <Text style={styles.profileMetaValue}>{emailLabel}</Text>
+                </View>
+                <View style={styles.profileMetaRow}>
+                  <IconSymbol name="car.fill" size={16} color={C.primary} />
+                  <Text style={styles.profileMetaValue}>
+                    {session.isDriver ? 'Conducteur actif' : 'Passager actif'}
+                  </Text>
+                </View>
+              </View>
+              <View
+                style={[
+                  styles.documentsBadge,
+                  documentsValidated ? styles.documentsBadgeSuccess : styles.documentsBadgePending,
+                ]}
+              >
+                <IconSymbol
+                  name={documentsValidated ? 'checkmark.seal.fill' : 'exclamationmark.triangle'}
+                  size={14}
+                  color={documentsValidated ? Colors.success : Colors.warning}
+                />
+                <Text style={styles.documentsBadgeText}>{documentBadgeLabel}</Text>
+              </View>
             </View>
             <View style={styles.profileActionsList}>
               {profileActions.map((action) => (
@@ -826,13 +892,35 @@ export default function ProfileScreen() {
               ))}
             </View>
             <Pressable
-              style={styles.driverModeButton}
-              onPress={openDriverVerification}
+              style={[
+                styles.driverModeButton,
+                session.isDriver ? styles.driverModeButtonDriver : styles.driverModeButtonPassenger,
+              ]}
+              onPress={session.isDriver ? disableDriverMode : enableDriverMode}
               accessibilityRole="button"
             >
-              <IconSymbol name="steeringwheel" size={18} color="#FFFFFF" />
-              <Text style={styles.driverModeText}>Passer en mode conducteur</Text>
-              <IconSymbol name="chevron.right" size={16} color="#FFFFFF" />
+              <View style={styles.driverModeLabelRow}>
+                <IconSymbol
+                  name={session.isDriver ? 'person.crop.circle.fill' : 'steeringwheel'}
+                  size={18}
+                  color="#FFFFFF"
+                />
+                <Text style={styles.driverModeText}>
+                  {session.isDriver ? 'Passer en mode passager' : 'Passer en mode conducteur'}
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.driverModeIcon,
+                  session.isDriver ? styles.driverModeIconActive : styles.driverModeIconInactive,
+                ]}
+              >
+                <IconSymbol
+                  name={session.isDriver ? 'person.fill' : 'steeringwheel'}
+                  size={18}
+                  color={session.isDriver ? C.accent : '#FFFFFF'}
+                />
+              </View>
             </Pressable>
             <Pressable
               style={[styles.photoDeleteLink, styles.logoutInline]}
@@ -845,6 +933,17 @@ export default function ProfileScreen() {
             </Pressable>
           </View>
         </GradientBackground>
+        <View style={styles.identityCard}>
+          <Text style={styles.identityCardTitle}>Mes données personnelles</Text>
+          <View style={styles.identityList}>
+            {personalInfo.map((item) => (
+              <View key={item.key} style={styles.identityRow}>
+                <Text style={styles.identityLabel}>{item.label}</Text>
+                <Text style={styles.identityValue}>{item.value}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
 
         </ScrollView>
 
@@ -1046,6 +1145,12 @@ const styles = StyleSheet.create({
     color: C.ink,
     textAlign: 'center',
   },
+  profileHeroRole: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: C.gray600,
+    textAlign: 'center',
+  },
   profilePhotoActions: {
     width: '100%',
     gap: Spacing.sm,
@@ -1078,6 +1183,43 @@ const styles = StyleSheet.create({
   },
   photoDeleteTextDisabled: {
     color: C.gray400,
+  },
+  profileMetaList: {
+    width: '100%',
+    marginTop: Spacing.md,
+    gap: Spacing.xs,
+  },
+  profileMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  profileMetaValue: {
+    flex: 1,
+    color: C.gray700,
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  documentsBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    alignSelf: 'center',
+    marginTop: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+  },
+  documentsBadgeSuccess: {
+    backgroundColor: Colors.successLight,
+  },
+  documentsBadgePending: {
+    backgroundColor: Colors.warningLight,
+  },
+  documentsBadgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: C.gray700,
   },
   profileActionsList: {
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -1121,11 +1263,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: Spacing.md,
-    backgroundColor: C.primary,
     borderRadius: 36,
     paddingHorizontal: 24,
     paddingVertical: 16,
     marginTop: Spacing.sm,
+  },
+  driverModeButtonPassenger: {
+    backgroundColor: C.primary,
+  },
+  driverModeButtonDriver: {
+    backgroundColor: C.accent,
+  },
+  driverModeLabelRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
   driverModeText: {
     color: '#FFFFFF',
@@ -1137,9 +1290,52 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.25)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  driverModeIconInactive: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  identityCard: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 28,
+    padding: Spacing.xl,
+    gap: Spacing.md,
+    shadowColor: '#2F1755',
+    shadowOpacity: 0.06,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  identityCardTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: C.ink,
+  },
+  identityList: {
+    gap: Spacing.md,
+  },
+  identityRow: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ECEFFD',
+    paddingBottom: Spacing.sm,
+  },
+  identityLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    color: C.gray500,
+    letterSpacing: 0.4,
+  },
+  identityValue: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: C.ink,
+    marginTop: 4,
+  },
+  driverModeIconActive: {
+    backgroundColor: '#FFFFFF',
   },
   securityCard: {
     borderRadius: R.lg,

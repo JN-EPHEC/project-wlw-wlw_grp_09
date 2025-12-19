@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   LayoutChangeEvent,
@@ -13,12 +14,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import * as Location from 'expo-location';
 
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
+import { DisplayRide, FALLBACK_UPCOMING } from '@/app/data/driver-samples';
+import type { AuthSession } from '@/app/services/auth';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { getAvatarUrl } from '@/app/ui/avatar';
 import type { Notification } from '@/app/services/notifications';
@@ -26,6 +28,7 @@ import { subscribeNotifications } from '@/app/services/notifications';
 import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
 import { BRUSSELS_COMMUNES } from '@/constants/communes';
+import { getCurrentCommune, LocationPermissionError } from '@/app/services/location';
 
 type SectionKey = 'search' | 'requests' | 'trips';
 
@@ -44,6 +47,15 @@ const sponsorOffer = {
   logo: require('@/assets/images/Spotify.png'),
   colors: ['#1DB954', '#18A148', '#12823A'],
   url: 'https://www.spotify.com/be-fr/student/',
+};
+
+const driverSponsor = {
+  brand: 'Adobe Creative Cloud',
+  tagline: '60 % de réduction étudiants',
+  badge: 'Sponsorisé',
+  url: 'https://www.adobe.com/fr/creativecloud/buy/students.html',
+  colors: ['#A7001F', '#E62216'],
+  logo: require('@/assets/images/adobe.jpg'),
 };
 
 const sponsorSecondary = {
@@ -81,8 +93,66 @@ const getRandomRating = (ride: Ride) => {
 
 const getRandomTripsCount = (ride: Ride) => 10 + (ride.driver.length % 5) * 5;
 
+const DRIVER_NAV_LINKS = [
+  { key: 'home', label: 'Accueil', route: '/', icon: 'house.fill' },
+  { key: 'rides', label: 'Trajets publiés', route: '/explore', icon: 'list.bullet.rectangle' },
+  { key: 'messages', label: 'Messages', route: '/(tabs)/messages', icon: 'bubble.left.and.bubble.right.fill' },
+  { key: 'profile', label: 'Profil', route: '/(tabs)/profile', icon: 'person.crop.circle' },
+];
+
+const formatRideBadgeDate = (timestamp: number) =>
+  new Date(timestamp).toLocaleDateString('fr-BE', {
+    day: 'numeric',
+    month: 'short',
+  });
+
+const formatRideMoment = (timestamp: number) => {
+  const rideDate = new Date(timestamp);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const dayAfter = new Date(tomorrow);
+  dayAfter.setDate(dayAfter.getDate() + 1);
+  const timeLabel = formatTime(timestamp);
+  if (rideDate >= today && rideDate < tomorrow) {
+    return `Aujourd'hui, ${timeLabel}`;
+  }
+  if (rideDate >= tomorrow && rideDate < dayAfter) {
+    return `Demain, ${timeLabel}`;
+  }
+  return `${formatRideBadgeDate(timestamp)} · ${timeLabel}`;
+};
+
+const getDriverRideStatus = (ride: Ride) => {
+  if (hasRideDeparted(ride)) {
+    return { label: 'Terminé', tint: Colors.success, background: Colors.successLight };
+  }
+  if (ride.passengers.length === 0) {
+    return { label: 'Publié', tint: Colors.accent, background: Colors.accentSoft };
+  }
+  return { label: 'En attente', tint: Colors.warning, background: Colors.warningLight };
+};
+
+const DRIVER_RULES = [
+  { key: 'no-smoking', label: 'Fumée non autorisée', icon: '🚭' },
+  { key: 'music', label: 'Musique autorisée', icon: '🎵' },
+  { key: 'pets', label: 'Animaux acceptés', icon: '🐕' },
+  { key: 'calm', label: 'Trajet calme', icon: '🤫' },
+  { key: 'luggage', label: 'Bagages acceptés', icon: '🧳' },
+  { key: 'chat', label: 'Discussion bienvenue', icon: '💬' },
+];
+
 export default function Home() {
   const session = useAuthSession();
+  return session.isDriver ? (
+    <DriverDashboard session={session} />
+  ) : (
+    <PassengerHome session={session} />
+  );
+}
+
+function PassengerHome({ session }: { session: AuthSession }) {
   const scrollRef = useRef<ScrollView>(null);
   const sectionPositions = useRef<Record<SectionKey, number>>({
     search: 0,
@@ -101,6 +171,7 @@ export default function Home() {
   const [showCampusList, setShowCampusList] = useState(false);
   const [isDepartureFocused, setDepartureFocused] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
+  const [detectedCommune, setDetectedCommune] = useState<string | null>(null);
   const departureBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -203,44 +274,29 @@ export default function Home() {
 
   const selectDepartureSuggestion = (value: string) => {
     setDepartureInput(value);
+    setDetectedCommune(null);
     setDepartureFocused(false);
   };
 
   const handleUseLocation = useCallback(async () => {
     try {
       setLocationLoading(true);
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== Location.PermissionStatus.GRANTED) {
+      const { commune } = await getCurrentCommune();
+      setDepartureInput(commune);
+      setDetectedCommune(commune);
+      setDepartureFocused(false);
+    } catch (error) {
+      if (error instanceof LocationPermissionError) {
         Alert.alert(
           'Localisation désactivée',
           'Active l’accès à la localisation pour détecter automatiquement ta commune.'
         );
-        return;
+      } else {
+        Alert.alert(
+          'Position indisponible',
+          'Impossible de récupérer ta position actuelle. Réessaie dans un instant.'
+        );
       }
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      const places = await Location.reverseGeocodeAsync(position.coords);
-      const raw = places[0];
-      const resolveMatch = () => {
-        const candidates = [raw?.district, raw?.city, raw?.subregion, raw?.region];
-        for (const candidate of candidates) {
-          if (!candidate) continue;
-          const candidateKey = candidate.toLowerCase();
-          const match = BRUSSELS_COMMUNES.find((commune) =>
-            candidateKey.includes(commune.toLowerCase())
-          );
-          if (match) return match;
-        }
-        return candidates.find((candidate) => !!candidate) ?? 'Bruxelles';
-      };
-      setDepartureInput(resolveMatch() ?? 'Bruxelles');
-      setDepartureFocused(false);
-    } catch {
-      Alert.alert(
-        'Position indisponible',
-        'Impossible de récupérer ta position actuelle. Réessaie dans un instant.'
-      );
     } finally {
       setLocationLoading(false);
     }
@@ -393,14 +449,22 @@ export default function Home() {
                   placeholder="Où partez-vous ?"
                   placeholderTextColor={Colors.gray400}
                   value={departureInput}
-                  onChangeText={setDepartureInput}
+                  onChangeText={(value) => {
+                    setDepartureInput(value);
+                    setDetectedCommune(null);
+                  }}
                   style={styles.input}
                   onFocus={handleDepartureFocus}
                   onBlur={handleDepartureBlur}
                   autoCapitalize="words"
                   autoCorrect={false}
                 />
-                <Pressable onPress={() => setDepartureInput('')}>
+                <Pressable
+                  onPress={() => {
+                    setDepartureInput('');
+                    setDetectedCommune(null);
+                  }}
+                >
                   <IconSymbol name="arrow.up.arrow.down" size={20} color={Colors.gray400} />
                 </Pressable>
               </View>
@@ -416,6 +480,11 @@ export default function Home() {
                     {locationLoading ? 'Localisation…' : 'Utiliser ma position'}
                   </Text>
                 </Pressable>
+                {detectedCommune ? (
+                  <Text style={styles.locationDetectedText}>
+                    Commune détectée : {detectedCommune}
+                  </Text>
+                ) : null}
               </View>
               {showDepartureSuggestions ? (
                 <View style={styles.suggestionList}>
@@ -766,6 +835,151 @@ export default function Home() {
   );
 }
 
+type DriverDashboardProps = {
+  session: AuthSession;
+};
+
+function DriverDashboard({ session }: DriverDashboardProps) {
+  const ownerEmail = (session.email ?? '').toLowerCase();
+  const [rides, setRides] = useState<Ride[]>(() => getRides());
+  const [loadingRides, setLoadingRides] = useState(() => getRides().length === 0);
+
+  useEffect(() => {
+    const unsubscribe = subscribeRides((items) => {
+      setRides(items);
+      setLoadingRides(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  const publishedRides = useMemo(() => {
+    if (!ownerEmail) return [];
+    return rides
+      .filter((ride) => ride.ownerEmail === ownerEmail)
+      .sort((a, b) => a.departureAt - b.departureAt);
+  }, [rides, ownerEmail]);
+
+  const upcomingRides = useMemo(
+    () => publishedRides.filter((ride) => !hasRideDeparted(ride)),
+    [publishedRides]
+  );
+
+  const greetingName = getFirstName(session.name) ?? 'Conducteur';
+  const displayFullName = session.name?.trim()?.length ? session.name : greetingName;
+
+  const handleCreateRide = useCallback(() => {
+    router.push('/create-ride');
+  }, []);
+
+  const handleEditRide = useCallback((rideId: string) => {
+    router.push({ pathname: '/explore', params: { edit: rideId } } as any);
+  }, []);
+
+  const handleOpenSponsor = useCallback(() => {
+    Linking.openURL(driverSponsor.url).catch(() => undefined);
+  }, []);
+
+  const handleViewPublished = useCallback(() => {
+    router.push('/driver-published');
+  }, []);
+
+  const upcomingRidesDisplay = useMemo<DisplayRide[]>(
+    () => (upcomingRides.length ? (upcomingRides as DisplayRide[]) : FALLBACK_UPCOMING),
+    [upcomingRides]
+  );
+  const quickPreviewRides = useMemo(() => upcomingRidesDisplay.slice(0, 2), [upcomingRidesDisplay]);
+
+  return (
+    <AppBackground style={driverStyles.screen}>
+      <SafeAreaView style={driverStyles.safe}>
+        <ScrollView
+          contentContainerStyle={driverStyles.content}
+          showsVerticalScrollIndicator={false}
+          contentInsetAdjustmentBehavior="automatic"
+        >
+          <GradientBackground colors={Gradients.driver} style={driverStyles.heroGradient}>
+            <View style={driverStyles.heroTop}>
+              <View>
+                <Text style={driverStyles.heroGreeting}>Bonjour {greetingName}</Text>
+                <Text style={driverStyles.heroSubtitle}>Gérez vos trajets</Text>
+              </View>
+              <Pressable style={driverStyles.heroBell} onPress={() => router.push('/(tabs)/messages')}>
+                <IconSymbol name="bell.fill" size={18} color="#fff" />
+              </Pressable>
+            </View>
+            <Pressable style={driverStyles.sponsorWrapper} onPress={handleOpenSponsor}>
+              <GradientBackground colors={driverSponsor.colors} style={driverStyles.sponsorCard}>
+                <Image source={driverSponsor.logo} style={driverStyles.sponsorLogo} resizeMode="contain" />
+                <View style={{ flex: 1, marginLeft: Spacing.md }}>
+                  <Text style={driverStyles.sponsorBadge}>{driverSponsor.badge}</Text>
+                  <Text style={driverStyles.sponsorTitle}>{driverSponsor.brand}</Text>
+                  <Text style={driverStyles.sponsorSubtitle}>{driverSponsor.tagline}</Text>
+                </View>
+                <IconSymbol name="arrow.up.right.square" size={18} color="#FFFFFF" />
+              </GradientBackground>
+            </Pressable>
+          </GradientBackground>
+
+          <View style={driverStyles.heroCardOverlay}>
+            <Text style={driverStyles.heroOverlayTitle}>Bonjour {displayFullName}</Text>
+            <Text style={driverStyles.heroOverlaySubtitle}>Gérez vos trajets</Text>
+            <Pressable style={driverStyles.heroPrimaryButton} onPress={handleViewPublished}>
+              <IconSymbol name="list.bullet.rectangle" size={16} color="#fff" />
+              <Text style={driverStyles.heroPrimaryButtonText}>Voir mes trajets publiés</Text>
+            </Pressable>
+            <View style={driverStyles.quickPreviewWrapper}>
+              <Text style={driverStyles.quickPreviewTitle}>Aperçu rapide</Text>
+              {loadingRides ? (
+                <View style={driverStyles.quickPreviewEmpty}>
+                  <ActivityIndicator color={Colors.primary} />
+                </View>
+              ) : quickPreviewRides.length === 0 ? (
+                <Text style={driverStyles.quickPreviewEmptyText}>
+                  Publie un trajet pour voir un aperçu rapide.
+                </Text>
+              ) : (
+                quickPreviewRides.map((ride) => {
+                  const pending = ride.requests ?? ride.passengers.length;
+                  return (
+                    <View key={ride.id} style={driverStyles.quickPreviewItem}>
+                      <View style={driverStyles.quickPreviewRow}>
+                        <Text style={driverStyles.quickPreviewRoute}>
+                          {ride.depart} → {ride.destination}
+                        </Text>
+                        {pending ? (
+                          <View style={driverStyles.quickPreviewBadge}>
+                            <Text style={driverStyles.quickPreviewBadgeText}>
+                              {pending} demande{pending > 1 ? 's' : ''}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <Text style={driverStyles.quickPreviewMeta}>{formatRideMoment(ride.departureAt)}</Text>
+                      <View style={driverStyles.quickPreviewInfo}>
+                        <View style={driverStyles.previewInfo}>
+                          <IconSymbol name="person.2.fill" size={14} color={Colors.gray500} />
+                          <Text style={driverStyles.previewInfoText}>
+                            {ride.passengers.length} passager{ride.passengers.length > 1 ? 's' : ''}
+                          </Text>
+                        </View>
+                        <Text style={driverStyles.previewPrice}>Prix: {ride.price.toFixed(2)}€</Text>
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+              <Pressable style={driverStyles.previewAddButton} onPress={handleCreateRide}>
+                <IconSymbol name="plus" size={16} color={Colors.accent} />
+                <Text style={driverStyles.previewAddText}>Ajouter un nouveau trajet</Text>
+              </Pressable>
+            </View>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </AppBackground>
+  );
+}
+
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
@@ -927,9 +1141,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   inputHelperRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: Spacing.xs,
   },
   locationChip: {
     flexDirection: 'row',
@@ -947,6 +1161,12 @@ const styles = StyleSheet.create({
     color: Colors.gray700,
     fontWeight: '600',
     fontSize: 12,
+  },
+  locationDetectedText: {
+    marginLeft: Spacing.md,
+    fontSize: 12,
+    color: Colors.gray600,
+    fontWeight: '500',
   },
   suggestionList: {
     marginTop: Spacing.sm,
@@ -1384,5 +1604,275 @@ const styles = StyleSheet.create({
   inlineSponsorTagline: {
     color: Colors.white,
     opacity: 0.9,
+  },
+});
+
+
+const driverStyles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: '#FFE8D8',
+  },
+  safe: {
+    flex: 1,
+  },
+  content: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.xxl * 1.5,
+    paddingTop: Spacing.xl,
+    gap: Spacing.lg,
+  },
+  heroGradient: {
+    borderRadius: 36,
+    padding: Spacing.xl,
+    gap: Spacing.md,
+  },
+  heroTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  heroGreeting: {
+    color: '#FFFFFF',
+    fontSize: 26,
+    fontWeight: '800',
+  },
+  heroSubtitle: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 16,
+  },
+  heroBell: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sponsorWrapper: {
+    borderRadius: Radius['2xl'],
+    overflow: 'hidden',
+  },
+  sponsorCard: {
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  sponsorLogo: {
+    width: 68,
+    height: 68,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  sponsorBadge: {
+    color: '#FFECD8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  sponsorTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
+    marginTop: Spacing.xs,
+  },
+  sponsorSubtitle: {
+    color: '#FFFFFF',
+    opacity: 0.9,
+  },
+  heroCardOverlay: {
+    marginTop: -Spacing.xl,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 36,
+    padding: Spacing.xl,
+    gap: Spacing.sm,
+    ...Shadows.card,
+  },
+  heroOverlayTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: Colors.ink,
+  },
+  heroOverlaySubtitle: {
+    color: Colors.gray600,
+  },
+  heroPrimaryButton: {
+    marginTop: Spacing.md,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    ...Shadows.card,
+  },
+  heroPrimaryButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  quickPreviewWrapper: {
+    marginTop: Spacing.lg,
+    borderRadius: Radius['2xl'],
+    backgroundColor: '#FFFFFF',
+    padding: Spacing.sm,
+    gap: Spacing.sm,
+    ...Shadows.card,
+  },
+  quickPreviewTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  quickPreviewEmpty: {
+    alignItems: 'center',
+    paddingVertical: Spacing.md,
+  },
+  quickPreviewEmptyText: {
+    color: Colors.gray600,
+    fontStyle: 'italic',
+  },
+  quickPreviewItem: {
+    borderRadius: 26,
+    backgroundColor: '#F7F7FB',
+    padding: Spacing.md,
+    gap: Spacing.xs,
+  },
+  quickPreviewRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  quickPreviewRoute: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  quickPreviewBadge: {
+    backgroundColor: '#FF8B3D',
+    borderRadius: Radius.pill,
+    paddingVertical: Spacing.xs / 1.5,
+    paddingHorizontal: Spacing.md,
+  },
+  quickPreviewBadgeText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  quickPreviewMeta: {
+    color: Colors.gray500,
+    fontSize: 13,
+  },
+  quickPreviewInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  previewAddButton: {
+    marginTop: Spacing.md,
+    borderWidth: 2,
+    borderColor: Colors.accent,
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+  },
+  previewAddText: {
+    color: Colors.accent,
+    fontWeight: '700',
+  },
+  sectionCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.md,
+    ...Shadows.card,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: Colors.ink,
+  },
+  placeholder: {
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.xl,
+  },
+  placeholderSubtitle: {
+    color: Colors.gray500,
+  },
+  emptyText: {
+    color: Colors.gray500,
+  },
+  previewCard: {
+    backgroundColor: Colors.white,
+    borderRadius: 28,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+    ...Shadows.card,
+    marginTop: Spacing.sm,
+  },
+  previewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+  },
+  previewRoute: {
+    fontWeight: '700',
+    color: Colors.ink,
+    flex: 1,
+  },
+  demandBadge: {
+    backgroundColor: '#FF8B3D',
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs / 1.5,
+  },
+  demandBadgeText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  previewMeta: {
+    color: Colors.gray500,
+    fontSize: 13,
+  },
+  previewInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: Spacing.sm,
+  },
+  previewInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  previewInfoText: {
+    color: Colors.gray600,
+    fontWeight: '600',
+  },
+  previewPrice: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  addRideButton: {
+    marginTop: Spacing.md,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    ...Shadows.card,
+  },
+  addRideText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
 });
