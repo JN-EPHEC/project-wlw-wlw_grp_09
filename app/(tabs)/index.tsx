@@ -948,7 +948,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   locationDetectedText: {
-    marginTop: 6,
     marginLeft: Spacing.md,
     fontSize: 12,
     color: Colors.gray600,

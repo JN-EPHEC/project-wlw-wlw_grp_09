@@ -1,6 +1,12 @@
 // app/services/notifications.ts
 // Service en mémoire pour simuler l'envoi d'une notification au conducteur.
 
+import {
+  persistNotificationEventRecord,
+  persistNotificationPreferencesRecord,
+  persistPushTokenRecord,
+} from '@/src/firestoreNotifications';
+
 export type Notification = {
   id: string;
   to: string;
@@ -131,6 +137,11 @@ export const pushNotification = (request: NotificationRequest) => {
   };
   store[key] = [payload, ...store[key]];
   listeners[key].forEach((cb) => cb(clone(store[key])));
+  void persistNotificationEventRecord({
+    ...payload,
+    scheduleAt: scheduleAt ?? null,
+    scheduleKey: scheduleKey ?? null,
+  });
 
   const preference = getNotificationPreferences(notification.to);
   const wantsReminder = !scheduleAt || preference.remindersEnabled;
@@ -213,6 +224,7 @@ export const updateNotificationPreferences = (
   if (!next.pushEnabled || !next.remindersEnabled) {
     clearSchedulesForEmailInternal(email);
   }
+  void persistNotificationPreferencesRecord(key, next);
   notifyPreferenceListeners(email);
   return next;
 };
@@ -229,6 +241,7 @@ export const registerPushToken = (
     platform: platform ?? undefined,
     lastRegisteredAt: Date.now(),
   });
+  void persistPushTokenRecord({ email: normalized, token, platform });
   return result;
 };
 

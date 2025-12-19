@@ -118,7 +118,12 @@ const resolveCommuneFromPlace = (
     }
   }
 
-  return resolveCommuneName(candidates[0]) ?? FALLBACK_COMMUNE;
+  const fallbackCandidate = candidates.find((candidate) => candidate && candidate.trim().length > 0);
+  if (fallbackCandidate) {
+    return fallbackCandidate.trim();
+  }
+
+  return FALLBACK_COMMUNE;
 };
 
 type ResolvedLocation = {

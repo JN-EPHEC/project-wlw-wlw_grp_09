@@ -4,9 +4,11 @@ import { StyleSheet, Text, View } from 'react-native';
 import type { Ride } from '@/app/services/rides';
 import { getCoordinates } from '@/app/services/distance';
 import { Colors, Radius, Spacing } from '@/app/ui/theme';
+import { CAMPUS_LOCATIONS, findCampusLocation } from '@/constants/campuses';
 
 type Props = {
   rides: Ride[];
+  selectedCampus?: string | null;
 };
 
 type Coordinates = {
@@ -118,7 +120,7 @@ const computeCamera = (segments: Segment[]) => {
   return { center, zoom };
 };
 
-const RideMapWeb = ({ rides }: Props) => {
+const RideMapWeb = ({ rides, selectedCampus }: Props) => {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapInstance = useRef<google.maps.Map | null>(null);
   const overlays = useRef<{ markers: google.maps.Marker[]; polylines: google.maps.Polyline[] }>({
@@ -199,7 +201,49 @@ const RideMapWeb = ({ rides }: Props) => {
       overlays.current.polylines.push(polyline);
       overlays.current.markers.push(start, end);
     });
-  }, [segments]);
+    CAMPUS_LOCATIONS.forEach((campus) => {
+      const isSelected =
+        selectedCampus?.trim().toLowerCase() === campus.name.trim().toLowerCase();
+      const marker = new google.maps.Marker({
+        position: { lat: campus.latitude, lng: campus.longitude },
+        title: campus.name,
+        label: isSelected ? '★' : undefined,
+        icon: isSelected
+          ? {
+              path: google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
+              fillColor: '#7A5FFF',
+              fillOpacity: 0.95,
+              strokeColor: '#FFFFFF',
+              strokeOpacity: 0.9,
+              strokeWeight: 2,
+              scale: 6,
+            }
+          : {
+              path: google.maps.SymbolPath.CIRCLE,
+              fillColor: '#1A73E8',
+              fillOpacity: 0.9,
+              strokeColor: '#FFFFFF',
+              strokeOpacity: 0.9,
+              strokeWeight: 2,
+              scale: 6,
+            },
+      });
+      marker.setMap(map);
+      overlays.current.markers.push(marker);
+    });
+  }, [segments, selectedCampus]);
+
+  useEffect(() => {
+    const map = mapInstance.current;
+    if (!map || !selectedCampus) return;
+    const campus = findCampusLocation(selectedCampus);
+    if (!campus) return;
+    map.panTo({ lat: campus.latitude, lng: campus.longitude });
+    const currentZoom = map.getZoom?.() ?? map.getZoom();
+    if (!currentZoom || currentZoom < 13) {
+      map.setZoom(13);
+    }
+  }, [selectedCampus]);
 
   return (
     <View style={styles.card}>

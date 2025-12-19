@@ -785,7 +785,7 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
 
         <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).mapCard]}>
           <Text style={styles(C, S).mapTitle}>Carte en temps réel</Text>
-          <RideMap rides={rides} />
+          <RideMap rides={rides} selectedCampus={toCampus} />
           <Text style={styles(C, S).mapHint}>
             Les trajets publiés (y compris le tien) apparaissent instantanément pour les étudiants
             connectés.
@@ -1001,10 +1001,6 @@ function PassengerPublishScreen({
   const [ridesReady, setRidesReady] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
   const [detectedCommune, setDetectedCommune] = useState<string | null>(null);
-  const [preciseDepartCoords, setPreciseDepartCoords] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
   const [searchResults, setSearchResults] = useState<Ride[]>([]);
   const [resultsFilterState, setResultsFilterState] = useState<{
     visible: boolean;
@@ -1105,11 +1101,6 @@ function PassengerPublishScreen({
   const heroDepartLabel = fromCampus || 'Commune au choix';
   const heroArrivalLabel = toCampus || 'Destination EPHEC';
   const heroDurationLabel = sampledMinutes ? `${sampledMinutes} min estimées` : 'Temps estimé';
-  const heroDestinationCoords = useMemo(() => {
-    if (!toCampus) return null;
-    const { lat, lng } = getCoordinates(toCampus);
-    return { latitude: lat, longitude: lng };
-  }, [toCampus]);
   const scopedResults = useMemo(
     () => (showAllRides ? upcomingHomeRides : searchResults),
     [showAllRides, upcomingHomeRides, searchResults]
@@ -1283,13 +1274,9 @@ function PassengerPublishScreen({
   const handleUseLocation = useCallback(async () => {
     try {
       setLocationLoading(true);
-      const { commune, coords } = await getCurrentCommune();
+      const { commune } = await getCurrentCommune();
       setFromCampus(commune);
       setDetectedCommune(commune);
-      setPreciseDepartCoords({
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-      });
       setShowFromList(false);
       setShowDestList(false);
     } catch (error) {
@@ -1343,7 +1330,6 @@ function PassengerPublishScreen({
       }
       setFromCampus(commune);
       setDetectedCommune(null);
-      setPreciseDepartCoords(null);
       animateDropdown();
       setShowFromList(false);
     },
@@ -1392,7 +1378,6 @@ function PassengerPublishScreen({
                 onChangeText={(value) => {
                   setFromCampus(value);
                   setDetectedCommune(null);
-                  setPreciseDepartCoords(null);
                   if (!showFromList) {
                     animateDropdown();
                     setShowFromList(true);
@@ -2039,13 +2024,12 @@ function PassengerPublishScreen({
     const preferredMinutes = timeToMinutes(travelTime);
     const departQuery = normalizeText(fromCampus);
     const destinationQuery = normalizeText(toCampus);
-    const flexibleDepart = departQuery.includes('ma position');
     const filtered = rides
       .filter((ride) => !hasRideDeparted(ride))
       .filter((ride) => {
         const rideDepart = normalizeText(ride.depart);
         const rideDestination = normalizeText(ride.destination);
-        const departMatches = flexibleDepart || rideDepart.includes(departQuery);
+        const departMatches = rideDepart.includes(departQuery);
         const destinationMatches = rideDestination.includes(destinationQuery);
         const dayMatches = isSameDay(new Date(ride.departureAt), selectedDate);
         const minutesDiff = Math.abs(timeToMinutes(ride.time) - preferredMinutes);
@@ -2101,13 +2085,7 @@ function PassengerPublishScreen({
           {Platform.OS === 'web' ? (
             <View style={passengerStyles.heroColumnWeb}>
               <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardWebMap]}>
-                <HeroWebMap
-                  rides={rides}
-                  origin={preciseDepartCoords}
-                  originLabel={(detectedCommune ?? fromCampus) || undefined}
-                  destination={heroDestinationCoords}
-                  destinationLabel={toCampus || undefined}
-                />
+                <HeroWebMap rides={rides} />
               </View>
               <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardCompact]}>
                 {renderSheetContent()}
