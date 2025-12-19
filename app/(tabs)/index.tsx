@@ -13,7 +13,6 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import * as Location from 'expo-location';
 
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
@@ -26,6 +25,7 @@ import { subscribeNotifications } from '@/app/services/notifications';
 import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
 import { BRUSSELS_COMMUNES } from '@/constants/communes';
+import { getCurrentCommune, LocationPermissionError } from '@/app/services/location';
 
 type SectionKey = 'search' | 'requests' | 'trips';
 
@@ -101,6 +101,7 @@ export default function Home() {
   const [showCampusList, setShowCampusList] = useState(false);
   const [isDepartureFocused, setDepartureFocused] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
+  const [detectedCommune, setDetectedCommune] = useState<string | null>(null);
   const departureBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -203,44 +204,29 @@ export default function Home() {
 
   const selectDepartureSuggestion = (value: string) => {
     setDepartureInput(value);
+    setDetectedCommune(null);
     setDepartureFocused(false);
   };
 
   const handleUseLocation = useCallback(async () => {
     try {
       setLocationLoading(true);
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== Location.PermissionStatus.GRANTED) {
+      const { commune } = await getCurrentCommune();
+      setDepartureInput(commune);
+      setDetectedCommune(commune);
+      setDepartureFocused(false);
+    } catch (error) {
+      if (error instanceof LocationPermissionError) {
         Alert.alert(
           'Localisation désactivée',
           'Active l’accès à la localisation pour détecter automatiquement ta commune.'
         );
-        return;
+      } else {
+        Alert.alert(
+          'Position indisponible',
+          'Impossible de récupérer ta position actuelle. Réessaie dans un instant.'
+        );
       }
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      const places = await Location.reverseGeocodeAsync(position.coords);
-      const raw = places[0];
-      const resolveMatch = () => {
-        const candidates = [raw?.district, raw?.city, raw?.subregion, raw?.region];
-        for (const candidate of candidates) {
-          if (!candidate) continue;
-          const candidateKey = candidate.toLowerCase();
-          const match = BRUSSELS_COMMUNES.find((commune) =>
-            candidateKey.includes(commune.toLowerCase())
-          );
-          if (match) return match;
-        }
-        return candidates.find((candidate) => !!candidate) ?? 'Bruxelles';
-      };
-      setDepartureInput(resolveMatch() ?? 'Bruxelles');
-      setDepartureFocused(false);
-    } catch {
-      Alert.alert(
-        'Position indisponible',
-        'Impossible de récupérer ta position actuelle. Réessaie dans un instant.'
-      );
     } finally {
       setLocationLoading(false);
     }
@@ -393,14 +379,22 @@ export default function Home() {
                   placeholder="Où partez-vous ?"
                   placeholderTextColor={Colors.gray400}
                   value={departureInput}
-                  onChangeText={setDepartureInput}
+                  onChangeText={(value) => {
+                    setDepartureInput(value);
+                    setDetectedCommune(null);
+                  }}
                   style={styles.input}
                   onFocus={handleDepartureFocus}
                   onBlur={handleDepartureBlur}
                   autoCapitalize="words"
                   autoCorrect={false}
                 />
-                <Pressable onPress={() => setDepartureInput('')}>
+                <Pressable
+                  onPress={() => {
+                    setDepartureInput('');
+                    setDetectedCommune(null);
+                  }}
+                >
                   <IconSymbol name="arrow.up.arrow.down" size={20} color={Colors.gray400} />
                 </Pressable>
               </View>
@@ -416,6 +410,11 @@ export default function Home() {
                     {locationLoading ? 'Localisation…' : 'Utiliser ma position'}
                   </Text>
                 </Pressable>
+                {detectedCommune ? (
+                  <Text style={styles.locationDetectedText}>
+                    Commune détectée : {detectedCommune}
+                  </Text>
+                ) : null}
               </View>
               {showDepartureSuggestions ? (
                 <View style={styles.suggestionList}>
@@ -927,9 +926,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   inputHelperRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: Spacing.xs,
   },
   locationChip: {
     flexDirection: 'row',
@@ -947,6 +946,12 @@ const styles = StyleSheet.create({
     color: Colors.gray700,
     fontWeight: '600',
     fontSize: 12,
+  },
+  locationDetectedText: {
+    marginLeft: Spacing.md,
+    fontSize: 12,
+    color: Colors.gray600,
+    fontWeight: '500',
   },
   suggestionList: {
     marginTop: Spacing.sm,

@@ -5,9 +5,11 @@ import { StyleSheet, Text, View } from 'react-native';
 import type { Ride } from '@/app/services/rides';
 import { getCoordinates } from '@/app/services/distance';
 import { Colors, Radius, Spacing } from '@/app/ui/theme';
+import { CAMPUS_LOCATIONS, findCampusLocation } from '@/constants/campuses';
 
 type Props = {
   rides: Ride[];
+  selectedCampus?: string | null;
 };
 
 type RideMapData = {
@@ -68,7 +70,7 @@ const FALLBACK_ROUTES = [
   },
 ];
 
-const RideMapComponent = ({ rides }: Props) => {
+const RideMapComponent = ({ rides, selectedCampus }: Props) => {
   const mapped = useMemo<RideMapData[]>(() => {
     return rides.map((ride) => ({
       ride,
@@ -97,73 +99,100 @@ const RideMapComponent = ({ rides }: Props) => {
     });
   }, [mapped]);
 
+  useEffect(() => {
+    if (!selectedCampus) return;
+    const campus = findCampusLocation(selectedCampus);
+    if (!campus) return;
+    setRegion((prev) => ({
+      latitude: campus.latitude,
+      longitude: campus.longitude,
+      latitudeDelta: Math.min(prev.latitudeDelta, 0.12),
+      longitudeDelta: Math.min(prev.longitudeDelta, 0.12),
+    }));
+  }, [selectedCampus]);
+
   return (
     <View style={styles.card}>
-      <MapView
-        style={styles.map}
-        provider={PROVIDER_GOOGLE}
-        initialRegion={region}
-        region={region}
-        onRegionChangeComplete={setRegion}
-        pitchEnabled={false}
-        showsPointsOfInterest={false}
-        showsBuildings={false}
-        showsCompass={false}
-        showsTraffic={false}
-        showsScale={false}
-        toolbarEnabled={false}
-      >
-        {mapped.map(({ ride, origin, destination }) => (
-          <Fragment key={ride.id}>
-            <Polyline
-              coordinates={[
-                { latitude: origin.latitude, longitude: origin.longitude },
-                { latitude: destination.latitude, longitude: destination.longitude },
-              ]}
-              strokeColor={Colors.primary}
-              strokeWidth={3}
-              lineCap="round"
-              lineJoin="round"
-            />
-            <Marker
-              coordinate={origin}
-              title={ride.depart}
-              description={`Départ • ${ride.time}`}
-              pinColor={Colors.secondary}
-            />
-            <Marker
-              coordinate={destination}
-              title={ride.destination}
-              description={`Arrivée • ${ride.driver}`}
-              pinColor={Colors.primary}
-            />
-          </Fragment>
-        ))}
+      <View style={styles.mapContainer}>
+        <MapView
+          style={styles.map}
+          provider={PROVIDER_GOOGLE}
+          initialRegion={region}
+          region={region}
+          onRegionChangeComplete={setRegion}
+          pitchEnabled={false}
+          showsPointsOfInterest={false}
+          showsBuildings={false}
+          showsCompass={false}
+          showsTraffic={false}
+          showsScale={false}
+          toolbarEnabled={false}
+        >
+          {mapped.map(({ ride, origin, destination }) => (
+            <Fragment key={ride.id}>
+              <Polyline
+                coordinates={[
+                  { latitude: origin.latitude, longitude: origin.longitude },
+                  { latitude: destination.latitude, longitude: destination.longitude },
+                ]}
+                strokeColor={Colors.primary}
+                strokeWidth={3}
+                lineCap="round"
+                lineJoin="round"
+              />
+              <Marker
+                coordinate={origin}
+                title={ride.depart}
+                description={`Départ • ${ride.time}`}
+                pinColor={Colors.secondary}
+              />
+              <Marker
+                coordinate={destination}
+                title={ride.destination}
+                description={`Arrivée • ${ride.driver}`}
+                pinColor={Colors.primary}
+              />
+            </Fragment>
+          ))}
         {showFallback
           ? FALLBACK_ROUTES.map((route) => (
               <Fragment key={route.id}>
-                <Polyline
-                  coordinates={[route.start, route.end]}
-                  strokeColor={Colors.secondary}
-                  strokeWidth={3}
-                  lineDashPattern={[6, 6]}
-                />
-                <Marker
-                  coordinate={route.start}
-                  title={route.from}
-                  description="Point de départ (exemple)"
-                  pinColor={Colors.secondary}
-                />
-                <Marker
-                  coordinate={route.end}
-                  title={route.to}
-                  description="Destination (exemple)"
-                  pinColor={Colors.primary}
-                />
-              </Fragment>
+                  <Polyline
+                    coordinates={[route.start, route.end]}
+                    strokeColor={Colors.secondary}
+                    strokeWidth={3}
+                    lineDashPattern={[6, 6]}
+                  />
+                  <Marker
+                    coordinate={route.start}
+                    title={route.from}
+                    description="Point de départ (exemple)"
+                    pinColor={Colors.secondary}
+                  />
+                  <Marker
+                    coordinate={route.end}
+                    title={route.to}
+                    description="Destination (exemple)"
+                    pinColor={Colors.primary}
+                  />
+                </Fragment>
             ))
           : null}
+        {CAMPUS_LOCATIONS.map((campus) => {
+          const isSelected =
+            selectedCampus?.trim().toLowerCase() === campus.name.trim().toLowerCase();
+          return (
+            <Marker
+              key={`campus-${campus.name}`}
+              coordinate={{ latitude: campus.latitude, longitude: campus.longitude }}
+              title={campus.name}
+              description={campus.label}
+              pinColor={isSelected ? Colors.primary : Colors.gray400}
+            />
+          );
+        })}
       </MapView>
+      </View>
       <View style={styles.caption}>
         <Text style={styles.captionTitle}>Carte interactive</Text>
         <Text style={styles.captionText}>
@@ -185,6 +214,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.gray200,
     overflow: 'hidden',
+  },
+  mapContainer: {
+    position: 'relative',
   },
   map: {
     height: 240,

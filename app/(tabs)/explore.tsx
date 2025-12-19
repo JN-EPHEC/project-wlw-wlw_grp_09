@@ -1,6 +1,6 @@
 // app/(tabs)/explore.tsx
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,7 +19,6 @@ import {
   View,
 } from 'react-native';
 import { PinchGestureHandler, State } from 'react-native-gesture-handler';
-import * as Location from 'expo-location';
 
 import { RideMap } from '../../components/ride-map';
 import { AppBackground } from '@/components/ui/app-background';
@@ -59,10 +58,11 @@ import {
   normalizePlate,
   remindVehicleMismatch,
 } from '../services/security';
-import { getDistanceKm, getDurationMinutes } from '../services/distance';
+import { getCoordinates, getDistanceKm, getDurationMinutes } from '../services/distance';
 import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
 import { getAvatarUrl } from '../ui/avatar';
 import { BRUSSELS_COMMUNES } from '@/constants/communes';
+import { getCurrentCommune, LocationPermissionError } from '../services/location';
 
 const DefaultColors = {
   primary: '#E63946',
@@ -132,6 +132,7 @@ const defaultRouteVisual = {
   startDot: Colors.primary,
   endDot: Colors.secondary,
 };
+const HERO_MAP_IMAGE = require('../../assets/images/publish-map.png');
 
 const RESULT_FILTERS = [
   { id: 'recommended', label: 'Pertinence' },
@@ -784,7 +785,7 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
 
         <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).mapCard]}>
           <Text style={styles(C, S).mapTitle}>Carte en temps réel</Text>
-          <RideMap rides={rides} />
+          <RideMap rides={rides} selectedCampus={toCampus} />
           <Text style={styles(C, S).mapHint}>
             Les trajets publiés (y compris le tien) apparaissent instantanément pour les étudiants
             connectés.
@@ -999,6 +1000,7 @@ function PassengerPublishScreen({
   const [rides, setRides] = useState<Ride[]>([]);
   const [ridesReady, setRidesReady] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
+  const [detectedCommune, setDetectedCommune] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<Ride[]>([]);
   const [resultsFilterState, setResultsFilterState] = useState<{
     visible: boolean;
@@ -1096,6 +1098,9 @@ function PassengerPublishScreen({
     if (!minutes || !Number.isFinite(minutes)) return null;
     return minutes;
   }, [fromCampus, toCampus]);
+  const heroDepartLabel = fromCampus || 'Commune au choix';
+  const heroArrivalLabel = toCampus || 'Destination EPHEC';
+  const heroDurationLabel = sampledMinutes ? `${sampledMinutes} min estimées` : 'Temps estimé';
   const scopedResults = useMemo(
     () => (showAllRides ? upcomingHomeRides : searchResults),
     [showAllRides, upcomingHomeRides, searchResults]
@@ -1269,38 +1274,23 @@ function PassengerPublishScreen({
   const handleUseLocation = useCallback(async () => {
     try {
       setLocationLoading(true);
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== Location.PermissionStatus.GRANTED) {
+      const { commune } = await getCurrentCommune();
+      setFromCampus(commune);
+      setDetectedCommune(commune);
+      setShowFromList(false);
+      setShowDestList(false);
+    } catch (error) {
+      if (error instanceof LocationPermissionError) {
         Alert.alert(
           'Localisation désactivée',
           'Active la localisation pour suggérer automatiquement ta commune.'
         );
-        return;
+      } else {
+        Alert.alert(
+          'Position indisponible',
+          'Impossible de récupérer ta position actuelle. Réessaie dans un instant.'
+        );
       }
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      const places = await Location.reverseGeocodeAsync(position.coords);
-      const raw = places[0];
-      const resolveMatch = () => {
-        const candidates = [raw?.district, raw?.city, raw?.subregion, raw?.region];
-        for (const candidate of candidates) {
-          if (!candidate) continue;
-          const key = candidate.toLowerCase();
-          const match = BRUSSELS_COMMUNES.find((commune) => key.includes(commune.toLowerCase()));
-          if (match) return match;
-        }
-        return candidates.find((candidate) => !!candidate) ?? 'Bruxelles';
-      };
-      const resolved = resolveMatch();
-      setFromCampus(resolved);
-      setShowFromList(false);
-      setShowDestList(false);
-    } catch {
-      Alert.alert(
-        'Position indisponible',
-        'Impossible de récupérer ta position actuelle. Réessaie dans un instant.'
-      );
     } finally {
       setLocationLoading(false);
     }
@@ -1339,6 +1329,7 @@ function PassengerPublishScreen({
         return;
       }
       setFromCampus(commune);
+      setDetectedCommune(null);
       animateDropdown();
       setShowFromList(false);
     },
@@ -1352,6 +1343,186 @@ function PassengerPublishScreen({
     },
     [animateDropdown]
   );
+  const renderSheetContent = () => (
+    <>
+      <Text style={passengerStyles.sheetTitle}>Choisir votre destination</Text>
+      <View style={passengerStyles.campusChipsRow}>
+        {campusOptions.map((campus) => {
+          const selected = campus === toCampus;
+          return (
+            <Pressable
+              key={campus}
+              onPress={() => selectDestinationCampus(campus)}
+              style={[passengerStyles.campusChip, selected && passengerStyles.campusChipSelected]}
+              accessibilityRole="button"
+              accessibilityLabel={`Aller vers ${campus}`}
+              hitSlop={8}
+            >
+              <Text
+                style={[passengerStyles.campusChipText, selected && passengerStyles.campusChipTextSelected]}
+              >
+                {campus.replace('EPHEC ', '')}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <View style={passengerStyles.destinationRow}>
+        <View style={passengerStyles.destinationColumn}>
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperTop]}>
+            <View style={passengerStyles.inputWrapper}>
+              <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+              <TextInput
+                style={passengerStyles.dropdownTextInput}
+                value={fromCampus}
+                onChangeText={(value) => {
+                  setFromCampus(value);
+                  setDetectedCommune(null);
+                  if (!showFromList) {
+                    animateDropdown();
+                    setShowFromList(true);
+                  }
+                }}
+                placeholder="Votre commune de départ"
+                placeholderTextColor={Colors.gray400}
+                onFocus={handleFromFocus}
+                onBlur={handleFromBlur}
+                autoCapitalize="words"
+                autoCorrect={false}
+                returnKeyType="done"
+              />
+            </View>
+            <View style={passengerStyles.locationHelperRow}>
+              <Pressable
+                style={[
+                  passengerStyles.locationChip,
+                  locationLoading && passengerStyles.locationChipDisabled,
+                ]}
+                onPress={handleUseLocation}
+                disabled={locationLoading}
+                accessibilityRole="button"
+              >
+                <IconSymbol name="location.fill" size={14} color={Colors.secondary} />
+                <Text style={passengerStyles.locationChipText}>
+                  {locationLoading ? 'Localisation…' : 'Utiliser ma position'}
+                </Text>
+              </Pressable>
+              {detectedCommune ? (
+                <Text style={passengerStyles.locationDetectedText}>
+                  Commune détectée : {detectedCommune}
+                </Text>
+              ) : null}
+            </View>
+            {showFromList && communeSuggestions.length > 0 ? (
+              <View style={passengerStyles.dropdownList}>
+                {communeSuggestions.map((commune) => (
+                  <Pressable
+                    key={commune}
+                    style={passengerStyles.dropdownItem}
+                    onPress={() => selectFromCommune(commune)}
+                  >
+                    <Text style={passengerStyles.dropdownItemText}>{commune}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperBottom]}>
+            <View style={[passengerStyles.inputWrapper, passengerStyles.toInput]}>
+              <IconSymbol name="location.fill" size={18} color="#FF70A0" />
+              <Pressable
+                style={passengerStyles.dropdownTrigger}
+                onPress={toggleDestList}
+                accessibilityRole="button"
+                accessibilityLabel="Choisir un campus de destination"
+              >
+                <Text style={passengerStyles.dropdownText}>{toCampus}</Text>
+              </Pressable>
+            </View>
+            {showDestList ? (
+              <View style={passengerStyles.dropdownList}>
+                {campusOptions.map((campus) => (
+                  <Pressable
+                    key={campus}
+                    style={passengerStyles.dropdownItem}
+                    onPress={() => selectDestinationCampus(campus)}
+                  >
+                    <Text style={passengerStyles.dropdownItemText}>{campus}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        </View>
+        <View style={passengerStyles.actionsColumn}>
+          <Pressable
+            style={passengerStyles.swapButton}
+            accessibilityRole="button"
+            accessibilityLabel="Inverser les trajets"
+            onPress={() => {
+              closeDropdowns();
+              setFromCampus(toCampus);
+              setToCampus(fromCampus);
+              setDetectedCommune(null);
+              setPreciseDepartCoords(null);
+            }}
+          >
+            <IconSymbol name="chevron.up" size={18} color="#7A7A98" />
+            <IconSymbol name="chevron.down" size={18} color="#7A7A98" />
+          </Pressable>
+        </View>
+      </View>
+      <View style={passengerStyles.dateSection}>
+        {!dropdownOpen ? (
+          <View style={passengerStyles.dateRow}>
+            <Pressable
+              style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
+              onPress={() => {
+                closeDropdowns();
+                openDatePicker();
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Sélectionner une date"
+            >
+              <IconSymbol name="calendar" size={18} color={Colors.gray500} />
+              <Text style={passengerStyles.dropdownText}>{travelDateLabel}</Text>
+            </Pressable>
+            <Pressable
+              style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
+              onPress={() => {
+                closeDropdowns();
+                setShowTimePicker(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Sélectionner une heure"
+            >
+              <IconSymbol name="clock" size={18} color={Colors.gray500} />
+              <Text style={passengerStyles.dropdownText}>{travelTime}</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={passengerStyles.dateRowPlaceholder} />
+        )}
+      </View>
+      <GradientButton
+        title="Chercher"
+        onPress={onSearch}
+        variant="cta"
+        disabled={dropdownOpen || isSearching}
+        style={[
+          passengerStyles.fullSearchButton,
+          dropdownOpen && passengerStyles.fullSearchButtonLowered,
+        ]}
+      />
+      {isSearching ? (
+        <View style={passengerStyles.searchLoading}>
+          <ActivityIndicator color={Colors.primary} size="small" />
+          <Text style={passengerStyles.searchLoadingText}>Recherche en cours...</Text>
+        </View>
+      ) : null}
+    </>
+  );
+
   const timeOptions = useMemo(() => {
     const slots: string[] = [];
     for (let hour = 6; hour <= 22; hour++) {
@@ -1853,13 +2024,12 @@ function PassengerPublishScreen({
     const preferredMinutes = timeToMinutes(travelTime);
     const departQuery = normalizeText(fromCampus);
     const destinationQuery = normalizeText(toCampus);
-    const flexibleDepart = departQuery.includes('ma position');
     const filtered = rides
       .filter((ride) => !hasRideDeparted(ride))
       .filter((ride) => {
         const rideDepart = normalizeText(ride.depart);
         const rideDestination = normalizeText(ride.destination);
-        const departMatches = flexibleDepart || rideDepart.includes(departQuery);
+        const departMatches = rideDepart.includes(departQuery);
         const destinationMatches = rideDestination.includes(destinationQuery);
         const dayMatches = isSameDay(new Date(ride.departureAt), selectedDate);
         const minutesDiff = Math.abs(timeToMinutes(ride.time) - preferredMinutes);
@@ -1912,205 +2082,72 @@ function PassengerPublishScreen({
           showsVerticalScrollIndicator={false}
           onScrollBeginDrag={closeDropdowns}
         >
-          <View style={passengerStyles.mapWrapper}>
-            <PinchGestureHandler onGestureEvent={pinchGestureHandler} onHandlerStateChange={handlePinchStateChange}>
-              <Animated.View style={[passengerStyles.mapContent, { transform: [{ scale: mapScale }] }]}>
-                <Image source={require('@/assets/images/publish-map.png')} style={passengerStyles.mapImage} />
-                <View pointerEvents="none" style={passengerStyles.mapTitleCard}>
-                  <Text style={passengerStyles.mapTitle}>Trouver un trajet</Text>
-                </View>
-                <View pointerEvents="none" style={passengerStyles.routeBadge}>
-                  <Text style={passengerStyles.routeTitle}>
-                    {sampledMinutes ? `${sampledMinutes} min` : 'Temps estimé'}
-                  </Text>
-                </View>
-                <View pointerEvents="none" style={passengerStyles.mapBubbleStart}>
-                  <View style={[passengerStyles.mapBubbleDot, { backgroundColor: routeVisual.startDot }]} />
-                  <View>
-                    <Text style={passengerStyles.mapBubbleLabel}>Départ</Text>
-                    <Text style={passengerStyles.mapBubbleValue}>{fromCampus}</Text>
-                  </View>
-                </View>
-                <View pointerEvents="none" style={passengerStyles.mapBubbleDestination}>
-                  <View style={[passengerStyles.mapBubbleDot, { backgroundColor: routeVisual.endDot }]} />
-                  <View>
-                    <Text style={[passengerStyles.mapBubbleLabel, passengerStyles.mapBubbleLabelOnDark]}>Destination</Text>
-                    <Text style={[passengerStyles.mapBubbleValue, passengerStyles.mapBubbleValueOnDark]}>{toCampus}</Text>
-                  </View>
-                </View>
-              </Animated.View>
-            </PinchGestureHandler>
-          </View>
-
-          <View style={[passengerStyles.sheet, passengerStyles.sheetExpanded]}>
-            <Text style={passengerStyles.sheetTitle}>Choisir votre destination</Text>
-            <View style={passengerStyles.campusChipsRow}>
-              {campusOptions.map((campus) => {
-                const selected = campus === toCampus;
-                return (
-                  <Pressable
-                    key={campus}
-                    onPress={() => selectDestinationCampus(campus)}
-                    style={[passengerStyles.campusChip, selected && passengerStyles.campusChipSelected]}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Aller vers ${campus}`}
-                    hitSlop={8}
-                  >
-                    <Text
-                      style={[passengerStyles.campusChipText, selected && passengerStyles.campusChipTextSelected]}
-                    >
-                      {campus.replace('EPHEC ', '')}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            <View style={passengerStyles.destinationRow}>
-              <View style={passengerStyles.destinationColumn}>
-                <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperTop]}>
-                  <View style={passengerStyles.inputWrapper}>
-                    <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
-                    <TextInput
-                      style={passengerStyles.dropdownTextInput}
-                      value={fromCampus}
-                      onChangeText={(value) => {
-                        setFromCampus(value);
-                        if (!showFromList) {
-                          animateDropdown();
-                          setShowFromList(true);
-                        }
-                      }}
-                      placeholder="Votre commune de départ"
-                      placeholderTextColor={Colors.gray400}
-                      onFocus={handleFromFocus}
-                      onBlur={handleFromBlur}
-                      autoCapitalize="words"
-                      autoCorrect={false}
-                      returnKeyType="done"
-                    />
-                  </View>
-                  <View style={passengerStyles.locationHelperRow}>
-                    <Pressable
-                      style={[
-                        passengerStyles.locationChip,
-                        locationLoading && passengerStyles.locationChipDisabled,
-                      ]}
-                      onPress={handleUseLocation}
-                      disabled={locationLoading}
-                      accessibilityRole="button"
-                    >
-                      <IconSymbol name="location.fill" size={14} color={Colors.secondary} />
-                      <Text style={passengerStyles.locationChipText}>
-                        {locationLoading ? 'Localisation…' : 'Utiliser ma position'}
-                      </Text>
-                    </Pressable>
-                  </View>
-                  {showFromList && communeSuggestions.length > 0 ? (
-                    <View style={passengerStyles.dropdownList}>
-                      {communeSuggestions.map((commune) => (
-                        <Pressable
-                          key={commune}
-                          style={passengerStyles.dropdownItem}
-                          onPress={() => selectFromCommune(commune)}
-                        >
-                          <Text style={passengerStyles.dropdownItemText}>{commune}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
-                <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperBottom]}>
-                  <View style={[passengerStyles.inputWrapper, passengerStyles.toInput]}>
-                    <IconSymbol name="location.fill" size={18} color="#FF70A0" />
-                    <Pressable
-                      style={passengerStyles.dropdownTrigger}
-                      onPress={toggleDestList}
-                      accessibilityRole="button"
-                      accessibilityLabel="Choisir un campus de destination"
-                    >
-                      <Text style={passengerStyles.dropdownText}>{toCampus}</Text>
-                    </Pressable>
-                  </View>
-                  {showDestList ? (
-                    <View style={passengerStyles.dropdownList}>
-                      {campusOptions.map((campus) => (
-                        <Pressable
-                          key={campus}
-                          style={passengerStyles.dropdownItem}
-                          onPress={() => selectDestinationCampus(campus)}
-                        >
-                          <Text style={passengerStyles.dropdownItemText}>{campus}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
+          {Platform.OS === 'web' ? (
+            <View style={passengerStyles.heroColumnWeb}>
+              <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardWebMap]}>
+                <HeroWebMap rides={rides} />
               </View>
-              <View style={passengerStyles.actionsColumn}>
-                <Pressable
-                  style={passengerStyles.swapButton}
-                  accessibilityRole="button"
-                  accessibilityLabel="Inverser les trajets"
-                  onPress={() => {
-                    closeDropdowns();
-                    setFromCampus(toCampus);
-                    setToCampus(fromCampus);
-                  }}
+              <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardCompact]}>
+                {renderSheetContent()}
+              </View>
+            </View>
+          ) : (
+            <>
+              <View style={passengerStyles.mapWrapper}>
+                <PinchGestureHandler
+                  onGestureEvent={pinchGestureHandler}
+                  onHandlerStateChange={handlePinchStateChange}
                 >
-                  <IconSymbol name="chevron.up" size={18} color="#7A7A98" />
-                  <IconSymbol name="chevron.down" size={18} color="#7A7A98" />
-                </Pressable>
+                  <Animated.View style={[passengerStyles.mapContent, { transform: [{ scale: mapScale }] }]}>
+                    <Image source={HERO_MAP_IMAGE} style={passengerStyles.mapImage} resizeMode="cover" />
+                    <View pointerEvents="none" style={passengerStyles.mapTitleCard}>
+                      <Text style={passengerStyles.mapTitle}>Trouver un trajet</Text>
+                    </View>
+                    <View style={passengerStyles.routeBadge}>
+                      <Text style={passengerStyles.routeTitle}>{heroArrivalLabel}</Text>
+                      <Text style={passengerStyles.routeDuration}>{heroDurationLabel}</Text>
+                    </View>
+                    <View style={passengerStyles.mapBubbleStart}>
+                      <View
+                        style={[
+                          passengerStyles.mapBubbleDot,
+                          { backgroundColor: routeVisual.startDot },
+                        ]}
+                      />
+                      <View>
+                        <Text style={passengerStyles.mapBubbleLabel}>Départ</Text>
+                        <Text style={passengerStyles.mapBubbleValue}>{heroDepartLabel}</Text>
+                      </View>
+                    </View>
+                    <View style={passengerStyles.mapBubbleDestination}>
+                      <View
+                        style={[
+                          passengerStyles.mapBubbleDot,
+                          passengerStyles.mapBubbleDotDestination,
+                          { backgroundColor: routeVisual.endDot },
+                        ]}
+                      />
+                      <View>
+                        <Text
+                          style={[passengerStyles.mapBubbleLabel, passengerStyles.mapBubbleLabelOnDark]}
+                        >
+                          Destination
+                        </Text>
+                        <Text
+                          style={[passengerStyles.mapBubbleValue, passengerStyles.mapBubbleValueOnDark]}
+                        >
+                          {heroArrivalLabel}
+                        </Text>
+                      </View>
+                    </View>
+                  </Animated.View>
+                </PinchGestureHandler>
               </View>
-            </View>
-            <View style={passengerStyles.dateSection}>
-              {!dropdownOpen ? (
-                <View style={passengerStyles.dateRow}>
-                  <Pressable
-                    style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-                    onPress={() => {
-                      closeDropdowns();
-                      openDatePicker();
-                    }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Sélectionner une date"
-                  >
-                    <IconSymbol name="calendar" size={18} color={Colors.gray500} />
-                    <Text style={passengerStyles.dropdownText}>{travelDateLabel}</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-                    onPress={() => {
-                      closeDropdowns();
-                      setShowTimePicker(true);
-                    }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Sélectionner une heure"
-                  >
-                    <IconSymbol name="clock" size={18} color={Colors.gray500} />
-                    <Text style={passengerStyles.dropdownText}>{travelTime}</Text>
-                  </Pressable>
-                </View>
-              ) : (
-                <View style={passengerStyles.dateRowPlaceholder} />
-              )}
-            </View>
-            <GradientButton
-              title="Chercher"
-              onPress={onSearch}
-              variant="cta"
-              disabled={dropdownOpen || isSearching}
-              style={[
-                passengerStyles.fullSearchButton,
-                dropdownOpen && passengerStyles.fullSearchButtonLowered,
-              ]}
-            />
-            {isSearching ? (
-              <View style={passengerStyles.searchLoading}>
-                <ActivityIndicator color={Colors.primary} size="small" />
-                <Text style={passengerStyles.searchLoadingText}>Recherche en cours...</Text>
+              <View style={[passengerStyles.sheet, passengerStyles.sheetExpanded]}>
+                {renderSheetContent()}
               </View>
-            ) : null}
-          </View>
+            </>
+          )}
 
           {showResultsCard ? (
             <GradientBackground
@@ -2499,9 +2536,50 @@ const passengerStyles = StyleSheet.create({
     height: '100%',
   },
   mapImage: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  heroColumnWeb: {
+    flexDirection: 'column',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.lg,
+  },
+  heroCardWeb: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: Spacing.lg,
+    gap: Spacing.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(0,0,0,0.08)',
+  },
+  heroCardCompact: {
+    padding: Spacing.md,
+  },
+  heroCardWebMap: {
+    padding: 0,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+    marginTop: Spacing.md,
+  },
+  webMapHero: {
     width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
+    height: 320,
+    borderRadius: 24,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  webMapError: {
+    position: 'absolute',
+    inset: 0,
+    backgroundColor: 'rgba(12, 16, 28, 0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+  },
+  webMapErrorText: {
+    color: Colors.white,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   mapBubbleStart: {
     position: 'absolute',
@@ -2596,6 +2674,11 @@ const passengerStyles = StyleSheet.create({
   routeTitle: {
     fontWeight: '800',
     color: '#FF9353',
+  },
+  routeDuration: {
+    color: Colors.gray600,
+    fontWeight: '600',
+    fontSize: 12,
   },
   sheet: {
     backgroundColor: '#FFFFFF',
@@ -2751,6 +2834,8 @@ const passengerStyles = StyleSheet.create({
   locationHelperRow: {
     paddingHorizontal: Spacing.sm,
     marginTop: Spacing.xs,
+    alignItems: 'flex-start',
+    gap: Spacing.xs,
   },
   locationChip: {
     flexDirection: 'row',
@@ -2769,6 +2854,13 @@ const passengerStyles = StyleSheet.create({
     color: Colors.gray700,
     fontSize: 12,
     fontWeight: '600',
+  },
+  locationDetectedText: {
+    marginTop: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    fontSize: 12,
+    color: Colors.gray600,
+    fontWeight: '500',
   },
   actionsColumn: {
     justifyContent: 'flex-start',
@@ -3724,3 +3816,180 @@ const maskCardNumberDisplay = (digits: string) => {
 };
 
 const EXPIRY_YEARS_SPAN = 12;
+
+const HERO_GOOGLE_MAPS_API_KEY =
+  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? 'AIzaSyCU9joaWe-_aSq4RMbqbLsrVi0pkC5iu8c';
+
+type HeroSegment = {
+  id: string;
+  start: { latitude: number; longitude: number };
+  end: { latitude: number; longitude: number };
+  startLabel: string;
+  endLabel: string;
+};
+
+const HERO_FALLBACK_SEGMENTS: HeroSegment[] = [
+  {
+    id: 'hero-fallback-1',
+    start: { latitude: 50.8467, longitude: 4.3517 },
+    end: { latitude: 50.8794, longitude: 4.7009 },
+    startLabel: 'Grand-Place',
+    endLabel: 'Leuven',
+  },
+];
+
+const loadHeroGoogleMaps = () => {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('window unavailable'));
+  }
+  if (window.google && window.google.maps) {
+    return Promise.resolve(window.google);
+  }
+  if (window.__campusRideHeroMapLoader) {
+    return window.__campusRideHeroMapLoader;
+  }
+  window.__campusRideHeroMapLoader = new Promise<any>((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${HERO_GOOGLE_MAPS_API_KEY}`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve(window.google);
+    script.onerror = () => reject(new Error('Google Maps JS failed to load.'));
+    document.head.appendChild(script);
+  });
+  return window.__campusRideHeroMapLoader;
+};
+
+const computeHeroCamera = (segments: HeroSegment[]) => {
+  if (segments.length === 0) {
+    return { center: { lat: 50.8503, lng: 4.3517 }, zoom: 11 };
+  }
+  const lats = segments.flatMap((segment) => [segment.start.latitude, segment.end.latitude]);
+  const lngs = segments.flatMap((segment) => [segment.start.longitude, segment.end.longitude]);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  const center = { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 };
+  const latitudeDelta = Math.max((maxLat - minLat) * 1.4, 0.02);
+  const longitudeDelta = Math.max((maxLng - minLng) * 1.4, 0.02);
+  const delta = Math.max(latitudeDelta, longitudeDelta);
+  const zoom = Math.max(5, Math.min(15, Math.log2(360 / delta)));
+  return { center, zoom };
+};
+
+const HeroWebMap = ({ rides }: { rides: Ride[] }) => {
+  const mapNode = useRef<HTMLDivElement | null>(null);
+  const mapInstance = useRef<any>(null);
+  const overlays = useRef<{ markers: any[]; polylines: any[] }>({ markers: [], polylines: [] });
+  const [error, setError] = useState<string | null>(null);
+
+  const segments = useMemo<HeroSegment[]>(() => {
+    if (!rides.length) return HERO_FALLBACK_SEGMENTS;
+    return rides.slice(0, 3).map((ride) => ({
+      id: ride.id,
+      start: getCoordinates(ride.depart),
+      end: getCoordinates(ride.destination),
+      startLabel: ride.depart,
+      endLabel: ride.destination,
+    }));
+  }, [rides]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    let mounted = true;
+    loadHeroGoogleMaps()
+      .then((google) => {
+        if (!mounted || !mapNode.current) return;
+        const camera = computeHeroCamera(segments);
+        mapInstance.current = new google.maps.Map(mapNode.current, {
+          center: camera.center,
+          zoom: camera.zoom,
+          disableDefaultUI: true,
+          zoomControl: true,
+          mapTypeControl: false,
+          streetViewControl: false,
+        });
+      })
+      .catch(() => {
+        if (mounted) {
+          setError("Impossible d'afficher Google Maps.");
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const google = window.google;
+    const map = mapInstance.current;
+    if (!google || !map) return;
+
+    overlays.current.markers.forEach((marker) => marker.setMap(null));
+    overlays.current.polylines.forEach((polyline) => polyline.setMap(null));
+    overlays.current = { markers: [], polylines: [] };
+
+    const camera = computeHeroCamera(segments);
+    map.setCenter(camera.center);
+    map.setZoom(camera.zoom);
+
+    segments.forEach((segment) => {
+      const path = [
+        { lat: segment.start.latitude, lng: segment.start.longitude },
+        { lat: segment.end.latitude, lng: segment.end.longitude },
+      ];
+      const polyline = new google.maps.Polyline({
+        path,
+        strokeColor: '#7A5FFF',
+        strokeOpacity: 0.9,
+        strokeWeight: 4,
+        geodesic: true,
+      });
+      polyline.setMap(map);
+
+      const start = new google.maps.Marker({
+        position: path[0],
+        title: segment.startLabel,
+        label: 'A',
+      });
+      const end = new google.maps.Marker({
+        position: path[1],
+        title: segment.endLabel,
+        label: 'B',
+      });
+      start.setMap(map);
+      end.setMap(map);
+      overlays.current.polylines.push(polyline);
+      overlays.current.markers.push(start, end);
+    });
+  }, [segments]);
+
+  if (Platform.OS !== 'web') {
+    return null;
+  }
+
+  return (
+    <View style={passengerStyles.webMapHero}>
+      <div ref={mapNode} style={webMapSurfaceStyle} />
+      {error ? (
+        <View style={passengerStyles.webMapError}>
+          <Text style={passengerStyles.webMapErrorText}>{error}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+};
+
+const webMapSurfaceStyle: CSSProperties = {
+  width: '100%',
+  height: '100%',
+};
+
+declare global {
+  interface Window {
+    __campusRideHeroMapLoader?: Promise<any>;
+  }
+}

@@ -111,3 +111,21 @@ firebase deploy --only functions
 ```
 
 En développement, si `RESEND_API_KEY` est absent, la fonction se contente de journaliser l’absence de configuration afin de ne pas casser les tests.
+
+## 7. Notifications (Firestore)
+
+Les notifications temps-réel reposent désormais sur trois collections Firestore afin de conserver une trace serveur même lorsque l’app est relancée ou installée sur un autre appareil.
+
+| Ressource                     | Service         | Description                                                                                              |
+|-------------------------------|-----------------|----------------------------------------------------------------------------------------------------------|
+| `notificationTokens/{email}`  | Firestore       | Token Expo/FCM courant + plateforme pour envoyer un push.                                                |
+| `notificationPreferences/{email}` | Firestore   | Préférences utilisateur (`pushEnabled`, sons, rappels, `lastRegisteredAt`, token courant…).               |
+| `notifications/{autoId}`      | Firestore       | Journal des événements envoyés (messages, réservations, rappels) avec métadonnées et planification.      |
+
+**Alimentation côté app** (`app/services/notifications.ts`) :
+
+- `registerPushToken` → `persistPushTokenRecord` écrit/merge le token normalisé et `platform` (ios/android/web) + `updatedAt`.
+- `updateNotificationPreferences` → `persistNotificationPreferencesRecord` synchronise les toggles (push, rappels, sons) et `lastRegisteredAt`.
+- `pushNotification` → `persistNotificationEventRecord` ajoute une entrée immuable pour chaque notification envoyée (titre, corps, `metadata`, `scheduleAt`, `scheduleKey`).
+
+Cela couvre la Definition of Done : le « serveur de notifications » repose sur Firestore, et les tokens push sont enregistrés/mis à jour dès qu’ils changent. Des Cloud Functions pourront ensuite se brancher sur ces collections (`notifications` pour envoyer, `notificationTokens` pour cibler les appareils) sans modifier le front.
