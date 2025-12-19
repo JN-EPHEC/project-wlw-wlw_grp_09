@@ -161,20 +161,58 @@ export type RideDetail = {
   confirmedPassengers: ConfirmedPassenger[];
 };
 
-export const SAMPLE_RIDE_DETAILS: Record<string, RideDetail> = {
-  'sample-upcoming-1': {
-    pendingRequests: SAMPLE_PENDING_REQUESTS,
-    confirmedPassengers: SAMPLE_CONFIRMED_PASSENGERS,
-  },
-  'sample-upcoming-2': {
-    pendingRequests: SAMPLE_PENDING_REQUESTS,
-    confirmedPassengers: SAMPLE_CONFIRMED_PASSENGERS,
-  },
+const clonePendingRequests = () => SAMPLE_PENDING_REQUESTS.map((request) => ({ ...request }));
+const cloneConfirmedPassengers = () =>
+  SAMPLE_CONFIRMED_PASSENGERS.map((passenger) => ({ ...passenger }));
+
+const createRideDetailSnapshot = (): RideDetail => ({
+  pendingRequests: clonePendingRequests(),
+  confirmedPassengers: cloneConfirmedPassengers(),
+});
+
+const DEFAULT_DETAIL_KEY = 'default';
+
+const ensureRideDetail = (rideId: string | undefined) => {
+  const key = rideId && rideId.length ? rideId : DEFAULT_DETAIL_KEY;
+  if (!SAMPLE_RIDE_DETAILS[key]) {
+    SAMPLE_RIDE_DETAILS[key] = createRideDetailSnapshot();
+  }
+  return SAMPLE_RIDE_DETAILS[key];
 };
 
-export const getSampleRideDetail = (rideId: string): RideDetail => {
-  return SAMPLE_RIDE_DETAILS[rideId] ?? {
-    pendingRequests: SAMPLE_PENDING_REQUESTS,
-    confirmedPassengers: SAMPLE_CONFIRMED_PASSENGERS,
-  };
+const mapRequestToConfirmedPassenger = (request: PendingRequest): ConfirmedPassenger => ({
+  id: request.id,
+  name: request.name,
+  rating: request.rating,
+  trips: request.trips,
+  avatar: request.avatar,
+});
+
+export const SAMPLE_RIDE_DETAILS: Record<string, RideDetail> = {
+  'sample-upcoming-1': createRideDetailSnapshot(),
+  'sample-upcoming-2': createRideDetailSnapshot(),
+};
+
+export const getSampleRideDetail = (rideId: string): RideDetail => ensureRideDetail(rideId);
+
+export const acceptPendingRequest = (
+  rideId: string,
+  requestId: string
+): ConfirmedPassenger | null => {
+  const detail = ensureRideDetail(rideId);
+  const pendingRequest = detail.pendingRequests.find((item) => item.id === requestId);
+  if (!pendingRequest) {
+    return null;
+  }
+  detail.pendingRequests = detail.pendingRequests.filter((item) => item.id !== requestId);
+  const confirmed = mapRequestToConfirmedPassenger(pendingRequest);
+  detail.confirmedPassengers = [...detail.confirmedPassengers, confirmed];
+  return confirmed;
+};
+
+export const refusePendingRequest = (rideId: string, requestId: string): boolean => {
+  const detail = ensureRideDetail(rideId);
+  const originalLength = detail.pendingRequests.length;
+  detail.pendingRequests = detail.pendingRequests.filter((item) => item.id !== requestId);
+  return detail.pendingRequests.length < originalLength;
 };

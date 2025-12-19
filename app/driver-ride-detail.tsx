@@ -20,9 +20,9 @@ import { getRides, subscribeRides, type Ride } from '@/app/services/rides';
 import {
   ConfirmedPassenger,
   PendingRequest,
+  acceptPendingRequest,
   getSampleRideDetail,
-  SAMPLE_CONFIRMED_PASSENGERS,
-  SAMPLE_PENDING_REQUESTS,
+  refusePendingRequest,
 } from '@/app/data/driver-samples';
 
 const formatFullDate = (timestamp: number) =>
@@ -56,20 +56,14 @@ export default function DriverRideDetailScreen() {
   }, [rideId, rides]);
 
   const detail = useMemo(() => getSampleRideDetail(rideId ?? ''), [rideId]);
-  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>(() =>
-    detail.pendingRequests.length ? detail.pendingRequests : SAMPLE_PENDING_REQUESTS
-  );
-  const [confirmedPassengers, setConfirmedPassengers] = useState<ConfirmedPassenger[]>(() =>
-    detail.confirmedPassengers.length ? detail.confirmedPassengers : SAMPLE_CONFIRMED_PASSENGERS
+  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>(() => detail.pendingRequests);
+  const [confirmedPassengers, setConfirmedPassengers] = useState<ConfirmedPassenger[]>(
+    () => detail.confirmedPassengers
   );
 
   useEffect(() => {
-    setPendingRequests(
-      detail.pendingRequests.length ? detail.pendingRequests : SAMPLE_PENDING_REQUESTS
-    );
-    setConfirmedPassengers(
-      detail.confirmedPassengers.length ? detail.confirmedPassengers : SAMPLE_CONFIRMED_PASSENGERS
-    );
+    setPendingRequests(detail.pendingRequests);
+    setConfirmedPassengers(detail.confirmedPassengers);
   }, [detail]);
 
   const reserved = ride?.passengers.length ?? confirmedPassengers.length;
@@ -109,25 +103,28 @@ export default function DriverRideDetailScreen() {
     },
   ];
 
-  const handleAccept = useCallback((request: PendingRequest) => {
-    setPendingRequests((prev) => prev.filter((item) => item.id !== request.id));
-    setConfirmedPassengers((prev) => [
-      ...prev,
-      {
-        id: request.id,
-        name: request.name,
-        rating: request.rating,
-        trips: request.trips,
-        avatar: request.avatar,
-      },
-    ]);
-    Alert.alert('Passager accepté', `${request.name} rejoint le trajet.`);
-  }, []);
+  const handleAccept = useCallback(
+    (request: PendingRequest) => {
+      if (!rideId) return;
+      const passenger = acceptPendingRequest(rideId, request.id);
+      if (!passenger) return;
+      setPendingRequests((prev) => prev.filter((item) => item.id !== request.id));
+      setConfirmedPassengers((prev) => [...prev, passenger]);
+      Alert.alert('Passager accepté', `${request.name} rejoint le trajet.`);
+    },
+    [rideId]
+  );
 
-  const handleRefuse = useCallback((requestId: string) => {
-    setPendingRequests((prev) => prev.filter((item) => item.id !== requestId));
-    Alert.alert('Demande refusée', 'La demande a bien été refusée.');
-  }, []);
+  const handleRefuse = useCallback(
+    (requestId: string) => {
+      if (!rideId) return;
+      const removed = refusePendingRequest(rideId, requestId);
+      if (!removed) return;
+      setPendingRequests((prev) => prev.filter((item) => item.id !== requestId));
+      Alert.alert('Demande refusée', 'La demande a bien été refusée.');
+    },
+    [rideId]
+  );
 
   const openMessages = useCallback(() => {
     router.push('/(tabs)/messages');

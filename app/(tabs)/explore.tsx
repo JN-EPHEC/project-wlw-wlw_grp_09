@@ -785,7 +785,7 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
 
         <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).mapCard]}>
           <Text style={styles(C, S).mapTitle}>Carte en temps réel</Text>
-          <RideMap rides={rides} selectedCampus={toCampus} />
+          <RideMap rides={rides} selectedCampus={destination || null} />
           <Text style={styles(C, S).mapHint}>
             Les trajets publiés (y compris le tien) apparaissent instantanément pour les étudiants
             connectés.

@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -145,10 +145,27 @@ const DRIVER_RULES = [
 
 export default function Home() {
   const session = useAuthSession();
-  return session.isDriver ? (
-    <DriverDashboard session={session} />
-  ) : (
+  const params = useLocalSearchParams<{ mode?: 'passenger' }>();
+  const [previewPassenger, setPreviewPassenger] = useState(params.mode === 'passenger');
+
+  useEffect(() => {
+    if (params.mode === 'passenger') {
+      setPreviewPassenger(true);
+      router.replace('/(tabs)/index');
+    }
+  }, [params.mode, router]);
+
+  useEffect(() => {
+    if (!session.isDriver && previewPassenger) {
+      setPreviewPassenger(false);
+    }
+  }, [session.isDriver, previewPassenger]);
+
+  const showPassenger = previewPassenger || !session.isDriver;
+  return showPassenger ? (
     <PassengerHome session={session} />
+  ) : (
+    <DriverDashboard session={session} />
   );
 }
 

@@ -179,7 +179,7 @@ export default function ProfileScreen() {
           onPress: async () => {
             const success = await updateRoles({ driver: false, passenger: true });
             if (success) {
-              router.replace('/(tabs)');
+              router.replace('/(tabs)/index?mode=passenger');
             }
           },
         },
