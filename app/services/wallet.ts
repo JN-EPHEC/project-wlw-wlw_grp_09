@@ -14,7 +14,7 @@ export type WalletTransaction = {
   metadata?: Record<string, unknown>;
 };
 
-export type PaymentMethodType = 'card' | 'apple-pay';
+export type PaymentMethodType = 'card' | 'apple-pay' | 'google-pay';
 
 export type PayoutMethod = {
   id: string;
@@ -113,6 +113,9 @@ const clone = (wallet: Wallet): WalletSnapshot => ({
   points: wallet.points,
   rideCredits: wallet.rideCredits,
   payoutMethod: wallet.payoutMethod ? { ...wallet.payoutMethod } : null,
+  paymentMethods: wallet.paymentMethods.map((method) => ({ ...method })),
+  defaultPaymentMethodId: wallet.defaultPaymentMethodId,
+  payoutAccount: wallet.payoutAccount ? { ...wallet.payoutAccount } : null,
   checklist: cloneChecklist(wallet.checklist),
 });
 
@@ -127,6 +130,9 @@ const ensureWallet = (email: string) => {
       points: 0,
       rideCredits: 0,
       payoutMethod: null,
+      paymentMethods: [],
+      defaultPaymentMethodId: null,
+      payoutAccount: null,
       checklist: cloneChecklist(DEFAULT_CHECKLIST),
       seeded: false,
     };
@@ -283,10 +289,28 @@ export const redeemPoints = (email: string, points: number, reason: string) => {
   return wallet.points;
 };
 
-export const setPayoutMethod = (email: string, method: PayoutMethod) => {
+type PayoutMethodInput = Omit<PayoutMethod, 'id' | 'type' | 'addedAt'> & {
+  id?: string;
+  type?: PaymentMethodType;
+  addedAt?: number;
+};
+
+export const setPayoutMethod = (email: string, method: PayoutMethodInput) => {
   const key = ensureWallet(email);
   const wallet = wallets[key];
-  wallet.payoutMethod = { ...method, addedAt: method.addedAt ?? Date.now() };
+  const entry: PayoutMethod = {
+    id: method.id ?? randomId(),
+    type: method.type ?? 'card',
+    brand: method.brand,
+    last4: method.last4,
+    addedAt: method.addedAt ?? Date.now(),
+    holderName: method.holderName,
+    expMonth: method.expMonth,
+    expYear: method.expYear,
+  };
+  wallet.payoutMethod = { ...entry };
+  wallet.defaultPaymentMethodId = entry.id;
+  wallet.paymentMethods = [entry, ...wallet.paymentMethods.filter((item) => item.id !== entry.id)];
   const checklistItem = wallet.checklist.find((item) => item.id === 'add-payout-method');
   if (checklistItem) checklistItem.done = true;
   recordWalletActivity(email, 'Carte de versement enregistrée', {
@@ -294,6 +318,35 @@ export const setPayoutMethod = (email: string, method: PayoutMethod) => {
     last4: wallet.payoutMethod.last4,
   });
   notify(email);
+  return wallet.payoutMethod;
+};
+
+export const selectPaymentMethod = (email: string, methodId: string) => {
+  const key = ensureWallet(email);
+  const wallet = wallets[key];
+  const method = wallet.paymentMethods.find((entry) => entry.id === methodId);
+  if (!method) return null;
+  wallet.payoutMethod = { ...method };
+  wallet.defaultPaymentMethodId = method.id;
+  notify(email);
+  return wallet.payoutMethod;
+};
+
+export const setPayoutAccount = (email: string, account: PayoutAccount) => {
+  const key = ensureWallet(email);
+  const wallet = wallets[key];
+  wallet.payoutAccount = {
+    ...account,
+    addedAt: account.addedAt ?? Date.now(),
+    iban: account.iban,
+    label: account.label,
+  };
+  recordWalletActivity(email, 'Compte bancaire mis à jour', {
+    label: wallet.payoutAccount.label,
+    iban: wallet.payoutAccount.iban,
+  });
+  notify(email);
+  return wallet.payoutAccount;
 };
 
 export const getChecklist = (email: string) => {
@@ -316,12 +369,12 @@ export const markChecklist = (email: string, id: string) => toggleChecklistItem(
 export const requestMonthlyWithdrawal = (email: string) => {
   const key = ensureWallet(email);
   const wallet = wallets[key];
-  if (!wallet.payoutMethod) {
+  const payoutTarget = wallet.payoutAccount ?? wallet.payoutMethod;
+  if (!payoutTarget) {
     return { ok: false as const, reason: 'no-payout-method' as const };
   }
   const now = Date.now();
   const delayDays = wallet.withdrawalDelayDays ?? DEFAULT_WITHDRAWAL_DELAY_DAYS;
-  const delayMs = delayDays * 24 * 60 * 60 * 1000;
   if (wallet.lastWithdrawalAt && now - wallet.lastWithdrawalAt < delayMs) {
     return {
       ok: false as const,
@@ -358,10 +411,23 @@ const seedDemoWallet = (email: string, wallet: Wallet) => {
   wallet.points = 420;
   wallet.rideCredits = 3;
   wallet.withdrawalDelayDays = 14;
-  wallet.payoutMethod = {
+  const defaultCard: PayoutMethod = {
+    id: randomId(),
+    type: 'card',
     brand: 'Visa',
     last4: '4532',
     addedAt: Date.now() - 1000 * 60 * 60 * 24 * 30,
+    holderName: 'Lina Dupont',
+    expMonth: 8,
+    expYear: 27,
+  };
+  wallet.paymentMethods = [defaultCard];
+  wallet.defaultPaymentMethodId = defaultCard.id;
+  wallet.payoutMethod = { ...defaultCard };
+  wallet.payoutAccount = {
+    iban: 'BE63 5100 0754 7061',
+    label: 'Compte principal',
+    addedAt: Date.now() - 1000 * 60 * 60 * 24 * 28,
   };
   wallet.transactions = [
     {
@@ -417,7 +483,8 @@ export const withdrawAmount = (
 ) => {
   const key = ensureWallet(email);
   const wallet = wallets[key];
-  if (!wallet.payoutMethod) {
+  const payoutTarget = wallet.payoutAccount ?? wallet.payoutMethod;
+  if (!payoutTarget) {
     return { ok: false as const, reason: 'no-payout-method' as const };
   }
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -431,15 +498,6 @@ export const withdrawAmount = (
   }
   const now = Date.now();
   const delayDays = wallet.withdrawalDelayDays ?? DEFAULT_WITHDRAWAL_DELAY_DAYS;
-  const delayMs = delayDays * 24 * 60 * 60 * 1000;
-  if (wallet.lastWithdrawalAt && now - wallet.lastWithdrawalAt < delayMs) {
-    return {
-      ok: false as const,
-      reason: 'too-soon' as const,
-      next: wallet.lastWithdrawalAt + delayMs,
-      delayDays,
-    };
-  }
   debitWallet(email, amount, options?.description ?? 'Retrait manuel', {
     type: 'manual-withdrawal',
     delayDays,
@@ -489,6 +547,9 @@ export const resetWallets = () => {
       points: 0,
       rideCredits: 0,
       payoutMethod: null,
+      paymentMethods: [],
+      defaultPaymentMethodId: null,
+      payoutAccount: null,
       checklist: cloneChecklist(DEFAULT_CHECKLIST),
     };
     notify(key);
