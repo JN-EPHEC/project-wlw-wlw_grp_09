@@ -1,98 +1,1393 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { router } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  Image,
+  LayoutChangeEvent,
+  Linking,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import { AppBackground } from '@/components/ui/app-background';
+import { GradientBackground } from '@/components/ui/gradient-background';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
+import { useAuthSession } from '@/hooks/use-auth-session';
+import { getAvatarUrl } from '@/app/ui/avatar';
+import type { Notification } from '@/app/services/notifications';
+import { subscribeNotifications } from '@/app/services/notifications';
+import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
+import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
+import { BRUSSELS_COMMUNES } from '@/constants/communes';
+import { getCurrentCommune, LocationPermissionError } from '@/app/services/location';
 
-export default function HomeScreen() {
+type SectionKey = 'search' | 'requests' | 'trips';
+
+const CAMPUS_OPTIONS = [
+  'EPHEC Delta',
+  'EPHEC Louvain-la-Neuve',
+  'EPHEC Schaerbeek',
+  'EPHEC Woluwe',
+];
+
+const sponsorOffer = {
+  brand: 'Spotify Student',
+  tagline: 'Premium -50 % pendant 12 mois',
+  description: 'Ta musique sans limites pendant les trajets CampusRide.',
+  badge: 'Sponsorisé',
+  logo: require('@/assets/images/Spotify.png'),
+  colors: ['#1DB954', '#18A148', '#12823A'],
+  url: 'https://www.spotify.com/be-fr/student/',
+};
+
+const sponsorSecondary = {
+  brand: 'Netflix Student',
+  tagline: '1er mois offert',
+  badge: 'Sponsorisé',
+  colors: ['#F44336', '#D32F2F'],
+  url: 'https://www.netflix.com/be-en/',
+  logo: require('@/assets/images/Netflix.jpg'),
+};
+
+const formatDate = (timestamp: number) =>
+  new Date(timestamp).toLocaleDateString('fr-BE', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+
+const formatTime = (timestamp: number) =>
+  new Date(timestamp).toLocaleTimeString('fr-BE', { hour: '2-digit', minute: '2-digit' });
+
+const getFirstName = (value: string | null | undefined) => {
+  if (!value) return null;
+  const [first] = value.trim().split(/\s+/);
+  if (!first) return null;
+  return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+};
+
+const getRandomRating = (ride: Ride) => {
+  const seed = ride.driver.length + ride.destination.length;
+  const base = 4 + (seed % 10) / 20;
+  return Math.min(4.9, Math.round(base * 10) / 10);
+};
+
+const getRandomTripsCount = (ride: Ride) => 10 + (ride.driver.length % 5) * 5;
+
+export default function Home() {
+  const session = useAuthSession();
+  const scrollRef = useRef<ScrollView>(null);
+  const sectionPositions = useRef<Record<SectionKey, number>>({
+    search: 0,
+    requests: 0,
+    trips: 0,
+  });
+
+  const [rides, setRides] = useState<Ride[]>(getRides());
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [wallet, setWallet] = useState<WalletSnapshot | null>(() =>
+    session.email ? getWallet(session.email) : null
+  );
+  const [departureInput, setDepartureInput] = useState('');
+  const [campus, setCampus] = useState('');
+  const [tripTab, setTripTab] = useState<'current' | 'reserved' | 'history'>('current');
+  const [showCampusList, setShowCampusList] = useState(false);
+  const [isDepartureFocused, setDepartureFocused] = useState(false);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [detectedCommune, setDetectedCommune] = useState<string | null>(null);
+  const departureBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = subscribeRides(setRides);
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!session.email) {
+      setWallet(null);
+      return;
+    }
+    setWallet(getWallet(session.email));
+    const unsubscribe = subscribeWallet(session.email, setWallet);
+    return unsubscribe;
+  }, [session.email]);
+
+  useEffect(() => {
+    if (!session.email) {
+      setNotifications([]);
+      return;
+    }
+    const unsubscribe = subscribeNotifications(session.email, setNotifications);
+    return unsubscribe;
+  }, [session.email]);
+
+  const recommendedRides = useMemo(() => rides.slice(0, 3), [rides]);
+  const myReservations = useMemo(
+    () =>
+      rides.filter(
+        (ride) => !!session.email && ride.passengers.includes(session.email)
+      ),
+    [rides, session.email]
+  );
+  const pendingRequests = useMemo(
+    () => myReservations.filter((ride) => !hasRideDeparted(ride)),
+    [myReservations]
+  );
+  const historyTrips = useMemo(
+    () => myReservations.filter((ride) => hasRideDeparted(ride)),
+    [myReservations]
+  );
+  const reservedTrips = useMemo(
+    () => pendingRequests.filter((ride) => ride.passengers.length < ride.seats),
+    [pendingRequests]
+  );
+
+  const tripBuckets = useMemo(
+    () => ({
+      current: pendingRequests,
+      reserved: reservedTrips,
+      history: historyTrips,
+    }),
+    [pendingRequests, reservedTrips, historyTrips]
+  );
+
+  const activeTrip = tripBuckets[tripTab][0] ?? pendingRequests[0] ?? historyTrips[0] ?? null;
+  const featuredRide = recommendedRides[0] ?? activeTrip ?? rides[0] ?? null;
+
+  const unreadNotifications = useMemo(
+    () => notifications.filter((notif) => !notif.read).length,
+    [notifications]
+  );
+
+  const firstName = getFirstName(session.name);
+  const walletBalance = wallet?.balance ?? 0;
+  const rideCredits = wallet?.rideCredits ?? 0;
+
+  const handleCampusSelect = () => {
+    setShowCampusList((prev) => !prev);
+  };
+
+  const selectCampus = (value: string) => {
+    setCampus(value);
+    setShowCampusList(false);
+  };
+
+  const handleSearch = () => {
+    setShowCampusList(false);
+    router.push({
+      pathname: '/explore',
+      params: {
+        depart: departureInput,
+        campus,
+      } as any,
+    });
+  };
+
+  const handleDepartureFocus = () => {
+    if (departureBlurTimeout.current) {
+      clearTimeout(departureBlurTimeout.current);
+      departureBlurTimeout.current = null;
+    }
+    setDepartureFocused(true);
+  };
+
+  const handleDepartureBlur = () => {
+    departureBlurTimeout.current = setTimeout(() => setDepartureFocused(false), 120);
+  };
+
+  const selectDepartureSuggestion = (value: string) => {
+    setDepartureInput(value);
+    setDetectedCommune(null);
+    setDepartureFocused(false);
+  };
+
+  const handleUseLocation = useCallback(async () => {
+    try {
+      setLocationLoading(true);
+      const { commune } = await getCurrentCommune();
+      setDepartureInput(commune);
+      setDetectedCommune(commune);
+      setDepartureFocused(false);
+    } catch (error) {
+      if (error instanceof LocationPermissionError) {
+        Alert.alert(
+          'Localisation désactivée',
+          'Active l’accès à la localisation pour détecter automatiquement ta commune.'
+        );
+      } else {
+        Alert.alert(
+          'Position indisponible',
+          'Impossible de récupérer ta position actuelle. Réessaie dans un instant.'
+        );
+      }
+    } finally {
+      setLocationLoading(false);
+    }
+  }, []);
+
+  const openRide = (ride: Ride | null) => {
+    if (!ride) return;
+    router.push({ pathname: '/ride/[id]', params: { id: ride.id } });
+  };
+
+  const openSponsor = (url: string) => {
+    Linking.openURL(url).catch(() =>
+      Alert.alert('Lien indisponible', 'Impossible d’ouvrir ce sponsor pour le moment.')
+    );
+  };
+
+  const registerSection = (key: SectionKey) => (event: LayoutChangeEvent) => {
+    sectionPositions.current[key] = event.nativeEvent.layout.y;
+  };
+
+  const scrollToSection = (key: SectionKey) => {
+    setShowCampusList(false);
+    const position = sectionPositions.current[key] ?? 0;
+    scrollRef.current?.scrollTo({ y: Math.max(position - 16, 0), animated: true });
+  };
+
+  const quickActions = useMemo(
+    () => [
+      {
+        key: 'search' as SectionKey,
+        label: 'Rechercher',
+        icon: 'magnifyingglass' as const,
+        onPress: () => scrollToSection('search'),
+      },
+      {
+        key: 'requests' as SectionKey,
+        label: 'Mes demandes',
+        icon: 'doc.text' as const,
+        badge: pendingRequests.length > 0 ? String(pendingRequests.length) : undefined,
+        onPress: () => scrollToSection('requests'),
+      },
+      {
+        key: 'trips' as SectionKey,
+        label: 'Mes trajets',
+        icon: 'car.fill' as const,
+        badge: tripBuckets[tripTab].length > 0 ? undefined : undefined,
+        onPress: () => scrollToSection('trips'),
+      },
+    ],
+    [pendingRequests.length, tripBuckets, tripTab]
+  );
+
+  const itinerary = useMemo(() => {
+    if (!featuredRide) return [];
+    const segments = [
+      {
+        label: featuredRide.depart,
+        time: formatTime(featuredRide.departureAt),
+        color: '#7ED957',
+      },
+      {
+        label: 'Point intermédiaire',
+        time: formatTime(featuredRide.departureAt + 5 * 60 * 1000),
+        color: '#B1B5C8',
+      },
+      {
+        label: featuredRide.destination,
+        time: formatTime(featuredRide.departureAt + 12 * 60 * 1000),
+        color: Colors.primary,
+      },
+    ];
+    return segments;
+  }, [featuredRide]);
+
+  const departureSuggestions = useMemo(() => {
+    const query = departureInput.trim().toLowerCase();
+    if (!query) return [...BRUSSELS_COMMUNES];
+    return BRUSSELS_COMMUNES.filter((commune) =>
+      commune.toLowerCase().includes(query)
+    );
+  }, [departureInput]);
+
+  const showDepartureSuggestions = isDepartureFocused && departureSuggestions.length > 0;
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <AppBackground colors={Gradients.background}>
+      <SafeAreaView style={styles.safe}>
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={styles.scroll}
+          showsVerticalScrollIndicator={false}
+        >
+          <GradientBackground colors={Gradients.background} style={styles.hero}>
+            <View style={styles.heroHeader}>
+              <View>
+                <Text style={styles.heroLabel}>Bonjour {firstName ?? 'CampusRider'}</Text>
+                <Text style={styles.heroSubtitle}>Trouve ton prochain trajet</Text>
+              </View>
+              <Pressable style={styles.notificationIcon} onPress={() => router.push('/(tabs)/messages')}>
+                <IconSymbol name="bell.fill" size={22} color={Colors.white} />
+                {unreadNotifications > 0 ? (
+                  <View style={styles.notificationBadge}>
+                    <Text style={styles.notificationBadgeText}>{unreadNotifications}</Text>
+                  </View>
+                ) : null}
+              </Pressable>
+            </View>
+            <View style={styles.heroMeta}>
+              <View style={styles.heroChip}>
+                <IconSymbol name="shield.fill" size={16} color={Colors.white} />
+                <Text style={styles.heroChipText}>
+                  {session.isDriver ? 'Conducteur vérifié' : 'Passager CampusRide'}
+                </Text>
+              </View>
+              <Text style={styles.heroDescription}>
+                {pendingRequests.length > 0
+                  ? `Tu as ${pendingRequests.length} demande(s) active(s) aujourd’hui.`
+                  : 'Réserve un trajet ou deviens conducteur pour partager la route.'}
+              </Text>
+              <Text style={styles.heroWallet}>
+                Wallet : {walletBalance.toFixed(2)} € · {rideCredits} crédit(s)
+              </Text>
+            </View>
+            <View style={styles.quickActionsRow}>
+              {quickActions.map((action) => (
+                <Pressable
+                  key={action.key}
+                  style={styles.quickAction}
+                  onPress={action.onPress}
+                  accessibilityRole="button"
+                >
+                  <View style={styles.quickIcon}>
+                    <IconSymbol name={action.icon} size={24} color={Colors.primary} />
+                  </View>
+                  <Text style={styles.quickLabel}>{action.label}</Text>
+                  {action.badge ? <View style={styles.quickBadge}><Text style={styles.quickBadgeText}>{action.badge}</Text></View> : null}
+                </Pressable>
+              ))}
+            </View>
+          </GradientBackground>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+          <View style={styles.section} onLayout={registerSection('search')}>
+            <Text style={styles.sectionTitle}>Rechercher un trajet</Text>
+            <Text style={styles.sectionSubtitle}>Trouve un covoiturage vers ton campus</Text>
+            <View style={styles.formCard}>
+              <Text style={styles.inputLabel}>Point de départ</Text>
+              <View style={styles.inputRow}>
+                <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+                <TextInput
+                  placeholder="Où partez-vous ?"
+                  placeholderTextColor={Colors.gray400}
+                  value={departureInput}
+                  onChangeText={(value) => {
+                    setDepartureInput(value);
+                    setDetectedCommune(null);
+                  }}
+                  style={styles.input}
+                  onFocus={handleDepartureFocus}
+                  onBlur={handleDepartureBlur}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                />
+                <Pressable
+                  onPress={() => {
+                    setDepartureInput('');
+                    setDetectedCommune(null);
+                  }}
+                >
+                  <IconSymbol name="arrow.up.arrow.down" size={20} color={Colors.gray400} />
+                </Pressable>
+              </View>
+              <View style={styles.inputHelperRow}>
+                <Pressable
+                  style={[styles.locationChip, locationLoading && styles.locationChipDisabled]}
+                  onPress={handleUseLocation}
+                  accessibilityRole="button"
+                  disabled={locationLoading}
+                >
+                  <IconSymbol name="location.fill" size={14} color={Colors.secondary} />
+                  <Text style={styles.locationChipText}>
+                    {locationLoading ? 'Localisation…' : 'Utiliser ma position'}
+                  </Text>
+                </Pressable>
+                {detectedCommune ? (
+                  <Text style={styles.locationDetectedText}>
+                    Commune détectée : {detectedCommune}
+                  </Text>
+                ) : null}
+              </View>
+              {showDepartureSuggestions ? (
+                <View style={styles.suggestionList}>
+                  <ScrollView
+                    style={styles.suggestionScroll}
+                    keyboardShouldPersistTaps="handled"
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator={false}
+                  >
+                    {departureSuggestions.map((suggestion) => (
+                      <Pressable
+                        key={suggestion}
+                        style={styles.suggestionItem}
+                        onPress={() => selectDepartureSuggestion(suggestion)}
+                      >
+                        <IconSymbol name="location.fill" size={16} color={Colors.gray500} />
+                        <Text style={styles.suggestionText}>{suggestion}</Text>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              ) : null}
+              <Text style={styles.inputLabel}>Destination campus</Text>
+              <View>
+                <Pressable style={styles.selector} onPress={handleCampusSelect}>
+                  <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
+                  <Text style={[styles.selectorText, !campus && styles.selectorPlaceholder]}>
+                    {campus || 'Sélectionnez un campus'}
+                  </Text>
+                  <IconSymbol name="chevron.down" size={18} color={Colors.gray400} />
+                </Pressable>
+                {showCampusList ? (
+                  <View style={styles.dropdownListInline}>
+                    {CAMPUS_OPTIONS.map((option) => (
+                      <Pressable
+                        key={option}
+                        style={[
+                          styles.dropdownItemInline,
+                          option === campus && styles.dropdownItemInlineActive,
+                        ]}
+                        onPress={() => selectCampus(option)}
+                      >
+                        <Text
+                          style={[
+                            styles.dropdownItemInlineText,
+                            option === campus && styles.dropdownItemInlineTextActive,
+                          ]}
+                        >
+                          {option}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+              <Pressable style={styles.primaryButton} onPress={handleSearch} accessibilityRole="button">
+                <IconSymbol name="magnifyingglass" size={18} color={Colors.white} />
+                <Text style={styles.primaryButtonText}>Rechercher</Text>
+              </Pressable>
+            </View>
+            <GradientBackground colors={sponsorSecondary.colors} style={styles.inlineSponsor}>
+              <View style={styles.inlineSponsorLogo}>
+                <Image
+                  source={sponsorSecondary.logo}
+                  style={styles.inlineSponsorLogoImage}
+                  resizeMode="contain"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                {sponsorSecondary.badge ? (
+                  <View style={styles.inlineBadge}>
+                    <Text style={styles.inlineBadgeText}>{sponsorSecondary.badge}</Text>
+                  </View>
+                ) : null}
+                <Text style={styles.inlineSponsorLabel}>{sponsorSecondary.brand}</Text>
+                <Text style={styles.inlineSponsorTagline}>{sponsorSecondary.tagline}</Text>
+              </View>
+              <Pressable onPress={() => openSponsor(sponsorSecondary.url)}>
+                <IconSymbol name="arrow.up.right.square" size={24} color={Colors.white} />
+              </Pressable>
+            </GradientBackground>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Trajets qui pourraient vous intéresser</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recommendedList}>
+              {recommendedRides.map((ride) => (
+                <Pressable
+                  key={ride.id}
+                  style={styles.rideCard}
+                  onPress={() => openRide(ride)}
+                  accessibilityRole="button"
+                >
+                  <View style={styles.rideHeader}>
+                    <Image source={{ uri: getAvatarUrl(ride.ownerEmail, 96) }} style={styles.avatar} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.rideDriver}>{ride.driver}</Text>
+                      <Text style={styles.rideMeta}>
+                        ⭐ {getRandomRating(ride)} · {getRandomTripsCount(ride)} trajets
+                      </Text>
+                    </View>
+                    <View style={styles.priceBadge}>
+                      <Text style={styles.priceBadgeText}>{ride.price.toFixed(2)} €</Text>
+                      <Text style={styles.priceBadgeSub}>
+                        {ride.seats - ride.passengers.length} place(s)
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.rideRoute}>
+                    <View style={styles.routeDot} />
+                    <Text style={styles.routeLabel}>{ride.depart}</Text>
+                  </View>
+                  <View style={styles.rideRoute}>
+                    <View style={[styles.routeDot, { backgroundColor: Colors.primary }]} />
+                    <Text style={styles.routeLabel}>{ride.destination}</Text>
+                  </View>
+                  <View style={styles.rideFooter}>
+                    <Text style={styles.rideFooterLabel}>
+                      {formatTime(ride.departureAt)} · {ride.seats} place(s)
+                    </Text>
+                    <Pressable style={styles.secondaryButton} onPress={() => openRide(ride)}>
+                      <Text style={styles.secondaryButtonText}>Voir les détails</Text>
+                    </Pressable>
+                  </View>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+
+          <View style={styles.section} onLayout={registerSection('requests')}>
+            <Text style={styles.sectionTitle}>Mes demandes</Text>
+            <Text style={styles.sectionSubtitle}>Suivez vos demandes de covoiturage</Text>
+            <View style={styles.requestCard}>
+              <View style={styles.requestHeader}>
+                <View style={styles.statusBadge}>
+                  <IconSymbol name="checkmark.seal.fill" size={16} color={Colors.success} />
+                  <Text style={styles.statusText}>Acceptée</Text>
+                </View>
+                <Text style={styles.requestBadgeText}>
+                  {pendingRequests.length} acceptée(s)
+                </Text>
+              </View>
+              {pendingRequests[0] ? (
+                <>
+                  <View style={styles.requestBody}>
+                    <Image
+                      source={{ uri: getAvatarUrl(pendingRequests[0].ownerEmail, 96) }}
+                      style={styles.requestAvatar}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.requestDriver}>{pendingRequests[0].driver}</Text>
+                      <Text style={styles.requestMeta}>
+                        ⭐ {getRandomRating(pendingRequests[0])} · {getRandomTripsCount(pendingRequests[0])} trajets
+                      </Text>
+                      <Text style={styles.requestRoute}>
+                        {pendingRequests[0].depart} → {pendingRequests[0].destination}
+                      </Text>
+                    </View>
+                    <View style={styles.requestPrice}>
+                      <Text style={styles.requestPriceValue}>
+                        {pendingRequests[0].price.toFixed(2)} €
+                      </Text>
+                      <Text style={styles.requestPriceLabel}>{pendingRequests[0].seats} place(s)</Text>
+                    </View>
+                  </View>
+                  <Pressable
+                    style={styles.primaryButton}
+                    onPress={() => openRide(pendingRequests[0])}
+                  >
+                    <Text style={styles.primaryButtonText}>Voir les détails</Text>
+                  </Pressable>
+                </>
+              ) : (
+                <Text style={styles.emptyText}>
+                  Tu n’as pas encore de demande acceptée. Réserve un trajet dès maintenant !
+                </Text>
+              )}
+            </View>
+          </View>
+
+          <View style={styles.section} onLayout={registerSection('trips')}>
+            <Text style={styles.sectionTitle}>Mes trajets</Text>
+            <Text style={styles.sectionSubtitle}>Gérez vos réservations</Text>
+            <View style={styles.tabs}>
+              {(['current', 'reserved', 'history'] as const).map((tab) => (
+                <Pressable
+                  key={tab}
+                  style={[styles.tabButton, tripTab === tab && styles.tabButtonActive]}
+                  onPress={() => setTripTab(tab)}
+                >
+                  <Text
+                    style={[
+                      styles.tabLabel,
+                      tripTab === tab && styles.tabLabelActive,
+                    ]}
+                  >
+                    {tab === 'current' ? 'En cours' : tab === 'reserved' ? 'Réservés' : 'Historique'}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            {activeTrip ? (
+              <View style={styles.tripCard}>
+                <View style={styles.tripHeader}>
+                  <View style={styles.tripStatus}>
+                    <IconSymbol name="sparkles" size={16} color="#4F8EF7" />
+                    <Text style={styles.tripStatusText}>
+                      {hasRideDeparted(activeTrip) ? 'Terminé' : 'En cours'}
+                    </Text>
+                  </View>
+                  <Text style={styles.tripHeaderMeta}>
+                    {formatDate(activeTrip.departureAt)} · {formatTime(activeTrip.departureAt)}
+                  </Text>
+                </View>
+                <View style={styles.requestBody}>
+                  <Image
+                    source={{ uri: getAvatarUrl(activeTrip.ownerEmail, 96) }}
+                    style={styles.requestAvatar}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.requestDriver}>{activeTrip.driver}</Text>
+                    <Text style={styles.requestMeta}>
+                      ⭐ {getRandomRating(activeTrip)} · {getRandomTripsCount(activeTrip)} trajets
+                    </Text>
+                    <Text style={styles.requestRoute}>
+                      {activeTrip.depart} → {activeTrip.destination}
+                    </Text>
+                  </View>
+                  <View style={styles.requestPrice}>
+                    <Text style={styles.requestPriceValue}>{activeTrip.price.toFixed(2)} €</Text>
+                    <Text style={styles.requestPriceLabel}>5.2 km · 15 min</Text>
+                  </View>
+                </View>
+                <Pressable style={styles.primaryButton} onPress={() => openRide(activeTrip)}>
+                  <IconSymbol name="paperplane.fill" size={18} color={Colors.white} />
+                  <Text style={styles.primaryButtonText}>Voir le trajet en direct</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Text style={[styles.emptyText, styles.emptyTextLight]}>
+                Aucun trajet pour cette catégorie.
+              </Text>
+            )}
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Itinéraire</Text>
+            <View style={styles.infoCard}>
+              {itinerary.map((item, index) => (
+                <View key={item.label} style={styles.itineraryRow}>
+                  <View style={[styles.itineraryDot, { backgroundColor: item.color }]} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.itineraryLabel}>{item.label}</Text>
+                    <Text style={styles.itineraryTime}>{item.time}</Text>
+                  </View>
+                  {index < itinerary.length - 1 ? (
+                    <View style={styles.itineraryBridge} />
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Informations</Text>
+            <View style={styles.infoCard}>
+              <View style={styles.infoRow}>
+                <IconSymbol name="calendar" size={20} color={Colors.gray500} />
+                <Text style={styles.infoLabel}>Date</Text>
+                <Text style={styles.infoValue}>
+                  {featuredRide ? formatDate(featuredRide.departureAt) : '—'}
+                </Text>
+              </View>
+              <View style={styles.infoRow}>
+                <IconSymbol name="clock" size={20} color={Colors.gray500} />
+                <Text style={styles.infoLabel}>Heure de départ</Text>
+                <Text style={styles.infoValue}>
+                  {featuredRide ? formatTime(featuredRide.departureAt) : '—'}
+                </Text>
+              </View>
+              <View style={styles.infoRow}>
+                <IconSymbol name="person.fill" size={20} color={Colors.gray500} />
+                <Text style={styles.infoLabel}>Places réservées</Text>
+                <Text style={styles.infoValue}>
+                  {featuredRide ? featuredRide.passengers.length : 0} place(s)
+                </Text>
+              </View>
+              <View style={styles.infoRow}>
+                <IconSymbol name="creditcard.fill" size={20} color={Colors.gray500} />
+                <Text style={styles.infoLabel}>Prix total</Text>
+                <Text style={styles.infoValueHighlight}>
+                  {featuredRide ? `${featuredRide.price.toFixed(2)} €` : '—'}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Offres sponsorisées</Text>
+            <GradientBackground colors={sponsorOffer.colors} style={styles.sponsorCard}>
+              <View style={styles.sponsorHeader}>
+                <View style={styles.sponsorBadge}>
+                  <Text style={styles.sponsorBadgeText}>{sponsorOffer.badge}</Text>
+                </View>
+                <Pressable onPress={() => openSponsor(sponsorOffer.url)}>
+                  <IconSymbol name="arrow.up.right.square" size={22} color={Colors.white} />
+                </Pressable>
+              </View>
+              <View style={styles.sponsorBrandRow}>
+                <Image source={sponsorOffer.logo} style={styles.sponsorLogo} resizeMode="contain" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.sponsorBrand}>{sponsorOffer.brand}</Text>
+                  <Text style={styles.sponsorTagline}>{sponsorOffer.tagline}</Text>
+                </View>
+              </View>
+              <Text style={styles.sponsorDescription}>{sponsorOffer.description}</Text>
+              <Pressable style={styles.sponsorButton} onPress={() => openSponsor(sponsorOffer.url)}>
+                <Text style={styles.sponsorButtonText}>Profiter de l’offre</Text>
+              </Pressable>
+            </GradientBackground>
+
+          </View>
+
+          <View style={styles.section}>
+            <GradientBackground colors={Gradients.cta} style={styles.driverCTA}>
+              <View style={styles.driverLogoWrapper}>
+                <Image
+                  source={require('@/assets/images/logo.png')}
+                  style={styles.driverLogo}
+                  resizeMode="contain"
+                />
+              </View>
+              <Text style={styles.driverTitle}>Devenez conducteur et gagnez de l’argent</Text>
+              <Text style={styles.driverSubtitle}>
+                Publie ton premier trajet en moins de 2 minutes et fixe ton prix librement.
+              </Text>
+              <Pressable
+                style={styles.primaryButton}
+                onPress={() => router.push('/driver-verification')}
+              >
+                <Text style={styles.primaryButtonText}>Devenir conducteur</Text>
+              </Pressable>
+            </GradientBackground>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </AppBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  safe: {
+    flex: 1,
+  },
+  scroll: {
+    padding: Spacing.lg,
+    gap: Spacing.xl,
+    paddingBottom: Spacing.xxl * 2,
+  },
+  hero: {
+    borderRadius: Radius['2xl'],
+    padding: Spacing.xl,
+    gap: Spacing.md,
+  },
+  heroHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  heroLabel: {
+    color: Colors.white,
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  heroSubtitle: {
+    color: Colors.white,
+    fontSize: 16,
+    opacity: 0.9,
+  },
+  notificationIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    backgroundColor: Colors.danger,
+    borderRadius: Radius.pill,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  notificationBadgeText: {
+    color: Colors.white,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  heroMeta: {
+    gap: Spacing.sm,
+  },
+  heroChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: Spacing.sm,
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  heroChipText: {
+    color: Colors.white,
+    fontWeight: '700',
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  heroDescription: {
+    color: Colors.white,
+    opacity: 0.9,
+    lineHeight: 20,
+  },
+  heroWallet: {
+    color: Colors.white,
+    fontWeight: '700',
+  },
+  quickActionsRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  quickAction: {
+    flex: 1,
+    borderRadius: Radius['2xl'],
+    backgroundColor: Colors.card,
+    paddingVertical: Spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Shadows.card,
+  },
+  quickIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: Colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.sm,
+  },
+  quickLabel: {
+    fontWeight: '700',
+    color: Colors.ink,
+    textAlign: 'center',
+  },
+  quickBadge: {
+    marginTop: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.secondary,
+  },
+  quickBadgeText: {
+    color: Colors.white,
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  section: {
+    gap: Spacing.sm,
+    padding: Spacing.lg,
+    borderRadius: Radius['2xl'],
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  sectionTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: Colors.white,
+  },
+  sectionSubtitle: {
+    color: 'rgba(255,255,255,0.85)',
+  },
+  formCard: {
+    backgroundColor: Colors.card,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+    ...Shadows.card,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.gray600,
+    textTransform: 'uppercase',
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.gray200,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    height: 48,
+    gap: Spacing.sm,
+  },
+  input: {
+    flex: 1,
+    color: Colors.ink,
+    fontSize: 15,
+  },
+  inputHelperRow: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: Spacing.xs,
+  },
+  locationChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.gray100,
+  },
+  locationChipDisabled: {
+    opacity: 0.6,
+  },
+  locationChipText: {
+    color: Colors.gray700,
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  locationDetectedText: {
+    marginLeft: Spacing.md,
+    fontSize: 12,
+    color: Colors.gray600,
+    fontWeight: '500',
+  },
+  suggestionList: {
+    marginTop: Spacing.sm,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.gray200,
+    backgroundColor: Colors.gray50,
+    ...Shadows.card,
+  },
+  suggestionScroll: {
+    maxHeight: 280,
+  },
+  suggestionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.gray100,
+  },
+  suggestionText: {
+    color: Colors.ink,
+    fontWeight: '600',
+  },
+  selector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.gray200,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    height: 48,
+    gap: Spacing.sm,
+  },
+  selectorText: {
+    flex: 1,
+    color: Colors.ink,
+    fontSize: 15,
+  },
+  selectorPlaceholder: {
+    color: Colors.gray400,
+  },
+  dropdownListInline: {
+    marginTop: Spacing.xs,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.gray200,
+    backgroundColor: Colors.card,
+    overflow: 'hidden',
+  },
+  dropdownItemInline: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+  },
+  dropdownItemInlineText: {
+    color: Colors.ink,
+  },
+  dropdownItemInlineActive: {
+    backgroundColor: Colors.primaryLight,
+  },
+  dropdownItemInlineTextActive: {
+    color: Colors.primaryDark,
+    fontWeight: '700',
+  },
+  primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.pill,
+    paddingVertical: Spacing.md,
+    justifyContent: 'center',
+    marginTop: Spacing.md,
+  },
+  primaryButtonText: {
+    color: Colors.white,
+    fontWeight: '700',
+  },
+  recommendedList: {
+    paddingVertical: Spacing.sm,
+    gap: Spacing.md,
+  },
+  rideCard: {
+    width: 280,
+    backgroundColor: Colors.card,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.md,
+    gap: Spacing.sm,
+    ...Shadows.card,
+    marginRight: Spacing.md,
+  },
+  rideHeader: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    alignItems: 'center',
+  },
+  avatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  rideDriver: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  rideMeta: {
+    color: Colors.gray500,
+    fontSize: 12,
+  },
+  priceBadge: {
+    alignItems: 'flex-end',
+  },
+  priceBadgeText: {
+    color: Colors.primary,
+    fontWeight: '800',
+  },
+  priceBadgeSub: {
+    color: Colors.gray500,
+    fontSize: 12,
+  },
+  rideRoute: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  routeDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: Colors.secondary,
+  },
+  routeLabel: {
+    color: Colors.ink,
+  },
+  rideFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  rideFooterLabel: {
+    color: Colors.gray500,
+  },
+  secondaryButton: {
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+  },
+  secondaryButtonText: {
+    color: Colors.primary,
+    fontWeight: '700',
+  },
+  requestCard: {
+    backgroundColor: Colors.card,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.md,
+    ...Shadows.card,
+  },
+  requestHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  statusText: {
+    color: Colors.success,
+    fontWeight: '700',
+  },
+  requestBadgeText: {
+    color: Colors.gray600,
+  },
+  requestBody: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  requestAvatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+  },
+  requestDriver: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  requestMeta: {
+    color: Colors.gray500,
+    fontSize: 12,
+  },
+  requestRoute: {
+    color: Colors.ink,
+    marginTop: 2,
+  },
+  requestPrice: {
+    alignItems: 'flex-end',
+  },
+  requestPriceValue: {
+    color: Colors.primary,
+    fontWeight: '800',
+  },
+  requestPriceLabel: {
+    color: Colors.gray500,
+    fontSize: 12,
+  },
+  emptyText: {
+    color: Colors.gray500,
+    fontStyle: 'italic',
+  },
+  emptyTextLight: {
+    color: Colors.white,
+  },
+  tabs: {
+    flexDirection: 'row',
+    backgroundColor: Colors.gray100,
+    borderRadius: Radius.pill,
+    padding: Spacing.xs,
+  },
+  tabButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+  },
+  tabButtonActive: {
+    backgroundColor: Colors.card,
+    ...Shadows.card,
+  },
+  tabLabel: {
+    color: Colors.gray500,
+    fontWeight: '600',
+  },
+  tabLabelActive: {
+    color: Colors.primary,
+  },
+  tripCard: {
+    backgroundColor: Colors.card,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.md,
+    ...Shadows.card,
+  },
+  tripHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  tripStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  tripStatusText: {
+    color: '#4F8EF7',
+    fontWeight: '700',
+  },
+  tripHeaderMeta: {
+    color: Colors.gray500,
+    fontSize: 12,
+  },
+  infoCard: {
+    backgroundColor: Colors.card,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.md,
+    ...Shadows.card,
+  },
+  itineraryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  itineraryDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+  },
+  itineraryLabel: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  itineraryTime: {
+    color: Colors.gray500,
+    fontSize: 12,
+  },
+  itineraryBridge: {
+    width: 40,
+    height: 1,
+    backgroundColor: Colors.gray200,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  infoLabel: {
+    color: Colors.gray600,
+    flex: 1,
+  },
+  infoValue: {
+    color: Colors.ink,
+    fontWeight: '600',
+  },
+  infoValueHighlight: {
+    color: Colors.primary,
+    fontWeight: '800',
+  },
+  sponsorCard: {
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.md,
+    marginBottom: Spacing.lg,
+  },
+  sponsorHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  sponsorBadge: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+  },
+  sponsorBadgeText: {
+    color: Colors.white,
+    fontWeight: '700',
+  },
+  sponsorBrandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  sponsorLogo: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+  },
+  sponsorBrand: {
+    color: Colors.white,
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  sponsorTagline: {
+    color: Colors.white,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  sponsorDescription: {
+    color: Colors.white,
+    opacity: 0.9,
+  },
+  sponsorButton: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius.pill,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+  },
+  sponsorButtonText: {
+    color: Colors.primary,
+    fontWeight: '700',
+  },
+  driverCTA: {
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  driverLogoWrapper: {
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.lg,
+    alignSelf: 'flex-start',
+  },
+  driverLogo: {
+    width: 96,
+    height: 32,
+  },
+  driverTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: Colors.white,
+  },
+  driverSubtitle: {
+    color: Colors.white,
+    opacity: 0.9,
+  },
+  inlineSponsor: {
+    borderRadius: Radius['2xl'],
+    padding: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  inlineSponsorLogo: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inlineSponsorLogoImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 26,
+  },
+  inlineBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs / 1.5,
+    marginBottom: Spacing.xs,
+  },
+  inlineBadgeText: {
+    color: Colors.white,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  inlineSponsorLabel: {
+    color: Colors.white,
+    fontWeight: '800',
+    fontSize: 16,
+  },
+  inlineSponsorTagline: {
+    color: Colors.white,
+    opacity: 0.9,
   },
 });
