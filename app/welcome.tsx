@@ -1,9 +1,9 @@
 import { router } from 'expo-router';
 import { Image, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
+import { Colors, Gradients, Spacing, Typography } from '@/app/ui/theme';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientButton } from '@/components/ui/gradient-button';
-import { Colors, Gradients, Radius, Spacing, Typography } from '@/app/ui/theme';
 
 export default function WelcomeScreen() {
   const goToSignUp = () => router.push('/sign-up');

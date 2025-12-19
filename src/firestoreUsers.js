@@ -31,6 +31,8 @@ export async function savePassenger({
     phone,
     campus,
     role: "passenger",
+    isPassenger: true,
+    isDriver: false,
     createdAt: serverTimestamp(),
     verified,
     verificationCode,
@@ -59,6 +61,8 @@ export async function saveDriver({
     email,
     phone,
     role: "driver",
+    isPassenger: false,
+    isDriver: true,
     carPlate,
     carModel,
     createdAt: serverTimestamp(),
@@ -162,10 +166,34 @@ export async function saveDriverDocuments(email, data) {
   if (data.vehiclePhotoUrl) {
     payload.vehiclePhotoUrl = data.vehiclePhotoUrl;
   }
+  if (data.vehiclePlate) {
+    payload.driverVehiclePlate = data.vehiclePlate;
+  }
+  if (data.licenseExpiryLabel) {
+    payload.driverLicenseExpiryLabel = data.licenseExpiryLabel;
+  }
   if (data.selfieUrl) {
     payload.driverSelfieUrl = data.selfieUrl;
   }
 
+  await updateDoc(existing.ref, payload);
+  return existing.id;
+}
+
+export async function updateUserRoles(email, { driver, passenger }) {
+  const existing = await findUserDocByEmail(email);
+  if (!existing) {
+    throw new Error("Utilisateur introuvable pour la mise à jour des rôles.");
+  }
+  const payload = {
+    updatedAt: serverTimestamp(),
+  };
+  if (typeof driver === "boolean") {
+    payload.isDriver = driver;
+  }
+  if (typeof passenger === "boolean") {
+    payload.isPassenger = passenger;
+  }
   await updateDoc(existing.ref, payload);
   return existing.id;
 }

@@ -7,6 +7,30 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import NotificationCenter from '@/components/notification-center';
 
+if (__DEV__ && typeof window !== 'undefined' && !((window as any).__openStackFrameFetchPatched)) {
+  (window as any).__openStackFrameFetchPatched = true;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const requestTarget =
+      typeof args[0] === 'string' ? args[0] : typeof args[0] === 'object' ? args[0]?.url : undefined;
+    const host = window.location?.host ?? '';
+    const shouldSkip =
+      typeof requestTarget === 'string' &&
+      requestTarget.includes('/open-stack-frame') &&
+      !host.includes('localhost') &&
+      !host.includes('127.0.0.1');
+
+    if (shouldSkip) {
+      if (typeof window.Response === 'function') {
+        return Promise.resolve(new window.Response(null, { status: 200 }));
+      }
+      return Promise.resolve({ ok: true, status: 200 } as Response);
+    }
+
+    return originalFetch(...args);
+  };
+}
+
 export const unstable_settings = {
   anchor: '(tabs)',
 };

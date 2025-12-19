@@ -1,6 +1,9 @@
 import { Alert } from 'react-native';
 
+import { fetchDriverDocumentStatuses, type DriverDocumentSnapshot } from '@/app/services/driver-documents';
+
 export type DriverVerificationStatus = 'unverified' | 'pending' | 'verified';
+export type DocumentReviewState = 'missing' | 'pending' | 'approved' | 'rejected';
 
 export type VehicleSnapshot = {
   plate: string | null;
@@ -16,10 +19,16 @@ export type DriverSecuritySnapshot = {
   driverLicenseBackUrl: string | null;
   licenseFrontUploadedAt: number | null;
   licenseBackUploadedAt: number | null;
+  licenseExpiryLabel: string | null;
   vehicle: VehicleSnapshot;
   selfieUrl: string | null;
   selfieCapturedAt: number | null;
   verificationStatus: DriverVerificationStatus;
+  documents: {
+    license: DocumentReviewState;
+    vehicle: DocumentReviewState;
+    selfie: DocumentReviewState;
+  };
   blockers: {
     requiresLicense: boolean;
     requiresVehicle: boolean;
@@ -34,6 +43,7 @@ type DriverSecurityRecord = {
   driverLicenseBackUrl: string | null;
   licenseFrontUploadedAt: number | null;
   licenseBackUploadedAt: number | null;
+  licenseExpiryLabel: string | null;
   vehicle: {
     plate: string | null;
     brand: string | null;
@@ -84,6 +94,7 @@ const ensureRecord = (email: string) => {
       driverLicenseBackUrl: null,
       licenseFrontUploadedAt: null,
       licenseBackUploadedAt: null,
+      licenseExpiryLabel: null,
       vehicle: {
         plate: null,
         brand: null,
@@ -104,13 +115,24 @@ const ensureRecord = (email: string) => {
   return key;
 };
 
-const computeBlockers = (record: DriverSecurityRecord) => {
+const computeBlockers = (record: DriverSecurityRecord, statuses?: DriverDocumentSnapshot | null) => {
   const requiresLicense = !record.driverLicenseFrontUrl || !record.driverLicenseBackUrl;
   const requiresVehicle = !record.vehicle.plate;
   const requiresSelfie =
     !record.selfieCapturedAt || now() - record.selfieCapturedAt > SELFIE_VALIDITY_MS;
+  const docStatus = statuses?.documents ?? {};
 
-  return { requiresLicense, requiresVehicle, requiresSelfie };
+  const licenseStatus = docStatus['license_front']?.status ?? docStatus['license_back']?.status;
+  const vehicleStatus = docStatus['vehicle_registration']?.status;
+
+  const licenseRejected = licenseStatus === 'rejected';
+  const vehicleRejected = vehicleStatus === 'rejected';
+
+  return {
+    requiresLicense: requiresLicense || licenseRejected,
+    requiresVehicle: requiresVehicle || vehicleRejected,
+    requiresSelfie,
+  };
 };
 
 const computeStatus = (record: DriverSecurityRecord): DriverVerificationStatus => {
@@ -120,17 +142,33 @@ const computeStatus = (record: DriverSecurityRecord): DriverVerificationStatus =
   return 'verified';
 };
 
-const snapshot = (record: DriverSecurityRecord): DriverSecuritySnapshot => {
-  const blockers = computeBlockers(record);
+const snapshot = (
+  record: DriverSecurityRecord,
+  statuses?: DriverDocumentSnapshot | null
+): DriverSecuritySnapshot => {
+  const blockers = computeBlockers(record, statuses);
   const nextSelfieDueAt = record.selfieCapturedAt
     ? record.selfieCapturedAt + SELFIE_VALIDITY_MS
     : null;
+  const remoteDocs = statuses?.documents ?? {};
+  const documents = {
+    license:
+      remoteDocs['license_front']?.status ??
+      remoteDocs['license_back']?.status ??
+      (record.driverLicenseFrontUrl && record.driverLicenseBackUrl ? 'pending' : 'missing'),
+    vehicle: remoteDocs['vehicle_registration']?.status ?? (record.vehicle.plate ? 'pending' : 'missing'),
+    selfie: blockers.requiresSelfie ? 'pending' : 'approved',
+  } as const;
+  if (record.selfieUrl && !blockers.requiresSelfie) {
+    documents.selfie = 'approved';
+  }
 
   return {
     driverLicenseFrontUrl: record.driverLicenseFrontUrl,
     driverLicenseBackUrl: record.driverLicenseBackUrl,
     licenseFrontUploadedAt: record.licenseFrontUploadedAt,
     licenseBackUploadedAt: record.licenseBackUploadedAt,
+    licenseExpiryLabel: record.licenseExpiryLabel,
     vehicle: {
       plate: record.vehicle.plate,
       brand: record.vehicle.brand,
@@ -142,13 +180,14 @@ const snapshot = (record: DriverSecurityRecord): DriverSecuritySnapshot => {
     selfieUrl: record.selfieUrl,
     selfieCapturedAt: record.selfieCapturedAt,
     verificationStatus: record.verificationStatus,
+    documents,
     blockers,
     nextSelfieDueAt,
     lastStatusChange: record.lastStatusChange,
   };
 };
 
-const notify = (email: string) => {
+const notify = (email: string, remote?: DriverDocumentSnapshot | null) => {
   const key = ensureRecord(email);
   const current = driverSecurity[key];
   const status = computeStatus(current);
@@ -156,26 +195,53 @@ const notify = (email: string) => {
     current.verificationStatus = status;
     current.lastStatusChange = now();
   }
-  const snap = snapshot(current);
+  const snap = snapshot(current, remote);
   listeners[key].forEach((listener) => listener(snap));
+};
+
+const remoteStatuses: Record<string, DriverDocumentSnapshot | null> = {};
+const remoteFetches: Record<string, Promise<DriverDocumentSnapshot | null> | null> = {};
+
+const refreshRemoteStatuses = async (email: string) => {
+  const key = normalizeEmail(email);
+  if (remoteFetches[key]) return remoteFetches[key];
+  const promise = fetchDriverDocumentStatuses(email)
+    .then((snapshot) => {
+      remoteStatuses[key] = snapshot;
+      return snapshot;
+    })
+    .catch((error) => {
+      console.warn('[driver-security] remote status fetch failed', error);
+      remoteStatuses[key] = null;
+      return null;
+    })
+    .finally(() => {
+      remoteFetches[key] = null;
+      notify(email, remoteStatuses[key]);
+    });
+  remoteFetches[key] = promise;
+  return promise;
 };
 
 export const initDriverSecurity = (email: string) => {
   ensureRecord(email);
-  notify(email);
+  void refreshRemoteStatuses(email);
+  notify(email, remoteStatuses[normalizeEmail(email)] ?? null);
 };
 
 export const getDriverSecurity = (email: string | null | undefined) => {
   if (!email) return null;
   const key = ensureRecord(email);
-  return snapshot(driverSecurity[key]);
+  void refreshRemoteStatuses(email);
+  return snapshot(driverSecurity[key], remoteStatuses[key] ?? null);
 };
 
 export const subscribeDriverSecurity = (email: string, listener: Listener) => {
   const key = ensureRecord(email);
   const record = driverSecurity[key];
   listeners[key].push(listener);
-  listener(snapshot(record));
+  listener(snapshot(record, remoteStatuses[key] ?? null));
+  void refreshRemoteStatuses(email);
   return () => {
     const index = listeners[key].indexOf(listener);
     if (index >= 0) listeners[key].splice(index, 1);
@@ -207,7 +273,10 @@ type VehicleUpdate = {
   photoUrl?: string;
 };
 
-export const updateVehicleInfo = (email: string, payload: VehicleUpdate) => {
+export const updateVehicleInfo = (
+  email: string,
+  payload: VehicleUpdate & { licenseExpiryLabel?: string }
+) => {
   const key = ensureRecord(email);
   const record = driverSecurity[key];
   record.vehicle = {
@@ -223,6 +292,9 @@ export const updateVehicleInfo = (email: string, payload: VehicleUpdate) => {
       payload.photoUrl !== undefined ? cleanText(payload.photoUrl) : record.vehicle.photoUrl,
     updatedAt: now(),
   };
+  if (payload.licenseExpiryLabel !== undefined) {
+    record.licenseExpiryLabel = cleanText(payload.licenseExpiryLabel);
+  }
   notify(email);
 };
 
@@ -230,7 +302,7 @@ export const recordSelfie = (email: string, url: string) => {
   const key = ensureRecord(email);
   driverSecurity[key].selfieUrl = url.trim();
   driverSecurity[key].selfieCapturedAt = now();
-  notify(email);
+  notify(email, remoteStatuses[key] ?? null);
 };
 
 export const clearDriverSecurity = (email: string) => {
@@ -253,7 +325,8 @@ export const clearDriverSecurity = (email: string) => {
     verificationStatus: 'unverified',
     lastStatusChange: null,
   };
-  notify(email);
+  remoteStatuses[key] = null;
+  notify(email, null);
 };
 
 export const isVehicleVerified = (email: string, plate?: string | null) => {
