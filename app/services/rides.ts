@@ -39,6 +39,7 @@ const clone = (data: Ride[]) =>
   data.map((item) => ({ ...item, passengers: [...item.passengers], canceledPassengers: [...item.canceledPassengers] }));
 
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
 export type RidePayload = {
   id: string;
@@ -501,6 +502,49 @@ export const reserveSeat = (
   return { ok: false, reason: failure ?? 'FULL', details: failureDetails };
 };
 
+export const confirmReservationWithoutPayment = (rideId: string, passengerEmail: string): Ride | null => {
+  const email = passengerEmail.trim().toLowerCase();
+  let updated: Ride | null = null;
+  rides = rides.map((ride) => {
+    if (ride.id !== rideId) return ride;
+    if (ride.passengers.includes(email)) return ride;
+    if (ride.passengers.length >= ride.seats) return ride;
+    updated = {
+      ...ride,
+      passengers: [...ride.passengers, email],
+      updatedAt: Date.now(),
+    };
+    return updated;
+  });
+  if (!updated) {
+    return null;
+  }
+  notifyRides();
+  const passengerDisplay = formatPassengerDisplay(email);
+  pushNotification({
+    to: updated.ownerEmail,
+    title: 'Réservation confirmée',
+    body: `${passengerDisplay} rejoint ton trajet ${updated.depart} → ${updated.destination}.`,
+    metadata: {
+      action: 'reservation-confirmed',
+      rideId: updated.id,
+      passenger: passengerDisplay,
+    },
+  });
+  pushNotification({
+    to: email,
+    title: 'Demande acceptée',
+    body: `Ta place pour ${updated.depart} → ${updated.destination} est confirmée.`,
+    metadata: {
+      action: 'reservation-confirmed',
+      rideId: updated.id,
+      driver: updated.driver,
+    },
+  });
+  scheduleRideReminder(updated, email, 'passenger');
+  return updated;
+};
+
 export const cancelReservation = (rideId: string, passengerEmail: string) => {
   let updated: Ride | null = null;
   rides = rides.map((ride) => {
@@ -586,5 +630,40 @@ const notifyRideStatusChange = (previous: Ride | null, updated: Ride | null) => 
     cancelRideReminder(updated.id, updated.ownerEmail, 'driver');
     scheduleRideReminder(updated, updated.ownerEmail, 'driver');
     updated.passengers.forEach((email) => scheduleRideReminder(updated, email, 'passenger'));
+  }
+};
+
+export const purgeUserRides = (email: string) => {
+  if (!email) return;
+  const normalized = normalizeEmail(email);
+  let changed = false;
+
+  const owned = rides.filter((ride) => ride.ownerEmail === normalized);
+  owned.forEach((ride) => {
+    cancelRideReminder(ride.id, ride.ownerEmail, 'driver');
+    ride.passengers.forEach((passenger) => cancelRideReminder(ride.id, passenger, 'passenger'));
+  });
+  if (owned.length) {
+    changed = true;
+    rides = rides.filter((ride) => ride.ownerEmail !== normalized);
+  }
+
+  rides = rides.map((ride) => {
+    const hasPassenger = ride.passengers.some((passenger) => normalizeEmail(passenger) === normalized);
+    if (!hasPassenger) return ride;
+    changed = true;
+    cancelRideReminder(ride.id, email, 'passenger');
+    return {
+      ...ride,
+      passengers: ride.passengers.filter((passenger) => normalizeEmail(passenger) !== normalized),
+      canceledPassengers: ride.canceledPassengers.filter(
+        (passenger) => normalizeEmail(passenger) !== normalized
+      ),
+      updatedAt: Date.now(),
+    };
+  });
+
+  if (changed) {
+    notifyRides();
   }
 };

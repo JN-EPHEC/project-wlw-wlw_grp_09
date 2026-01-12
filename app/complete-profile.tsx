@@ -1,5 +1,5 @@
 import { Redirect, router } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -26,6 +26,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { updatePassengerProfile } from '@/src/firestoreUsers';
 import { uploadProfileSelfie, uploadStudentCard } from '@/src/storageUploads';
+import { CAMPUS_LOCATIONS } from '@/constants/campuses';
 
 const splitName = (fullName: string | null | undefined) => {
   const safe = fullName?.trim();
@@ -43,6 +44,8 @@ const CAMPUS_OPTIONS = [
   'Haute École EPHEC Louvain-la-Neuve',
   'Haute École EPHEC Schaerbeek',
 ];
+const COMPLETE_PROFILE_GOOGLE_MAPS_API_KEY =
+  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? 'AIzaSyCU9joaWe-_aSq4RMbqbLsrVi0pkC5iu8c';
 const normalizeCampusValue = (value: string) =>
   value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
@@ -53,6 +56,46 @@ const preserveValue = (value: string | null | undefined) => {
 
 const isRemoteUri = (uri: string | null | undefined) =>
   typeof uri === 'string' && /^https?:\/\//.test(uri);
+
+const computeCampusCamera = () => {
+  if (!CAMPUS_LOCATIONS.length) {
+    return { center: { lat: 50.8503, lng: 4.3517 }, zoom: 11 };
+  }
+  const lats = CAMPUS_LOCATIONS.map((campus) => campus.latitude);
+  const lngs = CAMPUS_LOCATIONS.map((campus) => campus.longitude);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  const center = { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 };
+  const latitudeDelta = Math.max((maxLat - minLat) * 1.2, 0.02);
+  const longitudeDelta = Math.max((maxLng - minLng) * 1.2, 0.02);
+  const delta = Math.max(latitudeDelta, longitudeDelta);
+  const zoom = Math.max(8, Math.min(14, Math.log2(360 / delta)));
+  return { center, zoom };
+};
+
+const loadCompleteProfileGoogleMaps = () => {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('window unavailable'));
+  }
+  if (window.google && window.google.maps) {
+    return Promise.resolve(window.google);
+  }
+  if (window.__campusRideCompleteProfileMapLoader) {
+    return window.__campusRideCompleteProfileMapLoader;
+  }
+  window.__campusRideCompleteProfileMapLoader = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${COMPLETE_PROFILE_GOOGLE_MAPS_API_KEY}`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve(window.google);
+    script.onerror = () => reject(new Error('Google Maps JS failed to load.'));
+    document.head.appendChild(script);
+  });
+  return window.__campusRideCompleteProfileMapLoader;
+};
 
 export default function CompleteProfile() {
   const session = useAuthSession();
@@ -348,11 +391,15 @@ export default function CompleteProfile() {
               </View>
               <Text style={styles.title}>Compléter ton{'\n'}profil</Text>
               {step === 1 ? (
-                <Image
-                  source={heroImage}
-                  style={[styles.heroImage, isCompact && styles.heroImageCompact]}
-                  resizeMode="contain"
-                />
+                Platform.OS === 'web' ? (
+                  <CompleteProfileWebMap isCompact={isCompact} />
+                ) : (
+                  <Image
+                    source={heroImage}
+                    style={[styles.heroImage, isCompact && styles.heroImageCompact]}
+                    resizeMode="contain"
+                  />
+                )
               ) : null}
               {step === 1 ? (
                 <>
@@ -579,6 +626,86 @@ export default function CompleteProfile() {
   );
 }
 
+const webMapSurfaceStyle: CSSProperties = {
+  width: '100%',
+  height: '100%',
+};
+
+const CompleteProfileWebMap = ({ isCompact }: { isCompact: boolean }) => {
+  if (Platform.OS !== 'web') return null;
+
+  const mapNode = useRef<HTMLDivElement | null>(null);
+  const mapInstance = useRef<any>(null);
+  const markers = useRef<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [mapReady, setMapReady] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    loadCompleteProfileGoogleMaps()
+      .then((google) => {
+        if (!mounted || !mapNode.current) return;
+        const camera = computeCampusCamera();
+        mapInstance.current = new google.maps.Map(mapNode.current, {
+          center: camera.center,
+          zoom: camera.zoom,
+          disableDefaultUI: true,
+          zoomControl: true,
+          mapTypeControl: false,
+          streetViewControl: false,
+        });
+        setMapReady(true);
+      })
+      .catch(() => {
+        if (mounted) {
+          setError("Impossible d'afficher Google Maps.");
+        }
+      });
+    return () => {
+      mounted = false;
+      markers.current.forEach((marker) => marker.setMap(null));
+      markers.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const google = window.google;
+    const map = mapInstance.current;
+    if (!google || !map) return;
+
+    markers.current.forEach((marker) => marker.setMap(null));
+    markers.current = [];
+
+    CAMPUS_LOCATIONS.forEach((campus) => {
+      const marker = new google.maps.Marker({
+        map,
+        position: { lat: campus.latitude, lng: campus.longitude },
+        title: campus.name,
+      });
+      markers.current.push(marker);
+    });
+  }, [mapReady]);
+
+  return (
+    <View style={[styles.webMapWrapper, isCompact && styles.webMapCompact]}>
+      <div ref={mapNode} style={webMapSurfaceStyle} />
+      {error ? (
+        <View style={styles.webMapError}>
+          <Text style={styles.webMapErrorText}>{error}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+};
+
+declare global {
+  interface Window {
+    __campusRideCompleteProfileMapLoader?: Promise<any>;
+    google?: any;
+  }
+}
+
 const styles = StyleSheet.create({
   keyboard: { flex: 1 },
   safe: { flex: 1 },
@@ -693,6 +820,31 @@ const styles = StyleSheet.create({
   heroImageCompact: {
     width: '100%',
     marginBottom: Spacing.xs,
+  },
+  webMapWrapper: {
+    width: '120%',
+    maxWidth: 420,
+    aspectRatio: ILLUSTRATION_RATIO,
+    alignSelf: 'center',
+    marginBottom: Spacing.xs,
+    borderRadius: 28,
+    overflow: 'hidden',
+    backgroundColor: '#F5F7FF',
+  },
+  webMapCompact: {
+    width: '100%',
+  },
+  webMapError: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255,255,255,0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.sm,
+  },
+  webMapErrorText: {
+    color: Colors.danger,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   input: {
     flex: 1,

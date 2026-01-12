@@ -20,39 +20,25 @@ import {
 } from 'react-native';
 import { PinchGestureHandler, State } from 'react-native-gesture-handler';
 
-import { RideMap } from '../../components/ride-map';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { RewardBadge } from '@/components/reward-badge';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { useDriverSecurity } from '@/hooks/use-driver-security';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import type { AuthSnapshot } from '@/app/services/auth';
-import { buildPriceBand, clampPriceToBand, estimatePrice, roughKmFromText, type PriceQuote } from '../services/pricing';
+import { buildPriceBand, clampPriceToBand, roughKmFromText } from '../services/pricing';
 import {
   addRide,
   getRide,
   hasRideDeparted,
-  removeRide,
   reserveSeat,
-  subscribeRides,
   updateRide,
   type Ride,
   type RidePayload,
 } from '../services/rides';
-import {
-  markAsRead as markNotificationAsRead,
-  subscribeNotifications,
-  type Notification,
-} from '../services/notifications';
-import {
-  subscribeDriverReviews,
-  type Review,
-} from '../services/reviews';
 import type { PaymentMethod } from '../services/payments';
-import { applyRewards, type RewardSnapshot } from '../services/rewards';
 import {
   needsFreshSelfie,
   normalizePlate,
@@ -62,6 +48,7 @@ import { getCoordinates, getDistanceKm, getDurationMinutes } from '../services/d
 import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
 import { getAvatarUrl } from '../ui/avatar';
 import { BRUSSELS_COMMUNES } from '@/constants/communes';
+import { CAMPUS_LOCATIONS } from '@/constants/campuses';
 import { getCurrentCommune, LocationPermissionError } from '../services/location';
 
 const DefaultColors = {
@@ -141,6 +128,8 @@ const RESULT_FILTERS = [
   { id: 'distance', label: 'Distance' },
 ] as const;
 
+const LEGEND_ICONS = ['building.columns', 'graduationcap.fill', 'book.fill'];
+
 type ResultFilterId = (typeof RESULT_FILTERS)[number]['id'];
 type ResultsFilterAnchor = 'search';
 type ExploreParams = { edit?: string; depart?: string; campus?: string };
@@ -188,14 +177,6 @@ const timeToMinutes = (value: string) => {
 };
 
 const isTime = (s: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
-type QuickSuggestion = {
-  label: string;
-  depart: string;
-  destination: string;
-  time: string;
-  seats: string;
-};
-
 export default function ExplorePublish() {
   const session = useAuthSession();
   const params = useLocalSearchParams<ExploreParams>();
@@ -229,37 +210,19 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
   const [destination, setDestination] = useState('');
   const [time, setTime] = useState('');
   const [seats, setSeats] = useState('1');
-  const [rides, setRides] = useState<Ride[]>([]);
+  const [rideDate, setRideDate] = useState('');
+  const [notes, setNotes] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [reviews, setReviews] = useState<Review[]>([]);
-  const [rewardSnapshot, setRewardSnapshot] = useState<RewardSnapshot | null>(null);
   const [customPrice, setCustomPrice] = useState<number>(0);
   const [priceTouched, setPriceTouched] = useState(false);
   const [pricingMode, setPricingMode] = useState<'single' | 'double'>('single');
   const [customPriceInput, setCustomPriceInput] = useState('0.00');
-
-  const myRides = useMemo(
-    () =>
-      rides
-        .filter((ride) => ride.ownerEmail === session.email)
-        .sort((a, b) => a.departureAt - b.departureAt),
-    [rides, session.email]
-  );
-  const completedRides = useMemo(
-    () => myRides.filter((ride) => hasRideDeparted(ride)).length,
-    [myRides]
-  );
-  const ratingSummary = useMemo(() => {
-    if (reviews.length === 0) return { average: 0, count: 0 };
-    const total = reviews.reduce((acc, review) => acc + review.rating, 0);
-    return { average: Math.round((total / reviews.length) * 10) / 10, count: reviews.length };
-  }, [reviews]);
-
-  const unreadNotifications = useMemo(
-    () => notifications.filter((notif) => !notif.read),
-    [notifications]
-  );
+  const [publishedRide, setPublishedRide] = useState<{
+    depart: string;
+    destination: string;
+    time: string;
+    rideDate: string;
+  } | null>(null);
 
   const populateForm = useCallback((draft: Ride) => {
     setEditingId(draft.id);
@@ -274,51 +237,8 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
     const band = buildPriceBand(roughKmFromText(draft.depart, draft.destination), draft.seats);
     setPricingMode(draft.price >= band.double * 0.9 ? 'double' : 'single');
     setPriceTouched(true);
+    setPublishedRide(null);
   }, []);
-
-  const acknowledgeNotification = useCallback(
-    (id: string) => {
-      if (!session.email) return;
-      markNotificationAsRead(session.email, id);
-    },
-    [session.email]
-  );
-
-  useEffect(() => {
-    const unsubscribe = subscribeRides(setRides);
-    return unsubscribe;
-  }, []);
-
-  useEffect(() => {
-    if (!session.email) {
-      setNotifications([]);
-      return;
-    }
-    const unsubscribe = subscribeNotifications(session.email, setNotifications);
-    return unsubscribe;
-  }, [session.email]);
-
-  useEffect(() => {
-    if (!session.email) {
-      setReviews([]);
-      return;
-    }
-    const unsubscribe = subscribeDriverReviews(session.email, setReviews);
-    return unsubscribe;
-  }, [session.email]);
-
-  useEffect(() => {
-    if (!session.email) {
-      setRewardSnapshot(null);
-      return;
-    }
-    const snapshot = applyRewards(session.email, {
-      completedRides,
-      averageRating: ratingSummary.average,
-      reviewCount: ratingSummary.count,
-    });
-    setRewardSnapshot(snapshot);
-  }, [session.email, completedRides, ratingSummary.average, ratingSummary.count]);
 
   useEffect(() => {
     if (!session.name) return;
@@ -344,15 +264,7 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
     if (!Number.isFinite(parsed)) return 1;
     return Math.max(1, Math.min(4, Math.round(parsed)));
   }, [seats]);
-  const priceQuote = useMemo<PriceQuote>(() => estimatePrice(km, { seats: seatsCount }), [km, seatsCount]);
   const priceBand = useMemo(() => buildPriceBand(km, seatsCount), [km, seatsCount]);
-  const commissionPerPassenger = priceQuote.commissionPerPassenger;
-  const commissionTotal = +(commissionPerPassenger * seatsCount).toFixed(2);
-  const driverNetPerPassengerRecommended = priceQuote.driverTakeHomePerPassenger;
-  const driverNetPerPassenger = +(customPrice - commissionPerPassenger).toFixed(2);
-  const driverNetTotal = +(driverNetPerPassenger * seatsCount).toFixed(2);
-  const driverNetTotalRecommended = +(driverNetPerPassengerRecommended * seatsCount).toFixed(2);
-  const rideTotal = +(customPrice * seatsCount).toFixed(2);
 
   useEffect(() => {
     setCustomPrice((prev) => clampPriceToBand(prev || priceBand.suggested, km, seatsCount));
@@ -378,98 +290,6 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
     setPriceTouched(true);
     setCustomPrice(clampPriceToBand(parsed, km, seatsCount));
   };
-
-  const applyPricingMode = (mode: 'single' | 'double') => {
-    setPricingMode(mode);
-    setPriceTouched(true);
-    const base = mode === 'double' ? priceBand.double : priceBand.suggested;
-    setCustomPrice(clampPriceToBand(base, km, seatsCount));
-  };
-  const firstName = useMemo(() => {
-    const raw = session.name ? session.name.split(' ')[0] : 'conducteur';
-    if (!raw) return 'Conducteur';
-    return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
-  }, [session.name]);
-
-  const quickSuggestions = useMemo<QuickSuggestion[]>(
-    () => [
-      {
-        label: 'Navette Etterbeek → LLN (07:45)',
-        depart: 'Etterbeek',
-        destination: 'EPHEC Louvain-la-Neuve',
-        time: '07:45',
-        seats: '3',
-      },
-      {
-        label: 'Retour Woluwé (17:30)',
-        depart: 'EPHEC Woluwé',
-        destination: 'Etterbeek',
-        time: '17:30',
-        seats: '2',
-      },
-      {
-        label: 'Trajet express vers EPHEC Louvain-la-Neuve (08:10)',
-        depart: 'Ixelles',
-        destination: 'EPHEC Louvain-la-Neuve',
-        time: '08:10',
-        seats: '3',
-      },
-    ],
-    []
-  );
-
-  const impactPoints = useMemo(
-    () => [
-      { icon: 'fuelpump.fill', text: 'Optimise tes frais de carburant à chaque trajet.' },
-      { icon: 'bell.fill', text: 'Tes passagers reçoivent une notification instantanée.' },
-      { icon: 'wallet.pass.fill', text: 'Ton wallet est crédité automatiquement après le trajet.' },
-    ],
-    []
-  );
-
-  const applySuggestion = useCallback((suggestion: QuickSuggestion) => {
-    setDepart(suggestion.depart);
-    setDestination(suggestion.destination);
-    setTime(suggestion.time);
-    setSeats(suggestion.seats);
-  }, []);
-
-  const pricingBreakdown = useMemo(
-    () => [
-      {
-        label: 'Carburant estimé',
-        description: `${priceQuote.assumptions.consumptionPer100Km.toFixed(1)} L/100km • €${priceQuote.assumptions.fuelPricePerLitre.toFixed(3)}/L`,
-        amount: priceQuote.fuelCost,
-      },
-      {
-        label: 'Entretien & usure',
-        description: `€${priceQuote.assumptions.maintenancePerKm.toFixed(2)} par km`,
-        amount: priceQuote.maintenanceCost,
-      },
-      {
-        label: 'Commission CampusRide',
-        description: `${(priceQuote.assumptions.commissionRate * 100).toFixed(0)}% pour l’assurance, support et plateforme`,
-        amount: commissionTotal,
-      },
-      {
-        label: 'Net conducteur',
-        description: `€${driverNetPerPassenger.toFixed(2)} / passager`,
-        amount: driverNetTotal,
-      },
-    ],
-    [priceQuote, commissionTotal, driverNetPerPassenger, driverNetTotal]
-  );
-
-  const handleRemoveRide = useCallback((ride: Ride) => {
-    try {
-      removeRide(ride.id);
-      Alert.alert('Trajet supprimé ✅', 'Ton annonce a été retirée.');
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Suppression impossible pour ce trajet.';
-      Alert.alert('Action impossible', message);
-    }
-  }, []);
 
   const errors = useMemo(() => {
     const e: Record<string, string> = {};
@@ -535,6 +355,8 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
     setPricingMode('single');
     setPriceTouched(false);
     setCustomPrice(priceBand.suggested);
+    setRideDate('');
+    setNotes('');
     router.replace('/(tabs)/explore');
   };
 
@@ -597,20 +419,26 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
       pricingMode,
     };
 
-    try {
-      if (editingId) {
-        updateRide(editingId, payload);
-        Alert.alert('Trajet mis à jour ✅', 'Ta fiche trajet a été actualisée.');
-      } else {
-        addRide(payload);
-        Alert.alert('Trajet publié ✅', 'Les étudiants à proximité verront ton annonce.');
+      try {
+        if (editingId) {
+          updateRide(editingId, payload);
+          Alert.alert('Trajet mis à jour ✅', 'Ta fiche trajet a été actualisée.');
+        } else {
+          addRide(payload);
+          Alert.alert('Trajet publié ✅', 'Les étudiants à proximité verront ton annonce.');
+        }
+        setPublishedRide({
+          depart: payload.depart,
+          destination: payload.destination,
+          time,
+          rideDate: rideDate || '',
+        });
+        resetForm();
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Une erreur inattendue est survenue.';
+        Alert.alert('Action impossible', message);
       }
-      resetForm();
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Une erreur inattendue est survenue.';
-      Alert.alert('Action impossible', message);
-    }
   };
 
   return (
@@ -621,309 +449,165 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-        <View style={styles(C, S).header}>
-          <View style={styles(C, S).headerTitleRow}>
-            <IconSymbol name="map.fill" size={20} color={C.primary} />
-            <Text style={styles(C, S).headerTitle}>Publier un trajet</Text>
+        <View style={styles(C, S).publishSection}>
+          <View style={[styles(C, S).card, styles(C, S).campusCard]}>
+            <Text style={styles(C, S).campusCardTitle}>Campus partenaires</Text>
+            <View style={styles(C, S).campusMap}>
+              {Platform.OS === 'web' ? (
+                <PublishCampusWebMap />
+              ) : (
+                <Image
+                  source={HERO_MAP_IMAGE}
+                  style={styles(C, S).campusFallbackMap}
+                  resizeMode="cover"
+                />
+              )}
+            </View>
+            <View style={styles(C, S).campusLegend}>
+              <Text style={styles(C, S).campusLegendLabel}>Campus partenaires</Text>
+              <View style={styles(C, S).campusLegendIcons}>
+                {LEGEND_ICONS.map((icon) => (
+                  <View key={icon} style={styles(C, S).campusLegendIcon}>
+                    <IconSymbol name={icon} size={18} color="#fff" />
+                  </View>
+                ))}
+              </View>
+            </View>
           </View>
-          <Text style={styles(C, S).headerSub}>
-            {`Merci ${firstName}, chaque trajet partagé aide la communauté à se déplacer.`}
-          </Text>
-        </View>
 
-        <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).introCard]}>
-          <Text style={styles(C, S).introTitle}>Ton impact sur CampusRide</Text>
-          <Text style={styles(C, S).introSubtitle}>
-            Publie un trajet en 3 étapes : définis ton parcours, vérifie l’estimation, confirme.
-            Chaque réservation crédite ton wallet automatiquement.
-          </Text>
-          <View style={styles(C, S).introSteps}>
-            {impactPoints.map((point) => (
-              <View key={point.text} style={styles(C, S).introRow}>
-                <IconSymbol name={point.icon as any} size={18} color={C.primary} />
-                <Text style={styles(C, S).introText}>{point.text}</Text>
+          <View style={styles(C, S).detailsStack}>
+            <GradientBackground
+              colors={Gradients.card}
+              style={[styles(C, S).card, styles(C, S).tripDetailsCard]}
+            >
+              <Text style={styles(C, S).tripDetailsTitle}>Détails du trajet</Text>
+              <View style={styles(C, S).detailInputRow}>
+                <IconSymbol name="mappin.and.ellipse" size={18} color={C.gray500} />
+                <TextInput
+                  placeholder="Point de départ"
+                  placeholderTextColor={C.gray400}
+                  value={depart}
+                  onChangeText={setDepart}
+                  autoCapitalize="words"
+                  style={styles(C, S).detailInputField}
+                />
               </View>
-            ))}
-          </View>
-        </GradientBackground>
-
-        {session.isDriver && securityBlockingMessage ? (
-          <GradientBackground colors={Gradients.soft} style={[styles(C, S).card, styles(C, S).securityNotice]}>
-            <View style={styles(C, S).securityNoticeRow}>
-              <IconSymbol name="exclamationmark.triangle" size={20} color={C.warning} />
-              <Text style={styles(C, S).securityNoticeTitle}>Vérification requise</Text>
-            </View>
-            <Text style={styles(C, S).securityNoticeText}>{securityBlockingMessage}</Text>
-            <GradientButton
-              title="Compléter maintenant"
-              onPress={openDriverVerification}
-              size="sm"
-              style={styles(C, S).securityNoticeButton}
-            />
-          </GradientBackground>
-        ) : null}
-
-        <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).quickCard]}>
-          <Text style={styles(C, S).quickTitle}>Besoin d’inspiration ?</Text>
-          <Text style={styles(C, S).quickSubtitle}>Sélectionne un scénario pour pré-remplir le formulaire.</Text>
-          <View style={styles(C, S).quickList}>
-            {quickSuggestions.map((suggestion) => (
-              <Pressable
-                key={suggestion.label}
-                style={styles(C, S).quickChip}
-                onPress={() => applySuggestion(suggestion)}
-              >
-                <IconSymbol name="car.fill" size={16} color={C.gray600} />
-                <Text style={styles(C, S).quickChipText}>{suggestion.label}</Text>
-              </Pressable>
-            ))}
-          </View>
-        </GradientBackground>
-
-        {km > 0 ? (
-          <GradientBackground
-            colors={Gradients.card}
-            style={[styles(C, S).card, styles(C, S).pricingCard]}
-          >
-            <View style={styles(C, S).pricingHeader}>
-              <IconSymbol name="eurosign.circle.fill" size={22} color={C.primary} />
-              <Text style={styles(C, S).pricingTitle}>Estimation tarifaire</Text>
-            </View>
-            <View style={styles(C, S).pricingSummaryRow}>
-              <View style={styles(C, S).pricingSummaryBlock}>
-                <Text style={styles(C, S).pricingSummaryLabel}>Distance</Text>
-                <Text style={styles(C, S).pricingSummaryValue}>{priceQuote.distanceKm.toFixed(1)} km</Text>
+              <View style={styles(C, S).detailInputRow}>
+                <IconSymbol name="building.columns" size={18} color={C.gray500} />
+                <TextInput
+                  placeholder="Destination (Campus)"
+                  placeholderTextColor={C.gray400}
+                  value={destination}
+                  onChangeText={setDestination}
+                  autoCapitalize="words"
+                  style={styles(C, S).detailInputField}
+                />
               </View>
-              <View style={styles(C, S).pricingSummaryBlock}>
-                <Text style={styles(C, S).pricingSummaryLabel}>Tarif conseillé</Text>
-                <Text style={styles(C, S).pricingSummaryValue}>€{priceBand.suggested.toFixed(2)} / passager</Text>
+              <View style={styles(C, S).dateTimeRow}>
+                <View style={styles(C, S).dateField}>
+                  <IconSymbol name="calendar" size={18} color={C.gray500} />
+                  <TextInput
+                    placeholder="jj/mm/aaaa"
+                    placeholderTextColor={C.gray400}
+                    value={rideDate}
+                    onChangeText={setRideDate}
+                    style={styles(C, S).dateFieldInput}
+                  />
+                </View>
+                <View style={styles(C, S).dateField}>
+                  <IconSymbol name="clock.fill" size={18} color={C.gray500} />
+                  <TextInput
+                    placeholder="--:--"
+                    placeholderTextColor={C.gray400}
+                    value={time}
+                    onChangeText={setTime}
+                    keyboardType="numeric"
+                    style={styles(C, S).dateFieldInput}
+                  />
+                </View>
               </View>
-              <View style={styles(C, S).pricingSummaryBlock}>
-                <Text style={styles(C, S).pricingSummaryLabel}>Mon tarif</Text>
-                <Text style={styles(C, S).pricingSummaryValue}>€{customPrice.toFixed(2)} / passager</Text>
-              </View>
-              <View style={styles(C, S).pricingSummaryBlock}>
-                <Text style={styles(C, S).pricingSummaryLabel}>Recette totale</Text>
-                <Text style={styles(C, S).pricingSummaryValue}>€{rideTotal.toFixed(2)}</Text>
-              </View>
-            </View>
-            <View style={styles(C, S).pricingChipsRow}>
-              <View style={styles(C, S).pricingChipDriver}>
-                <Text style={styles(C, S).pricingChipTitle}>Net conducteur</Text>
-                <Text style={styles(C, S).pricingChipValue}>€{driverNetPerPassenger.toFixed(2)} / passager • €{driverNetTotal.toFixed(2)} / trajet</Text>
-                <Text style={styles(C, S).pricingChipHint}>Recommandé : €{driverNetPerPassengerRecommended.toFixed(2)} / passager • €{driverNetTotalRecommended.toFixed(2)} / trajet</Text>
-              </View>
-              <View style={styles(C, S).pricingChipPlatform}>
-                <Text style={styles(C, S).pricingChipTitle}>CampusRide</Text>
-                <Text style={styles(C, S).pricingChipValue}>€{commissionPerPassenger.toFixed(2)} / passager • €{commissionTotal.toFixed(2)} / trajet</Text>
-              </View>
-            </View>
-            <View style={styles(C, S).pricingBreakdown}>
-              {pricingBreakdown.map((tier) => (
-                <View key={tier.label} style={styles(C, S).pricingRow}>
-                  <Text style={styles(C, S).pricingRowLabel}>{tier.label}</Text>
-                  <View style={styles(C, S).pricingRowContent}>
-                    <Text style={styles(C, S).pricingRowValue}>{tier.description}</Text>
-                    <Text style={styles(C, S).pricingRowAmount}>€{tier.amount.toFixed(2)}</Text>
+              <View style={styles(C, S).metaRow}>
+                <View style={styles(C, S).metaBlock}>
+                  <Text style={styles(C, S).metaLabel}>Places disponibles</Text>
+                  <TextInput
+                    placeholder="1 place"
+                    placeholderTextColor={C.gray400}
+                    value={seats}
+                    onChangeText={setSeats}
+                    keyboardType="number-pad"
+                    style={styles(C, S).metaValueInput}
+                  />
+                </View>
+                <View style={styles(C, S).metaBlock}>
+                  <Text style={styles(C, S).metaLabel}>Prix par place</Text>
+                  <View style={styles(C, S).priceInputRow}>
+                    <Text style={styles(C, S).priceInputPrefix}>€</Text>
+                    <TextInput
+                      placeholder="0.00€"
+                      placeholderTextColor={C.gray400}
+                      value={customPriceInput}
+                      onChangeText={onPriceInputChange}
+                      keyboardType="decimal-pad"
+                      style={[styles(C, S).metaValueInput, styles(C, S).priceInput]}
+                    />
                   </View>
                 </View>
-              ))}
-            </View>
-            <Text style={styles(C, S).pricingHint}>
-              Les passagers voient ce prix avant de confirmer leur paiement sécurisé.
-            </Text>
-          </GradientBackground>
-        ) : null}
-
-        <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).notificationsCard]}>
-          <View style={styles(C, S).notificationsHeader}>
-            <Text style={styles(C, S).notificationsTitle}>Activité passagers</Text>
-            <Text style={styles(C, S).notificationsSubtitle}>
-              Mises à jour sur les réservations reçues pour tes trajets durant les dernières 24h.
-            </Text>
-          </View>
-          {unreadNotifications.length > 0 ? (
-            unreadNotifications.slice(0, 3).map((notif) => (
-              <View key={notif.id} style={styles(C, S).notificationRow}>
-                <IconSymbol name="bell.fill" size={18} color={C.primary} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles(C, S).notificationBody}>{notif.body}</Text>
-                  <Text style={styles(C, S).notificationTime}>
-                    {new Date(notif.createdAt).toLocaleTimeString('fr-BE', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
+              </View>
+              <TextInput
+                placeholder="Ex: Départ devant la bibliothèque..."
+                placeholderTextColor={C.gray400}
+                value={notes}
+                onChangeText={setNotes}
+                style={styles(C, S).notesInput}
+                multiline
+              />
+              <GradientButton
+                title={editingId ? 'Mettre à jour' : 'Publier le trajet'}
+                onPress={submit}
+                disabled={!isValid || !!errors.session || !!securityBlockingMessage}
+                accessibilityRole="button"
+                fullWidth
+                style={styles(C, S).detailsButton}
+                variant="lavender"
+              >
+                <IconSymbol name="paperplane.fill" size={18} color="#fff" />
+              </GradientButton>
+              {errors.session ? <Text style={styles(C, S).error}>{errors.session}</Text> : null}
+            </GradientBackground>
+            {publishedRide ? (
+              <View style={[styles(C, S).successCard, styles(C, S).successCardCompact]}>
+                <Text style={styles(C, S).successTitle}>Trajet publié avec succès !</Text>
+                <View style={styles(C, S).successMessageBox}>
+                  <Text style={styles(C, S).successMessageText}>
+                    Votre trajet est maintenant visible par les passagers. Vous recevrez une
+                    notification quand quelqu'un réservera.
                   </Text>
                 </View>
-                <Pressable
-                  onPress={() => acknowledgeNotification(notif.id)}
-                  style={styles(C, S).notificationRead}
-                >
-                  <Text style={styles(C, S).notificationReadText}>Vu</Text>
-                </Pressable>
+                <View style={styles(C, S).successInfoRow}>
+                  <View>
+                    <View style={styles(C, S).successRoute}>
+                      <IconSymbol name="location.fill" size={18} color="#B8B8C7" />
+                      <Text style={styles(C, S).successText}>{publishedRide.depart}</Text>
+                      <IconSymbol name="arrow.right" size={16} color="#B8B8C7" />
+                      <IconSymbol name="mappin.and.ellipse" size={18} color="#9F6BFF" />
+                      <Text style={[styles(C, S).successText, styles(C, S).successTextActive]}>
+                        {publishedRide.destination}
+                      </Text>
+                    </View>
+                    <Text style={styles(C, S).successDetailText}>
+                      {publishedRide.rideDate
+                        ? `${publishedRide.rideDate} • ${publishedRide.time || '00:00'}`
+                        : `Date • ${publishedRide.time || '00:00'}`}
+                    </Text>
+                  </View>
+                  <View style={styles(C, S).successBadge}>
+                    <Text style={styles(C, S).successBadgeText}>Actif</Text>
+                  </View>
+                </View>
               </View>
-            ))
-          ) : (
-            <Text style={styles(C, S).notificationEmpty}>
-              Aucun nouveau passager pour tes trajets aujourd’hui. Partage ton annonce pour la booster !
-            </Text>
-          )}
-          {notifications.length > unreadNotifications.length ? (
-            <Text style={styles(C, S).notificationHint}>
-              {notifications.length - unreadNotifications.length} notification(s) déjà consultée(s).
-            </Text>
-          ) : null}
-        </GradientBackground>
-
-        {rewardSnapshot ? (
-          <RewardBadge
-            snapshot={rewardSnapshot}
-            actionLabel={ratingSummary.count > 0 ? 'Voir mes avis' : undefined}
-            onPressAction={ratingSummary.count > 0 ? () => router.push('/(tabs)/profile') : undefined}
-          />
-        ) : null}
-
-        <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).mapCard]}>
-          <Text style={styles(C, S).mapTitle}>Carte en temps réel</Text>
-          <RideMap rides={rides} selectedCampus={destination || null} />
-          <Text style={styles(C, S).mapHint}>
-            Les trajets publiés (y compris le tien) apparaissent instantanément pour les étudiants
-            connectés.
-          </Text>
-        </GradientBackground>
-
-        {myRides.length > 0 ? (
-          <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).ridesCard]}>
-            <Text style={styles(C, S).ridesTitle}>Mes trajets à venir</Text>
-            <Text style={styles(C, S).ridesSubtitle}>
-              Gère tes annonces avant le départ. Les trajets passés sont archivés automatiquement.
-            </Text>
-            {myRides.map((ride) => (
-              <MyRideRow
-                key={ride.id}
-                ride={ride}
-                C={C}
-                S={S}
-                onEdit={() => populateForm(ride)}
-                onRemove={handleRemoveRide}
-              />
-            ))}
-          </GradientBackground>
-        ) : null}
-
-        <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).formCard]}>
-          <Field
-            label="Nom du conducteur"
-            placeholder="Ex. Lina Dupont"
-            autoCapitalize="words"
-            value={driver}
-            onChangeText={setDriver}
-            error={errors.driver}
-            C={C}
-          />
-          <Field
-            label="Plaque d'immatriculation"
-            placeholder="ABC-123"
-            autoCapitalize="characters"
-            value={plate}
-            onChangeText={setPlate}
-            error={errors.plate}
-            C={C}
-          />
-          <Field
-            label="Lieu de départ"
-            placeholder="Ex. Etterbeek"
-            value={depart}
-            onChangeText={setDepart}
-            error={errors.depart}
-            C={C}
-          />
-          <Field
-            label="Destination"
-            placeholder="Ex. EPHEC Louvain-la-Neuve"
-            value={destination}
-            onChangeText={setDestination}
-            error={errors.destination}
-            C={C}
-          />
-          <Field
-            label="Heure (HH:MM)"
-            placeholder="08:15"
-            inputMode="numeric"
-            value={time}
-            onChangeText={setTime}
-            error={errors.time}
-            C={C}
-          />
-          <Field
-            label="Places disponibles"
-            placeholder="1"
-            inputMode="numeric"
-            value={seats}
-            onChangeText={setSeats}
-            error={errors.seats}
-            C={C}
-          />
-
-          <View style={styles(C, S).priceSection}>
-            <Text style={styles(C, S).priceLabel}>Tarif par passager</Text>
-            <View style={styles(C, S).priceModeRow}>
-              <GradientButton
-                title="Aller simple"
-                size="sm"
-                variant={pricingMode === 'single' ? 'cta' : 'soft'}
-                onPress={() => applyPricingMode('single')}
-                style={styles(C, S).priceModeButton}
-                accessibilityRole="button"
-              />
-              <GradientButton
-                title="Aller + retour"
-                size="sm"
-                variant={pricingMode === 'double' ? 'cta' : 'soft'}
-                onPress={() => applyPricingMode('double')}
-                style={styles(C, S).priceModeButton}
-                accessibilityRole="button"
-              />
-            </View>
-            <View style={styles(C, S).priceInputRow}>
-              <Text style={styles(C, S).priceInputPrefix}>€</Text>
-              <TextInput
-                value={customPriceInput}
-                onChangeText={onPriceInputChange}
-                keyboardType="decimal-pad"
-                style={styles(C, S).priceInput}
-              />
-            </View>
-            <Text style={styles(C, S).priceBandText}>
-              Autorisé : €{priceBand.min.toFixed(2)} – €{priceBand.max.toFixed(2)} par passager
-            </Text>
-            {errors.price ? <Text style={styles(C, S).error}>{errors.price}</Text> : null}
+            ) : null}
           </View>
-
-          <View style={styles(C, S).preview}>
-            <Text style={styles(C, S).previewText}>
-              Mon tarif : <Text style={styles(C, S).price}>€{customPrice.toFixed(2)}</Text> / passager • Total €{rideTotal.toFixed(2)}
-            </Text>
-            <Text style={styles(C, S).previewHint}>
-              Tarif conseillé : €{priceBand.suggested.toFixed(2)} • Aller + retour : €{priceBand.double.toFixed(2)}
-            </Text>
-          </View>
-
-          <GradientButton
-            title={editingId ? 'Mettre à jour' : 'Publier'}
-            onPress={submit}
-            disabled={!isValid || !!errors.session || !!securityBlockingMessage}
-            style={styles(C, S).cta}
-            accessibilityRole="button"
-            fullWidth
-          />
-          {editingId ? (
-            <Pressable onPress={resetForm} style={styles(C, S).ctaGhost}>
-              <Text style={styles(C, S).ctaGhostText}>Annuler la modification</Text>
-            </Pressable>
-          ) : null}
-          {errors.session ? <Text style={styles(C, S).error}>{errors.session}</Text> : null}
-        </GradientBackground>
+        </View>
         </ScrollView>
       </SafeAreaView>
     </AppBackground>
@@ -1733,39 +1417,39 @@ function PassengerPublishScreen({
     setShowExpiryPicker(false);
   }, []);
 
-  const confirmPayment = useCallback(() => {
-    if (!paymentRide) return;
-    setPaymentError(null);
-    let method: PaymentMethod = 'card';
-    if (paymentMethodChoice === 'card') {
-      const digits = cardNumber.replace(/[^0-9]/g, '');
-      if (digits.length < 12) {
-        setPaymentError('Numéro de carte invalide.');
-        return;
+  const confirmPayment = useCallback(
+    (methodChoice: 'card' | 'apple-pay' | 'google-pay') => {
+      if (!paymentRide) return;
+      setPaymentError(null);
+      if (methodChoice === 'card') {
+        const digits = cardNumber.replace(/[^0-9]/g, '');
+        if (digits.length < 12) {
+          setPaymentError('Numéro de carte invalide.');
+          return;
+        }
+        if (!expiryMonth || !expiryYear) {
+          setPaymentError("Sélectionne la date d'expiration.");
+          return;
+        }
+        const expiryDate = new Date(expiryYear, expiryMonth - 1, 1);
+        expiryDate.setMonth(expiryDate.getMonth() + 1);
+        if (expiryDate <= new Date()) {
+          setPaymentError('Cette carte est expirée.');
+          return;
+        }
+        if (!/^\d{3,4}$/.test(cardCvv)) {
+          setPaymentError('CVV invalide.');
+          return;
+        }
       }
-      if (!expiryMonth || !expiryYear) {
-        setPaymentError("Sélectionne la date d'expiration.");
-        return;
+      const success = handleReserveRide(paymentRide, 'card');
+      if (success) {
+        setCardMasked(true);
+        closePaymentSheet();
       }
-      const expiryDate = new Date(expiryYear, expiryMonth - 1, 1);
-      expiryDate.setMonth(expiryDate.getMonth() + 1);
-      if (expiryDate <= new Date()) {
-        setPaymentError('Cette carte est expirée.');
-        return;
-      }
-      if (!/^\d{3,4}$/.test(cardCvv)) {
-        setPaymentError('CVV invalide.');
-        return;
-      }
-    } else {
-      method = 'card';
-    }
-    const success = handleReserveRide(paymentRide, method);
-    if (success) {
-      setCardMasked(true);
-      closePaymentSheet();
-    }
-  }, [paymentRide, paymentMethodChoice, cardNumber, cardExpiry, cardCvv, handleReserveRide, closePaymentSheet]);
+    },
+    [paymentRide, cardNumber, cardExpiry, cardCvv, handleReserveRide, closePaymentSheet]
+  );
 
   const renderRideResult = useCallback(
     (ride: Ride) => {
@@ -2332,105 +2016,130 @@ function PassengerPublishScreen({
                 })}
               </View>
               {paymentMethodChoice === 'card' ? (
-                <View style={passengerStyles.paymentForm}>
-                  <TextInput
-                    value={cardNumberDisplay}
-                    onChangeText={(value) => {
-                      const digits = value.replace(/[^0-9]/g, '').slice(0, 16);
-                      setCardNumber(digits);
-                      setCardMasked(false);
-                    }}
-                    onFocus={() => setCardMasked(false)}
-                    onBlur={() => setCardMasked(true)}
-                    placeholder="Numéro de carte"
-                    keyboardType="number-pad"
-                    style={passengerStyles.paymentInput}
-                    placeholderTextColor={Colors.gray500}
-                    maxLength={19}
-                  />
-                  <View style={passengerStyles.paymentRow}>
-                    <Pressable
-                      style={[
-                        passengerStyles.paymentInput,
-                        passengerStyles.paymentInputHalf,
-                        passengerStyles.paymentInputPressable,
-                      ]}
-                      onPress={() => {
-                        setPickerExpiryMonth(expiryMonth);
-                        setPickerExpiryYear(expiryYear);
-                        setShowExpiryPicker(true);
-                      }}
-                      accessibilityRole="button"
-                    >
-                      <Text
-                        style={[
-                          passengerStyles.paymentInputValue,
-                          !cardExpiry && passengerStyles.paymentInputPlaceholder,
-                        ]}
-                      >
-                        {cardExpiry || 'MM/AA'}
-                      </Text>
-                    </Pressable>
+                <>
+                  <View style={passengerStyles.paymentForm}>
                     <TextInput
-                      value={cardCvv}
+                      value={cardNumberDisplay}
                       onChangeText={(value) => {
-                        const digits = value.replace(/[^0-9]/g, '').slice(0, 4);
-                        setCardCvv(digits);
+                        const digits = value.replace(/[^0-9]/g, '').slice(0, 16);
+                        setCardNumber(digits);
+                        setCardMasked(false);
                       }}
-                      placeholder="CVV"
+                      onFocus={() => setCardMasked(false)}
+                      onBlur={() => setCardMasked(true)}
+                      placeholder="Numéro de carte"
                       keyboardType="number-pad"
-                      style={[passengerStyles.paymentInput, passengerStyles.paymentInputHalf]}
+                      style={passengerStyles.paymentInput}
                       placeholderTextColor={Colors.gray500}
-                      maxLength={4}
-                      secureTextEntry
+                      maxLength={19}
                     />
-                  </View>
-                </View>
-              ) : (
-                <View style={passengerStyles.paymentNoteBox}>
-                  <Text style={passengerStyles.paymentNote}>
-                    Apple Pay sera utilisé sur ton appareil pour finaliser la transaction.
-                  </Text>
-                </View>
-              )}
-              {paymentError ? <Text style={passengerStyles.paymentError}>{paymentError}</Text> : null}
-              {paymentMethodChoice === 'apple-pay' ? (
-                <Pressable
-                  style={[
-                    passengerStyles.applePayButton,
-                    reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.applePayButtonDisabled,
-                  ]}
-                  onPress={confirmPayment}
-                  disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
-                  accessibilityRole="button"
-                >
-                  {paymentRide && reservingRideId === paymentRide.id ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Text style={passengerStyles.applePayText}> Pay</Text>
-                  )}
-                </Pressable>
-              ) : (
-                <Pressable
-                  style={[
-                    passengerStyles.cardPayButton,
-                    reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.cardPayButtonDisabled,
-                  ]}
-                  onPress={confirmPayment}
-                  disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
-                  accessibilityRole="button"
-                >
-                  {paymentRide && reservingRideId === paymentRide.id ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <View style={passengerStyles.cardPayContent}>
-                      <Text style={passengerStyles.cardPayIcon}>💳</Text>
-                      <Text style={passengerStyles.cardPayText}>
-                        {paymentRide ? `Payer €${paymentRide.price.toFixed(2)}` : 'Payer par carte'}
-                      </Text>
+                    <View style={passengerStyles.paymentRow}>
+                      <Pressable
+                        style={[
+                          passengerStyles.paymentInput,
+                          passengerStyles.paymentInputHalf,
+                          passengerStyles.paymentInputPressable,
+                        ]}
+                        onPress={() => {
+                          setPickerExpiryMonth(expiryMonth);
+                          setPickerExpiryYear(expiryYear);
+                          setShowExpiryPicker(true);
+                        }}
+                        accessibilityRole="button"
+                      >
+                        <Text
+                          style={[
+                            passengerStyles.paymentInputValue,
+                            !cardExpiry && passengerStyles.paymentInputPlaceholder,
+                          ]}
+                        >
+                          {cardExpiry || 'MM/AA'}
+                        </Text>
+                      </Pressable>
+                      <TextInput
+                        value={cardCvv}
+                        onChangeText={(value) => {
+                          const digits = value.replace(/[^0-9]/g, '').slice(0, 4);
+                          setCardCvv(digits);
+                        }}
+                        placeholder="CVV"
+                        keyboardType="number-pad"
+                        style={[passengerStyles.paymentInput, passengerStyles.paymentInputHalf]}
+                        placeholderTextColor={Colors.gray500}
+                        maxLength={4}
+                        secureTextEntry
+                      />
                     </View>
-                  )}
-                </Pressable>
+                  </View>
+                  <Pressable
+                    style={[
+                      passengerStyles.cardPayButton,
+                      reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.cardPayButtonDisabled,
+                    ]}
+                    onPress={() => confirmPayment('card')}
+                    disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
+                    accessibilityRole="button"
+                  >
+                    {paymentRide && reservingRideId === paymentRide.id ? (
+                      <ActivityIndicator color="#fff" />
+                    ) : (
+                      <View style={passengerStyles.cardPayContent}>
+                        <Text style={passengerStyles.cardPayIcon}>💳</Text>
+                        <Text style={passengerStyles.cardPayText}>
+                          {paymentRide ? `Payer €${paymentRide.price.toFixed(2)}` : 'Payer par carte'}
+                        </Text>
+                      </View>
+                    )}
+                  </Pressable>
+                </>
+              ) : (
+                <>
+                  <View style={passengerStyles.paymentNoteBox}>
+                    <Text style={passengerStyles.paymentNote}>
+                      Apple Pay sera utilisé sur ton appareil pour finaliser la transaction.
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={[
+                      passengerStyles.applePayButton,
+                      reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.applePayButtonDisabled,
+                    ]}
+                    onPress={() => confirmPayment('apple-pay')}
+                    disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
+                    accessibilityRole="button"
+                  >
+                    {paymentRide && reservingRideId === paymentRide.id ? (
+                      <ActivityIndicator color="#fff" />
+                    ) : (
+                      <Text style={passengerStyles.applePayText}> Pay</Text>
+                    )}
+                  </Pressable>
+                  <View style={[passengerStyles.paymentNoteBox, passengerStyles.googlePayNoteBox]}>
+                    <Text style={[passengerStyles.paymentNote, passengerStyles.googlePayNoteText]}>
+                      Google Pay sera utilisé sur ton appareil pour finaliser la transaction.
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={[
+                      passengerStyles.googlePayButton,
+                      reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.googlePayButtonDisabled,
+                    ]}
+                    onPress={() => confirmPayment('google-pay')}
+                    disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
+                    accessibilityRole="button"
+                  >
+                    {paymentRide && reservingRideId === paymentRide.id ? (
+                      <ActivityIndicator color="#1A73E8" />
+                    ) : (
+                      <View style={passengerStyles.googlePayContent}>
+                        <View style={passengerStyles.googlePayBadge}>
+                          <Text style={passengerStyles.googlePayBadgeText}>G</Text>
+                        </View>
+                        <Text style={passengerStyles.googlePayText}>Google Pay</Text>
+                      </View>
+                    )}
+                  </Pressable>
+                </>
               )}
               <Pressable onPress={closePaymentSheet} style={passengerStyles.paymentCancel}>
                 <Text style={passengerStyles.paymentCancelText}>Annuler</Text>
@@ -3074,6 +2783,16 @@ const passengerStyles = StyleSheet.create({
     color: Colors.primaryDark,
     fontWeight: '600',
   },
+  googlePayNoteBox: {
+    borderRadius: 16,
+    backgroundColor: '#E8F0FE',
+    padding: Spacing.sm,
+    marginTop: Spacing.xs,
+  },
+  googlePayNoteText: {
+    color: '#1A73E8',
+    fontWeight: '600',
+  },
   paymentError: {
     color: Colors.danger,
     fontWeight: '600',
@@ -3119,6 +2838,41 @@ const passengerStyles = StyleSheet.create({
     fontWeight: '800',
     fontSize: 16,
     letterSpacing: 0.4,
+  },
+  googlePayButton: {
+    marginTop: Spacing.xs,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1A73E8',
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  googlePayButtonDisabled: {
+    opacity: 0.6,
+  },
+  googlePayContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  googlePayBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#1A73E8',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  googlePayBadgeText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  googlePayText: {
+    color: '#1A73E8',
+    fontWeight: '800',
+    fontSize: 16,
   },
   paymentCancel: {
     alignSelf: 'center',
@@ -3456,165 +3210,6 @@ const passengerStyles = StyleSheet.create({
   },
 });
 
-function MyRideRow({
-  ride,
-  onEdit,
-  onRemove,
-  C,
-  S,
-}: {
-  ride: Ride;
-  onEdit: () => void;
-  onRemove: (ride: Ride) => void;
-  C: typeof DefaultColors;
-  S: typeof Shadows;
-}) {
-  const seatsLeft = ride.seats - ride.passengers.length;
-  const departed = hasRideDeparted(ride);
-  const dayLabel = (() => {
-    const departure = new Date(ride.departureAt);
-    const now = new Date();
-    if (departure.toDateString() === now.toDateString()) return 'Aujourd’hui';
-    const tomorrow = new Date(now);
-    tomorrow.setDate(now.getDate() + 1);
-    if (departure.toDateString() === tomorrow.toDateString()) return 'Demain';
-    return departure.toLocaleDateString('fr-BE', { weekday: 'short', day: 'numeric', month: 'short' });
-  })();
-
-  const statusLabel = departed ? 'Trajet terminé' : `${seatsLeft} place(s) restantes`;
-
-  const handleEdit = () => {
-    if (departed) {
-      Alert.alert('Trajet terminé', 'Tu ne peux plus modifier un trajet déjà parti.');
-      return;
-    }
-    onEdit();
-  };
-
-  const handleDelete = () => {
-    if (departed) {
-      Alert.alert('Trajet terminé', 'La suppression est désactivée après le départ.');
-      return;
-    }
-    Alert.alert(
-      'Supprimer le trajet',
-      `Confirme la suppression du trajet ${ride.depart} → ${ride.destination} ?`,
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Supprimer',
-          style: 'destructive',
-          onPress: () => onRemove(ride),
-        },
-      ]
-    );
-  };
-
-  const style = styles(C, S);
-
-  const avatarUri = getAvatarUrl(ride.ownerEmail, 64);
-
-  return (
-    <View style={style.rideRow}>
-      <View style={style.rideRowAvatar}>
-        <Image source={{ uri: avatarUri }} style={style.rideRowAvatarImage} />
-      </View>
-      <View style={{ flex: 1, gap: 4 }}>
-        <Text style={style.rideRowTitle}>
-          {ride.depart} → {ride.destination}
-        </Text>
-        <View style={style.rideRowMetaRow}>
-          <IconSymbol name="clock.fill" size={16} color={C.gray600} />
-          <Text style={style.rideRowMeta}>
-            {ride.time} • {dayLabel} • {statusLabel}
-          </Text>
-        </View>
-        <View style={style.rideRowMetaRow}>
-          <IconSymbol name="eurosign.circle" size={16} color={C.gray600} />
-          <Text style={style.rideRowMeta}>
-            €{ride.price.toFixed(2)} / passager
-            {ride.pricingMode === 'double' ? ' • Aller + retour' : ''}
-          </Text>
-        </View>
-        <View style={style.rideRowMetaRow}>
-          <IconSymbol name="car.fill" size={16} color={C.gray600} />
-          <Text style={style.rideRowMeta}>Plaque : {ride.plate}</Text>
-        </View>
-        <View style={style.rideRowMetaRow}>
-          <IconSymbol name="person.2.fill" size={16} color={C.gray600} />
-          <Text style={style.rideRowMeta}>
-            Réservations : {ride.passengers.length}/{ride.seats}
-          </Text>
-        </View>
-      </View>
-      <View style={style.rideRowActions}>
-        <GradientButton
-          title="Modifier"
-          size="sm"
-          variant="lavender"
-          fullWidth
-          style={style.rideRowButton}
-          onPress={handleEdit}
-          accessibilityRole="button"
-          disabled={departed}
-        />
-        <GradientButton
-          title="Supprimer"
-          size="sm"
-          variant="danger"
-          fullWidth
-          style={style.rideRowButton}
-          onPress={handleDelete}
-          accessibilityRole="button"
-          disabled={departed}
-        />
-      </View>
-    </View>
-  );
-}
-
-function Field({
-  label,
-  error,
-  C,
-  ...props
-}: {
-  label: string;
-  error?: string;
-  placeholder?: string;
-  value: string;
-  onChangeText: (s: string) => void;
-  inputMode?: 'text' | 'numeric' | 'email' | 'tel' | 'search' | 'url';
-  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
-  C: typeof DefaultColors;
-}) {
-  return (
-    <View style={{ marginBottom: 14 }}>
-      <Text style={{ fontSize: 13, fontWeight: '700', color: C.gray600, marginBottom: 6 }}>
-        {label}
-      </Text>
-      <TextInput
-        style={[
-          {
-            borderWidth: 1,
-            borderColor: C.gray300,
-            borderRadius: 12,
-            paddingVertical: 12,
-            paddingHorizontal: 14,
-            fontSize: 16,
-            color: C.ink,
-            backgroundColor: C.gray150,
-          },
-          !!error && { borderColor: C.danger },
-        ]}
-        placeholderTextColor={C.gray500}
-        {...props}
-      />
-      {!!error && <Text style={{ color: C.danger, fontSize: 12, marginTop: 6 }}>{error}</Text>}
-    </View>
-  );
-}
-
 const styles = (C: typeof DefaultColors, S: typeof Shadows) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: 'transparent' },
@@ -3649,6 +3244,226 @@ const styles = (C: typeof DefaultColors, S: typeof Shadows) =>
       gap: 6,
     },
     quickChipText: { color: C.gray600, fontWeight: '700', fontSize: 12 },
+    campusCard: { gap: Spacing.md },
+    campusCardTitle: { fontWeight: '700', color: C.ink },
+    campusMap: {
+      marginTop: Spacing.sm,
+      borderRadius: 26,
+      backgroundColor: '#FFF7EF',
+      minHeight: 200,
+      overflow: 'hidden',
+      position: 'relative',
+      justifyContent: 'center',
+    },
+    publishWebMap: {
+      ...StyleSheet.absoluteFillObject,
+    },
+    campusFallbackMap: {
+      ...StyleSheet.absoluteFillObject,
+    },
+    publishWebMapError: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: 'rgba(255,255,255,0.85)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: Spacing.sm,
+    },
+    publishWebMapErrorText: {
+      color: Colors.danger,
+      fontWeight: '700',
+      textAlign: 'center',
+    },
+    campusLegend: {
+      marginTop: Spacing.sm,
+      backgroundColor: '#FFFFFF',
+      borderRadius: 24,
+      padding: Spacing.sm,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      ...S.card,
+    },
+    campusLegendLabel: {
+      fontWeight: '600',
+      color: C.gray600,
+    },
+    campusLegendIcons: {
+      flexDirection: 'row',
+      gap: Spacing.sm,
+    },
+    campusLegendIcon: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: Colors.accent,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    publishSection: {
+      gap: Spacing.md,
+    },
+    detailsStack: {
+      gap: Spacing.sm,
+    },
+    tripDetailsCard: {
+      flexDirection: 'column',
+      gap: Spacing.sm,
+      padding: Spacing.lg,
+      borderRadius: 28,
+      ...S.card,
+    },
+    tripDetailsTitle: {
+      fontSize: 18,
+      fontWeight: '700',
+      color: C.ink,
+    },
+    detailInputRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.sm,
+      backgroundColor: C.gray50,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      borderRadius: 16,
+    },
+    detailInputField: {
+      flex: 1,
+      fontSize: 16,
+      color: C.ink,
+      paddingVertical: 2,
+    },
+    dateTimeRow: {
+      flexDirection: 'row',
+      gap: Spacing.sm,
+    },
+    dateField: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.xs,
+      borderRadius: 16,
+      backgroundColor: C.gray50,
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: Spacing.xs,
+    },
+    dateFieldInput: {
+      flex: 1,
+      fontSize: 15,
+      color: C.ink,
+      paddingVertical: 6,
+    },
+    metaRow: {
+      flexDirection: 'row',
+      gap: Spacing.sm,
+    },
+    metaBlock: {
+      flex: 1,
+      backgroundColor: '#fff',
+      borderRadius: 18,
+      padding: Spacing.sm,
+      gap: Spacing.xs,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: C.gray200,
+    },
+    metaLabel: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: C.gray600,
+    },
+    metaValueInput: {
+      fontSize: 16,
+      color: C.ink,
+      paddingVertical: 6,
+      paddingHorizontal: 10,
+      backgroundColor: '#fff',
+      borderRadius: 12,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: 'rgba(0,0,0,0.08)',
+    },
+    notesInput: {
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: C.gray300,
+      borderRadius: 18,
+      backgroundColor: C.gray50,
+      padding: Spacing.sm,
+      color: C.ink,
+      fontSize: 14,
+      minHeight: 72,
+      textAlignVertical: 'top',
+    },
+    detailsButton: {
+      marginTop: Spacing.sm,
+    },
+    successCard: {
+      marginTop: Spacing.sm,
+      backgroundColor: '#FFF',
+      borderRadius: 36,
+      padding: Spacing.lg,
+      gap: Spacing.sm,
+      ...S.card,
+    },
+    successCardCompact: {
+      marginTop: Spacing.sm,
+    },
+    successTitle: {
+      fontSize: 18,
+      fontWeight: '700',
+      color: C.ink,
+    },
+    successMessageBox: {
+      marginTop: Spacing.sm,
+      backgroundColor: '#E9FFEF',
+      borderRadius: 18,
+      padding: Spacing.sm,
+      borderWidth: 1,
+      borderColor: '#B5F0C6',
+    },
+    successMessageText: {
+      color: C.success,
+      fontSize: 14,
+      lineHeight: 20,
+      fontWeight: '600',
+    },
+    successInfoRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: Spacing.sm,
+      justifyContent: 'space-between',
+      flexWrap: 'wrap',
+      marginTop: Spacing.sm,
+    },
+    successRoute: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.xs,
+    },
+    successText: {
+      color: C.gray600,
+      fontWeight: '600',
+    },
+    successTextActive: {
+      color: '#9F6BFF',
+      fontWeight: '700',
+    },
+    successDetailText: {
+      color: C.gray500,
+      fontSize: 12,
+      marginTop: Spacing.xs / 2,
+    },
+    successBadge: {
+      alignSelf: 'flex-start',
+      marginLeft: 'auto',
+      backgroundColor: '#F6EDFF',
+      borderRadius: R.xl,
+      paddingVertical: Spacing.xs / 2,
+      paddingHorizontal: Spacing.sm,
+    },
+    successBadgeText: {
+      color: '#9F6BFF',
+      fontWeight: '700',
+      fontSize: 12,
+    },
+
     pricingCard: { gap: 10 },
     pricingHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     pricingTitle: { fontWeight: '700', color: C.ink, fontSize: 16 },
@@ -3817,7 +3632,7 @@ const maskCardNumberDisplay = (digits: string) => {
 
 const EXPIRY_YEARS_SPAN = 12;
 
-const HERO_GOOGLE_MAPS_API_KEY =
+const GOOGLE_MAPS_API_KEY =
   process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? 'AIzaSyCU9joaWe-_aSq4RMbqbLsrVi0pkC5iu8c';
 
 type HeroSegment = {
@@ -3838,26 +3653,26 @@ const HERO_FALLBACK_SEGMENTS: HeroSegment[] = [
   },
 ];
 
-const loadHeroGoogleMaps = () => {
+const loadGoogleMaps = () => {
   if (typeof window === 'undefined') {
     return Promise.reject(new Error('window unavailable'));
   }
   if (window.google && window.google.maps) {
     return Promise.resolve(window.google);
   }
-  if (window.__campusRideHeroMapLoader) {
-    return window.__campusRideHeroMapLoader;
+  if (window.__campusRideGoogleMapLoader) {
+    return window.__campusRideGoogleMapLoader;
   }
-  window.__campusRideHeroMapLoader = new Promise<any>((resolve, reject) => {
+  window.__campusRideGoogleMapLoader = new Promise<any>((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${HERO_GOOGLE_MAPS_API_KEY}`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}`;
     script.async = true;
     script.defer = true;
     script.onload = () => resolve(window.google);
     script.onerror = () => reject(new Error('Google Maps JS failed to load.'));
     document.head.appendChild(script);
   });
-  return window.__campusRideHeroMapLoader;
+  return window.__campusRideGoogleMapLoader;
 };
 
 const computeHeroCamera = (segments: HeroSegment[]) => {
@@ -3866,6 +3681,24 @@ const computeHeroCamera = (segments: HeroSegment[]) => {
   }
   const lats = segments.flatMap((segment) => [segment.start.latitude, segment.end.latitude]);
   const lngs = segments.flatMap((segment) => [segment.start.longitude, segment.end.longitude]);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  const center = { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 };
+  const latitudeDelta = Math.max((maxLat - minLat) * 1.4, 0.02);
+  const longitudeDelta = Math.max((maxLng - minLng) * 1.4, 0.02);
+  const delta = Math.max(latitudeDelta, longitudeDelta);
+  const zoom = Math.max(5, Math.min(15, Math.log2(360 / delta)));
+  return { center, zoom };
+};
+
+const computeCampusCamera = () => {
+  if (!CAMPUS_LOCATIONS.length) {
+    return { center: { lat: 50.8503, lng: 4.3517 }, zoom: 11 };
+  }
+  const lats = CAMPUS_LOCATIONS.map((campus) => campus.latitude);
+  const lngs = CAMPUS_LOCATIONS.map((campus) => campus.longitude);
   const minLat = Math.min(...lats);
   const maxLat = Math.max(...lats);
   const minLng = Math.min(...lngs);
@@ -3898,7 +3731,7 @@ const HeroWebMap = ({ rides }: { rides: Ride[] }) => {
   useEffect(() => {
     if (Platform.OS !== 'web') return;
     let mounted = true;
-    loadHeroGoogleMaps()
+    loadGoogleMaps()
       .then((google) => {
         if (!mounted || !mapNode.current) return;
         const camera = computeHeroCamera(segments);
@@ -3983,6 +3816,80 @@ const HeroWebMap = ({ rides }: { rides: Ride[] }) => {
   );
 };
 
+const PublishCampusWebMap = () => {
+  if (Platform.OS !== 'web') {
+    return null;
+  }
+
+  const mapNode = useRef<HTMLDivElement | null>(null);
+  const mapInstance = useRef<any>(null);
+  const markers = useRef<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [mapReady, setMapReady] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    loadGoogleMaps()
+      .then((google) => {
+        if (!mounted || !mapNode.current) return;
+        const camera = computeCampusCamera();
+        mapInstance.current = new google.maps.Map(mapNode.current, {
+          center: camera.center,
+          zoom: camera.zoom,
+          disableDefaultUI: true,
+          zoomControl: true,
+          mapTypeControl: false,
+          streetViewControl: false,
+        });
+        setMapReady(true);
+      })
+      .catch(() => {
+        if (mounted) {
+          setError("Impossible d'afficher Google Maps.");
+        }
+      });
+    return () => {
+      mounted = false;
+      markers.current.forEach((marker) => marker.setMap(null));
+      markers.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const google = window.google;
+    const map = mapInstance.current;
+    if (!google || !map) return;
+
+    markers.current.forEach((marker) => marker.setMap(null));
+    markers.current = [];
+
+    const camera = computeCampusCamera();
+    map.setCenter(camera.center);
+    map.setZoom(camera.zoom);
+
+    CAMPUS_LOCATIONS.forEach((campus) => {
+      const marker = new google.maps.Marker({
+        map,
+        position: { lat: campus.latitude, lng: campus.longitude },
+        title: campus.name,
+      });
+      markers.current.push(marker);
+    });
+  }, [mapReady]);
+
+  return (
+    <View style={styles(C, S).publishWebMap}>
+      <div ref={mapNode} style={webMapSurfaceStyle} />
+      {error ? (
+        <View style={styles(C, S).publishWebMapError}>
+          <Text style={styles(C, S).publishWebMapErrorText}>{error}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+};
+
 const webMapSurfaceStyle: CSSProperties = {
   width: '100%',
   height: '100%',
@@ -3990,6 +3897,7 @@ const webMapSurfaceStyle: CSSProperties = {
 
 declare global {
   interface Window {
-    __campusRideHeroMapLoader?: Promise<any>;
+    __campusRideGoogleMapLoader?: Promise<any>;
+    google?: any;
   }
 }

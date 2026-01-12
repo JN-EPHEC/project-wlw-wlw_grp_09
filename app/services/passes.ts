@@ -106,3 +106,9 @@ export const purchasePack = (
 
   return { ok: true as const, pack: { ...pack }, purchase };
 };
+
+export const purgePurchasesForEmail = (email: string) => {
+  if (!email) return;
+  const key = email.toLowerCase();
+  delete purchases[key];
+};

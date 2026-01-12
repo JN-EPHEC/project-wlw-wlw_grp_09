@@ -236,6 +236,12 @@ function PassengerHome({ session }: { session: AuthSession }) {
     [pendingRequests]
   );
 
+  const canceledTrips = useMemo(
+    () =>
+      rides.filter((ride) => !!session.email && ride.canceledPassengers.includes(session.email)),
+    [rides, session.email]
+  );
+
   const tripBuckets = useMemo(
     () => ({
       current: pendingRequests,
@@ -737,12 +743,47 @@ function PassengerHome({ session }: { session: AuthSession }) {
                 </View>
                 <Pressable style={styles.primaryButton} onPress={() => openRide(activeTrip)}>
                   <IconSymbol name="paperplane.fill" size={18} color={Colors.white} />
-                  <Text style={styles.primaryButtonText}>Voir le trajet en direct</Text>
+                  <Text style={styles.primaryButtonText}>Voir +</Text>
                 </Pressable>
               </View>
             ) : (
               <Text style={[styles.emptyText, styles.emptyTextLight]}>
                 Aucun trajet pour cette catégorie.
+              </Text>
+            )}
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Annulés</Text>
+            <Text style={styles.sectionSubtitle}>Les trajets que vous avez annulés</Text>
+            {canceledTrips.length ? (
+              canceledTrips.map((ride) => (
+                <View key={ride.id} style={styles.cancelledCard}>
+                  <View style={styles.requestBody}>
+                    <Image
+                      source={{ uri: getAvatarUrl(ride.ownerEmail, 96) }}
+                      style={styles.requestAvatar}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.requestDriver}>{ride.driver}</Text>
+                      <Text style={styles.requestMeta}>
+                        {formatTime(ride.departureAt)} · {ride.depart} → {ride.destination}
+                      </Text>
+                      <Text style={styles.requestSubtitle}>Réservation annulée</Text>
+                    </View>
+                    <View style={styles.requestPrice}>
+                      <Text style={styles.requestPriceValue}>{ride.price.toFixed(2)} €</Text>
+                      <Text style={styles.requestPriceLabel}>{ride.seats} place(s)</Text>
+                    </View>
+                  </View>
+                  <Pressable style={styles.secondaryButton} onPress={() => openRide(ride)}>
+                    <Text style={styles.secondaryButtonText}>Voir les détails</Text>
+                  </Pressable>
+                </View>
+              ))
+            ) : (
+              <Text style={[styles.emptyText, styles.emptyTextLight]}>
+                Aucune annulation pour le moment.
               </Text>
             )}
           </View>
@@ -1823,6 +1864,14 @@ const driverStyles = StyleSheet.create({
   },
   emptyText: {
     color: Colors.gray500,
+  },
+  cancelledCard: {
+    borderRadius: 24,
+    padding: Spacing.lg,
+    backgroundColor: '#F3EBFF',
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+    ...Shadows.card,
   },
   previewCard: {
     backgroundColor: Colors.white,

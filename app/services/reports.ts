@@ -55,6 +55,18 @@ export const subscribeReports = (listener: Listener) => {
   };
 };
 
+export const purgeReportsForEmail = (email: string) => {
+  if (!email) return;
+  const normalized = email.trim().toLowerCase();
+  const previous = reports.length;
+  reports = reports.filter(
+    (entry) => entry.reporterEmail !== normalized && entry.targetEmail !== normalized
+  );
+  if (reports.length !== previous) {
+    notify();
+  }
+};
+
 export const clearReports = () => {
   reports = [];
   notify();

@@ -26,6 +26,7 @@ import { getAvatarUrl } from '@/app/ui/avatar';
 import {
   ensureDemoThreads,
   markThreadAsRead,
+  removeThread,
   sendMessage as serviceSendMessage,
   subscribeMessages,
   subscribeThreads,
@@ -33,6 +34,11 @@ import {
   type ThreadSnapshot,
 } from '@/app/services/messages';
 import { createReport } from '@/app/services/reports';
+import {
+  blockUser,
+  unblockUser,
+} from '@/app/services/blocked-users';
+import { useBlockedUsers } from '@/hooks/use-blocked-users';
 
 const C = Colors;
 
@@ -140,7 +146,14 @@ export default function MessagesScreen() {
     return getAvatarUrl(conversationPartnerName, 120);
   }, [conversationPartner?.email, conversationPartnerName]);
 
+  const blockedUsers = useBlockedUsers(session.email);
+  const blockedSet = useMemo(() => new Set(blockedUsers), [blockedUsers]);
   const closeOptions = useCallback(() => setOptionsVisible(false), []);
+
+  const partnerEmail = conversationPartner?.email ?? '';
+  const partnerBlocked = partnerEmail
+    ? blockedUsers.includes(partnerEmail.toLowerCase())
+    : false;
 
   const handleViewProfile = useCallback(() => {
     closeOptions();
@@ -172,6 +185,52 @@ export default function MessagesScreen() {
     activeThread?.routeLabel,
     activeThread?.id,
   ]);
+
+  const handleBlockUser = useCallback(() => {
+    closeOptions();
+    if (session.email && conversationPartner?.email) {
+      blockUser(session.email, conversationPartner.email);
+      Alert.alert(
+        'Utilisateur bloqué',
+        `${conversationPartnerName} ne peut plus t’envoyer de messages.`
+      );
+    }
+  }, [closeOptions, conversationPartnerName, session.email, conversationPartner?.email]);
+
+  const handleUnblockUser = useCallback(() => {
+    closeOptions();
+    if (session.email && conversationPartner?.email) {
+      unblockUser(session.email, conversationPartner.email);
+      Alert.alert('Utilisateur débloqué', `${conversationPartnerName} peut de nouveau te contacter.`);
+    }
+  }, [closeOptions, conversationPartnerName, session.email, conversationPartner?.email]);
+
+  const handleDeleteConversation = useCallback(() => {
+    if (!activeThread) return;
+    closeOptions();
+    Alert.alert(
+      'Supprimer la conversation',
+      'Tous les messages seront supprimés définitivement. Continuer ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: () => {
+            try {
+              removeThread(activeThread.id);
+              setActiveThreadId(null);
+              Alert.alert('Conversation supprimée', 'La conversation a été supprimée.');
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : 'Impossible de supprimer la conversation.';
+              Alert.alert('Erreur', message);
+            }
+          },
+        },
+      ]
+    );
+  }, [activeThread, closeOptions]);
 
   const handleConversationOptions = useCallback(() => {
     if (!activeThread) return;
@@ -210,6 +269,13 @@ export default function MessagesScreen() {
     return other?.name ?? other?.email ?? 'Conversation';
   };
 
+  const getThreadPartnerKey = (thread: ThreadSnapshot) => {
+    const other =
+      thread.participants.find((participant) => participant.email.toLowerCase() !== threadEmailKey) ??
+      thread.participants[0];
+    return other?.email?.toLowerCase() ?? '';
+  };
+
   const getUnreadCount = (thread: ThreadSnapshot) => thread.unreadBy[threadEmailKey] ?? 0;
 
   const formatRelativeLabel = (timestamp: number | null) => {
@@ -235,6 +301,39 @@ export default function MessagesScreen() {
 
   const showConversationOnly = !isSplitLayout && !!activeThreadId;
 
+  const activeThreads = useMemo(
+    () =>
+      threads.filter((thread) => {
+        const partnerKey = getThreadPartnerKey(thread);
+        return partnerKey && !blockedSet.has(partnerKey);
+      }),
+    [threads, blockedSet]
+  );
+
+  const archivedThreads = useMemo(
+    () =>
+      threads.filter((thread) => {
+        const partnerKey = getThreadPartnerKey(thread);
+        return !!partnerKey && blockedSet.has(partnerKey);
+      }),
+    [threads, blockedSet]
+  );
+
+  useEffect(() => {
+    if (!activeThread) return;
+    const partner =
+      activeThread.participants.find((participant) => participant.email.toLowerCase() !== threadEmailKey) ??
+      activeThread.participants[0];
+    const partnerKey = partner?.email?.toLowerCase() ?? '';
+    if (!partnerKey || !blockedSet.has(partnerKey)) return;
+    if (!isSplitLayout) {
+      setActiveThreadId(null);
+      return;
+    }
+    const nextActive = activeThreads[0];
+    setActiveThreadId(nextActive ? nextActive.id : null);
+  }, [activeThread, activeThreads, blockedSet, isSplitLayout, threadEmailKey]);
+
   const renderThreadItem = ({ item }: { item: ThreadSnapshot }) => {
     const partner = getThreadPartnerLabel(item);
     const preview = item.lastMessage ?? 'Démarre la conversation';
@@ -242,6 +341,7 @@ export default function MessagesScreen() {
     const isSelected = item.id === activeThreadId && (isSplitLayout || showConversationOnly);
     const timeLabel = formatRelativeLabel(item.lastMessageAt);
     const avatarUri = getAvatarUrl(partner ?? preview, 96);
+    const threadBlocked = blockedSet.has(getThreadPartnerKey(item));
     return (
       <Pressable
         onPress={() => selectThread(item.id)}
@@ -254,6 +354,11 @@ export default function MessagesScreen() {
             <Text style={styles.threadName}>{partner}</Text>
             {timeLabel ? <Text style={styles.threadTime}>{timeLabel}</Text> : null}
           </View>
+          {threadBlocked ? (
+            <View style={styles.threadTag}>
+              <Text style={styles.threadTagText}>Bloqué</Text>
+            </View>
+          ) : null}
           <Text style={styles.threadPreview} numberOfLines={1}>
             {preview}
           </Text>
@@ -275,19 +380,35 @@ export default function MessagesScreen() {
           <Text style={styles.subheading}>Vos conversations</Text>
         </View>
         <FlatList
-          data={threads}
+          data={activeThreads}
           keyExtractor={(item) => item.id}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
           renderItem={renderThreadItem}
           contentContainerStyle={styles.threadListContent}
-          ListEmptyComponent={() => (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>Aucune conversation</Text>
-              <Text style={styles.emptyDescription}>
-                Réserve un trajet ou publie-en un pour démarrer un échange.
-              </Text>
-            </View>
-          )}
+          ListEmptyComponent={() =>
+            archivedThreads.length > 0 ? null : (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyTitle}>Aucune conversation</Text>
+                <Text style={styles.emptyDescription}>
+                  Réserve un trajet ou publie-en un pour démarrer un échange.
+                </Text>
+              </View>
+            )
+          }
+          ListFooterComponent={
+            archivedThreads.length > 0 ? (
+              <View style={styles.archiveSection}>
+                <Text style={styles.archiveTitle}>Conversations archivées</Text>
+                {archivedThreads.map((thread, index) => (
+                  <View key={thread.id}>
+                    {renderThreadItem({ item: thread })}
+                    {index < archivedThreads.length - 1 ? <View style={styles.separator} /> : null}
+                  </View>
+                ))}
+              </View>
+            ) : null
+          }
+          ListFooterComponentStyle={styles.archiveFooter}
           showsVerticalScrollIndicator={false}
         />
       </WhiteRoundedContainer>
@@ -316,7 +437,15 @@ export default function MessagesScreen() {
               ) : null}
               <Image source={{ uri: conversationPartnerAvatar }} style={styles.partnerAvatar} />
               <View style={styles.partnerMeta}>
-                <Text style={styles.partnerName}>{conversationPartnerName}</Text>
+                <View style={styles.partnerNameRow}>
+                  <Text style={styles.partnerName}>{conversationPartnerName}</Text>
+                  {partnerBlocked ? (
+                    <View style={styles.partnerBlocked}>
+                      <IconSymbol name="slash.circle.fill" size={16} color={C.danger} />
+                      <Text style={styles.partnerBlockedLabel}>Bloqué</Text>
+                    </View>
+                  ) : null}
+                </View>
                 <Text style={styles.partnerStatus}>
                   En ligne • {activeThread.routeLabel ?? 'Trajet CampusRide'}
                 </Text>
@@ -442,20 +571,39 @@ export default function MessagesScreen() {
         >
           <View style={styles.optionsOverlay}>
             <Pressable style={styles.optionsBackdrop} onPress={closeOptions} />
-            <View style={styles.optionsMenu}>
-              <Text style={styles.optionsTitle}>Discussion</Text>
-              <Pressable style={styles.optionsItem} onPress={handleViewProfile}>
-                <Text style={styles.optionsItemText}>Voir le profil</Text>
-                <IconSymbol name="chevron.right" size={16} color={C.gray400} />
-              </Pressable>
-              <View style={styles.optionsDivider} />
-              <Pressable style={styles.optionsItem} onPress={handleReportUser}>
-                <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
-                  Signaler cet utilisateur
-                </Text>
-              </Pressable>
+              <View style={styles.optionsMenu}>
+                <Text style={styles.optionsTitle}>Discussion</Text>
+                <Pressable style={styles.optionsItem} onPress={handleViewProfile}>
+                  <Text style={styles.optionsItemText}>Voir le profil</Text>
+                  <IconSymbol name="chevron.right" size={16} color={C.gray400} />
+                </Pressable>
+                <View style={styles.optionsDivider} />
+                <Pressable style={styles.optionsItem} onPress={handleReportUser}>
+                  <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
+                    Signaler cet utilisateur
+                  </Text>
+                </Pressable>
+                {partnerBlocked ? (
+                  <Pressable style={styles.optionsItem} onPress={handleUnblockUser}>
+                    <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
+                      Débloquer cet utilisateur
+                    </Text>
+                  </Pressable>
+                ) : (
+                  <Pressable style={styles.optionsItem} onPress={handleBlockUser}>
+                    <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
+                      Bloquer cet utilisateur
+                    </Text>
+                  </Pressable>
+                )}
+                <View style={styles.optionsDivider} />
+                <Pressable style={styles.optionsItem} onPress={handleDeleteConversation}>
+                  <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
+                    Supprimer la conversation
+                  </Text>
+                </Pressable>
+              </View>
             </View>
-          </View>
         </Modal>
       ) : null}
     </AppBackground>
@@ -486,6 +634,21 @@ const styles = StyleSheet.create({
   },
   listCard: { flex: 1, marginVertical: Spacing.md },
   threadListContent: { paddingVertical: Spacing.sm },
+  archiveSection: {
+    marginTop: Spacing.lg,
+    paddingTop: Spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.gray200,
+    gap: Spacing.sm,
+  },
+  archiveTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.gray500,
+  },
+  archiveFooter: {
+    paddingBottom: Spacing.lg,
+  },
   separator: { height: Spacing.sm },
   threadCard: {
     flexDirection: 'row',
@@ -508,6 +671,16 @@ const styles = StyleSheet.create({
   threadName: { fontSize: 15, fontWeight: '700', color: C.ink },
   threadTime: { fontSize: 12, color: C.gray500 },
   threadPreview: { fontSize: 13, color: C.gray600, marginTop: 2 },
+  threadTag: {
+    marginTop: Spacing.xs / 2,
+    alignSelf: 'flex-start',
+    backgroundColor: '#FFE8ED',
+    borderRadius: Radius.xl,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: Spacing.xs / 2,
+    marginBottom: Spacing.xs / 2,
+  },
+  threadTagText: { color: '#C02424', fontWeight: '700', fontSize: 11 },
   unreadTag: {
     minWidth: 24,
     paddingHorizontal: Spacing.xs,
@@ -540,9 +713,38 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   partnerAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFFFFF' },
-  partnerMeta: { flex: 1 },
-  partnerName: { color: C.ink, fontSize: 18, fontWeight: '800' },
-  partnerStatus: { color: C.gray500, fontSize: 12 },
+  partnerMeta: {
+    flex: 1,
+  },
+  partnerNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  partnerName: {
+    color: C.ink,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  partnerBlocked: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs / 2,
+    borderWidth: 1,
+    borderColor: C.danger,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: Spacing.xs / 2,
+  },
+  partnerBlockedLabel: {
+    color: C.danger,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  partnerStatus: {
+    color: C.gray500,
+    fontSize: 12,
+  },
   headerActionButton: {
     width: 36,
     height: 36,

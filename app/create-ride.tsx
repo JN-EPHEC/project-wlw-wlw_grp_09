@@ -1,8 +1,8 @@
-import { useCallback, useMemo, useState } from 'react';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { useCallback, useState } from 'react';
 import {
   Alert,
   Modal,
-  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -11,36 +11,21 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
-
 import { useRouter } from 'expo-router';
 
+import { addRide } from '@/app/services/rides';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, Radius, Spacing, Shadows } from '@/app/ui/theme';
+import { Colors, Radius, Shadows, Spacing } from '@/app/ui/theme';
 import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
+import { useAuthSession } from '@/hooks/use-auth-session';
+import { useDriverSecurity } from '@/hooks/use-driver-security';
 
-const DRIVER_RULES = [
-  { key: 'no-smoking', label: 'Fumée non autorisée', icon: '🚭' },
-  { key: 'music', label: 'Musique autorisée', icon: '🎵' },
-  { key: 'pets', label: 'Animaux acceptés', icon: '🐕' },
-  { key: 'calm', label: 'Trajet calme', icon: '🤫' },
-  { key: 'luggage', label: 'Bagages acceptés', icon: '🧳' },
-  { key: 'chat', label: 'Discussion bienvenue', icon: '💬' },
-];
-
-const CAMPUS_OPTIONS = [
-  'EPHEC Delta',
-  'EPHEC Louvain-la-Neuve',
-  'EPHEC Schaerbeek',
-  'EPHEC Woluwe',
-];
-
-const MAP_NODES = [
-  { name: 'EPHEC Woluwe', icon: 'school', color: '#8F7FFE', left: '58%', top: '18%' },
-  { name: 'EPHEC Delta', icon: 'school', color: '#FFB26C', left: '18%', top: '60%' },
-  { name: 'EPHEC Louvain-la-Neuve', icon: 'school', color: '#FF865F', left: '55%', top: '40%' },
-  { name: 'EPHEC Schaerbeek', icon: 'school', color: '#7ED0FF', left: '30%', top: '30%' },
+const NAV_ITEMS = [
+  { key: 'home', icon: 'house.fill', label: 'Home' },
+  { key: 'rides', icon: 'car.fill', label: 'Rides', active: true },
+  { key: 'messages', icon: 'bubble.left.and.bubble.right.fill', label: 'Messages' },
+  { key: 'profile', icon: 'person.fill', label: 'Profile' },
 ];
 
 const SEAT_OPTIONS = [1, 2, 3, 4];
@@ -64,12 +49,13 @@ const formatTimeLabel = (date: Date | null) =>
 
 export default function CreateRideScreen() {
   const router = useRouter();
+  const session = useAuthSession();
+  const security = useDriverSecurity(session.email);
   const initialRide = FALLBACK_UPCOMING[0];
   const initialDate = initialRide ? new Date(initialRide.departureAt) : null;
   const initialTime = initialRide ? new Date(initialRide.departureAt) : null;
   const [departure, setDeparture] = useState(initialRide?.depart ?? '');
-  const [campus, setCampus] = useState(initialRide?.destination ?? CAMPUS_OPTIONS[0]);
-  const [campusOpen, setCampusOpen] = useState(false);
+  const [campus, setCampus] = useState(initialRide?.destination ?? '');
   const [selectedDate, setSelectedDate] = useState<Date | null>(initialDate);
   const [selectedTime, setSelectedTime] = useState<Date | null>(initialTime);
   const [datePickerVisible, setDatePickerVisible] = useState(false);
@@ -78,52 +64,106 @@ export default function CreateRideScreen() {
   const [seatsOpen, setSeatsOpen] = useState(false);
   const [price, setPrice] = useState(initialRide ? initialRide.price.toFixed(2) : '');
   const [notes, setNotes] = useState('');
-  const [rules, setRules] = useState(() =>
-    DRIVER_RULES.reduce<Record<string, boolean>>((acc, rule) => {
-      acc[rule.key] = false;
-      return acc;
-    }, {})
-  );
+  const [isPublishingRide, setIsPublishingRide] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
-  const selectedCount = useMemo(
-    () => Object.values(rules).filter((value) => value).length,
-    [rules]
-  );
+  const registeredPlate = security?.vehicle.plate?.trim() ?? '';
 
-  const toggleRule = useCallback((key: string) => {
-    setRules((prev) => ({ ...prev, [key]: !prev[key] }));
-  }, []);
+  const handlePublish = useCallback(async () => {
+    if (isPublishingRide) return;
+    setFormError(null);
+    if (!session.email) {
+      const message = 'Connecte-toi pour publier un trajet.';
+      Alert.alert('Connecte-toi', message);
+      setFormError(message);
+      return;
+    }
+    if (!session.isDriver) {
+      const message = 'Active ton rôle conducteur pour continuer.';
+      Alert.alert('Mode conducteur requis', message);
+      setFormError('Passe en mode conducteur pour publier un trajet.');
+      return;
+    }
+    if (!registeredPlate) {
+      const message = 'Ta plaque n’est pas encore enregistrée.';
+      Alert.alert('Plaque manquante', message);
+      setFormError('Enregistre ta plaque dans la vérification conducteur.');
+      return;
+    }
+    if (!departure.trim()) {
+      const message = 'Indique un point de départ.';
+      Alert.alert('Lieu de départ requis', message);
+      setFormError('Ajoute un lieu de départ.');
+      return;
+    }
+    if (!selectedDate) {
+      const message = 'Choisis une date pour ton trajet.';
+      Alert.alert('Date requise', message);
+      setFormError('Choisis une date.');
+      return;
+    }
+    if (!selectedTime) {
+      const message = 'Choisis une heure pour ton trajet.';
+      Alert.alert('Heure requise', message);
+      setFormError('Choisis une heure.');
+      return;
+    }
 
-  const handlePublish = useCallback(() => {
-    const summary = [
-      departure && `Départ : ${departure.trim()}`,
-      campus && `Campus : ${campus}`,
-      selectedDate && `Date : ${formatDateLabel(selectedDate)}`,
-      selectedTime && `Heure : ${formatTimeLabel(selectedTime)}`,
-      `Places : ${places || '3'}`,
-      price && `Prix : ${price}€`,
-      selectedCount ? `Règles : ${selectedCount}` : 'Règles : non définies',
-    ]
-      .filter(Boolean)
-      .join('\n');
+    const seatsCount = Number(places);
+    if (!Number.isFinite(seatsCount) || seatsCount < 1) {
+      const message = 'Remplis toutes les cases pour passer à la suite.';
+      Alert.alert('Remplis toutes les cases avant de continuer', message);
+      setFormError(message);
+      return;
+    }
 
-    Alert.alert('Trajet publié', summary || 'Trajet prêt à être partagé.');
-    router.back();
+    const priceValue = Number(price.replace(',', '.'));
+    if (!Number.isFinite(priceValue) || priceValue <= 0) {
+      const message = 'Indique le tarif par passager.';
+      Alert.alert('Prix invalide', message);
+      setFormError('Indique un prix par place valide.');
+      return;
+    }
+
+    const hours = selectedTime.getHours();
+    const minutes = selectedTime.getMinutes();
+    const time = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    const rideId = `ride-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    setIsPublishingRide(true);
+    try {
+      addRide({
+        id: rideId,
+        driver: session.name ?? 'Conducteur',
+        plate: registeredPlate,
+        depart: departure,
+        destination: campus,
+        time,
+        seats: seatsCount,
+        price: priceValue,
+        ownerEmail: session.email,
+        pricingMode: 'single',
+      });
+      Alert.alert('Trajet publié', 'Ton trajet est en ligne et peut être réservé.');
+      router.back();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Impossible de publier ce trajet.';
+      Alert.alert('Erreur', message);
+      setFormError(message);
+    } finally {
+      setIsPublishingRide(false);
+    }
   }, [
-    departure,
     campus,
+    departure,
+    isPublishingRide,
+    price,
+    registeredPlate,
+    router,
     selectedDate,
     selectedTime,
-    places,
-    price,
-    selectedCount,
-    router,
+    session,
   ]);
-
-  const handleCampusSelect = useCallback((value: string) => {
-    setCampus(value);
-    setCampusOpen(false);
-  }, []);
 
   const handleSeatsSelect = useCallback((value: number) => {
     setPlaces(String(value));
@@ -157,191 +197,90 @@ export default function CreateRideScreen() {
   );
 
   return (
-    <GradientBackground colors={['#FF9052', '#FFAA6C']} style={styles.screen}>
+    <GradientBackground colors={['#FFF5EB', '#FFD3A1']} style={styles.screen}>
       <SafeAreaView style={styles.safe}>
-        <View style={styles.header}>
-          <Pressable
-            style={styles.backButton}
-            onPress={() => router.back()}
-            accessibilityRole="button"
-          >
-            <IconSymbol name="chevron.left" size={24} color="#fff" />
-          </Pressable>
-          <View style={styles.titleBlock}>
-            <Text style={styles.heroTitle}>Créer un trajet</Text>
-            <Text style={styles.heroSubtitle}>Proposez un covoiturage aux étudiants</Text>
-          </View>
-        </View>
-
         <ScrollView
-          contentContainerStyle={styles.form}
+          contentContainerStyle={styles.content}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="always"
         >
-          <View style={styles.mapPreview}>
-            <View style={styles.mapGrid}>
-              {[20, 40, 60, 80].map((value) => (
-                <View
-                  key={`v-${value}`}
-                  style={[styles.mapLine, { left: `${value}%`, height: '100%' }]}
-                />
-              ))}
-              {[20, 40, 60, 80].map((value) => (
-                <View
-                  key={`h-${value}`}
-                  style={[styles.mapLine, { top: `${value}%`, width: '100%' }]}
-                />
-              ))}
-            </View>
-            {MAP_NODES.map((node) => (
-              <View
-                key={node.name}
-                style={[
-                  styles.mapNode,
-                  { backgroundColor: node.color, left: node.left, top: node.top },
-                ]}
-              >
-                <IconSymbol name={node.icon} size={20} color="#fff" />
-                <Text style={styles.mapNodeLabel}>{node.name}</Text>
+          <View style={styles.formCard}>
+            <Text style={styles.cardTitle}>Détails du trajet</Text>
+            <View style={[styles.fieldBox, styles.fieldSpacing]}>
+              <View style={styles.iconContainer}>
+                <IconSymbol name="location.fill" size={18} color="#B7B7C6" />
               </View>
-            ))}
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Itinéraire</Text>
-            <View style={styles.labelRow}>
-              <IconSymbol name="location.fill" size={16} color={Colors.gray500} />
-              <Text style={styles.labelText}>Point de départ</Text>
-            </View>
-            <View style={styles.inputField}>
               <TextInput
                 value={departure}
                 onChangeText={setDeparture}
-                placeholder="Adresse de départ"
-                placeholderTextColor={Colors.gray400}
+                placeholder="Point de départ"
+                placeholderTextColor="#B7B7C6"
                 style={styles.input}
               />
             </View>
-            <View style={styles.swapButton}>
-              <IconSymbol name="arrow.up.arrow.down" size={20} color={Colors.gray600} />
-            </View>
-            <View style={styles.labelRow}>
-              <IconSymbol name="graduationcap.fill" size={16} color={Colors.accent} />
-              <Text style={styles.labelText}>Destination campus</Text>
-            </View>
-            <Pressable
-              style={styles.dropdown}
-              onPress={() => setCampusOpen((prev) => !prev)}
-            >
-              <Text
-                style={[
-                  styles.dropdownText,
-                  campus ? styles.dropdownTextActive : null,
-                ]}
-              >
-                {campus || 'Sélectionnez un campus'}
-              </Text>
-              <IconSymbol name="chevron.down" size={16} color={Colors.gray500} />
-            </Pressable>
-            {campusOpen && (
-              <View style={styles.dropdownList}>
-                {CAMPUS_OPTIONS.map((option) => (
-                  <Pressable
-                    key={option}
-                    style={[
-                      styles.dropdownItem,
-                      campus === option && styles.dropdownItemActive,
-                    ]}
-                    onPress={() => handleCampusSelect(option)}
-                  >
-                    <Text
-                      style={[
-                        styles.dropdownItemText,
-                        campus === option && styles.dropdownItemTextActive,
-                      ]}
-                    >
-                      {option}
-                    </Text>
-                  </Pressable>
-                ))}
+            <View style={[styles.fieldBox, styles.fieldSpacing]}>
+              <View style={styles.iconContainer}>
+                <IconSymbol name="mappin.and.ellipse" size={18} color="#9F6BFF" />
               </View>
-            )}
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Détails du trajet</Text>
-            <View style={styles.fieldRow}>
-              <View style={styles.fieldBubble}>
-                <Text style={styles.fieldLabel}>Point de départ</Text>
-                <View style={styles.fieldInputRow}>
-                  <IconSymbol name="location.fill" size={18} color="#A0A5B9" />
-                  <TextInput
-                    value={departure}
-                    onChangeText={setDeparture}
-                    placeholder="Adresse de départ"
-                    placeholderTextColor="#A0A5B9"
-                    style={styles.detailInput}
-                  />
-                </View>
-              </View>
-              <View style={styles.fieldBubble}>
-                <Text style={styles.fieldLabel}>Destination (Campus)</Text>
-                <View style={styles.fieldInputRow}>
-                  <IconSymbol name="mappin.and.ellipse" size={18} color="#8F7FFE" />
-                  <TextInput
-                    value={campus}
-                    onChangeText={setCampus}
-                    placeholder="Campus ou adresse"
-                    placeholderTextColor="#A0A5B9"
-                    style={styles.detailInput}
-                  />
-                </View>
-              </View>
+              <TextInput
+                value={campus}
+                onChangeText={setCampus}
+                placeholder="Destination (Campus)"
+                placeholderTextColor="#B7B7C6"
+                style={styles.input}
+              />
             </View>
-            <View style={styles.fieldRow}>
+            <View style={styles.row}>
               <Pressable
-                style={styles.fieldBubble}
+                style={[styles.dateField, styles.fieldBox]}
                 onPress={() => setDatePickerVisible(true)}
-                hitSlop={16}
               >
-                <View style={styles.fieldLabelRow}>
-                  <IconSymbol name="calendar" size={18} color="#A0A5B9" />
-                  <Text style={styles.fieldLabel}>Date</Text>
-                </View>
-                <Text style={styles.fieldPlaceholder}>{formatDateLabel(selectedDate)}</Text>
-                <Text style={styles.fieldHint}>Appuie pour choisir une date</Text>
+                <IconSymbol name="calendar" size={18} color="#B7B7C6" />
+                <Text
+                  style={[
+                    styles.input,
+                    !selectedDate && styles.placeholderText,
+                  ]}
+                >
+                  {selectedDate ? formatDateLabel(selectedDate) : 'jj/mm/a'}
+                </Text>
               </Pressable>
               <Pressable
-                style={styles.fieldBubble}
+                style={[styles.dateField, styles.fieldBox]}
                 onPress={() => setTimePickerVisible(true)}
-                hitSlop={16}
               >
-                <View style={styles.fieldLabelRow}>
-                  <IconSymbol name="clock" size={18} color="#A0A5B9" />
-                  <Text style={styles.fieldLabel}>Heure</Text>
-                </View>
-                <Text style={styles.fieldPlaceholder}>{formatTimeLabel(selectedTime)}</Text>
-                <Text style={styles.fieldHint}>Appuie pour choisir une heure</Text>
+                <IconSymbol name="clock" size={18} color="#B7B7C6" />
+                <Text
+                  style={[
+                    styles.input,
+                    !selectedTime && styles.placeholderText,
+                  ]}
+                >
+                  {selectedTime ? formatTimeLabel(selectedTime) : '--:--'}
+                </Text>
               </Pressable>
             </View>
-            <View style={styles.fieldRow}>
-              <View style={styles.fieldBubble}>
-                <Text style={styles.fieldLabel}>Places disponibles</Text>
-                <Pressable style={styles.dropdownField} onPress={() => setSeatsOpen((prev) => !prev)}>
-                  <Text style={styles.fieldPlaceholder}>
-                    {(places ? `${places} place${Number(places) > 1 ? 's' : ''}` : '3 places')}
-                  </Text>
-                  <IconSymbol name="chevron.down" size={18} color="#A0A5B9" />
-                </Pressable>
-              </View>
-              <View style={styles.fieldBubble}>
-                <Text style={styles.fieldLabel}>Prix par place</Text>
+            <View style={styles.rowLabelRow}>
+              <Text style={styles.fieldLabel}>Places disponibles</Text>
+              <Text style={styles.fieldLabel}>Prix par place</Text>
+            </View>
+            <View style={styles.row}>
+              <Pressable
+                style={[styles.fieldBox, styles.dropdownField]}
+                onPress={() => setSeatsOpen((prev) => !prev)}
+              >
+                <Text style={styles.dropdownText}>
+                  {places ? `${places} place${Number(places) > 1 ? 's' : ''}` : '1 place'}
+                </Text>
+                <IconSymbol name="chevron.down" size={18} color="#B7B7C6" />
+              </Pressable>
+              <View style={[styles.fieldBox, styles.priceField]}>
                 <TextInput
                   value={price}
-                  onChangeText={(value) => setPrice(value)}
-                  placeholder="0,00"
-                  placeholderTextColor="#A0A5B9"
-                  style={styles.detailInput}
+                  onChangeText={setPrice}
+                  placeholder="0.00€"
+                  placeholderTextColor="#B7B7C6"
+                  style={styles.input}
                   keyboardType="decimal-pad"
                 />
               </View>
@@ -369,125 +308,114 @@ export default function CreateRideScreen() {
                 ))}
               </View>
             )}
+            <Text style={styles.fieldLabel}>Informations supplémentaires</Text>
             <TextInput
               value={notes}
               onChangeText={setNotes}
-              placeholder="Informations supplémentaires"
-              placeholderTextColor="#A0A5B9"
+              placeholder="Ex: Départ devant la bibliothèque..."
+              placeholderTextColor="#B7B7C6"
               multiline
-              style={[styles.input, styles.textArea]}
+              style={styles.notesInput}
             />
+            {formError ? (
+              <View style={styles.errorBanner}>
+                <Text style={styles.errorText}>{formError}</Text>
+              </View>
+            ) : null}
+            <Pressable
+              style={[
+                styles.publishButton,
+                isPublishingRide && styles.publishButtonDisabled,
+              ]}
+              onPress={handlePublish}
+              disabled={isPublishingRide}
+            >
+              <View style={styles.publishButtonContent}>
+                <IconSymbol name="paperplane.fill" size={18} color="#fff" />
+                <Text style={styles.publishText}>
+                  {isPublishingRide ? 'Publication…' : 'Publier le trajet'}
+                </Text>
+              </View>
+            </Pressable>
           </View>
 
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Règles du trajet</Text>
-            <Text style={styles.cardSubtitle}>Sélectionnez les règles à appliquer pendant le trajet</Text>
-            <View style={styles.rulesGrid}>
-              {DRIVER_RULES.map((rule) => (
-                <Pressable
-                  key={rule.key}
+          <View style={styles.bottomNav}>
+            {NAV_ITEMS.map((item) => (
+              <Pressable key={item.key} style={styles.navItem} accessibilityRole="button">
+                <IconSymbol
+                  name={item.icon}
+                  size={22}
+                  color={item.active ? '#9F6BFF' : '#B7B7C6'}
+                />
+                <Text
                   style={[
-                    styles.ruleChip,
-                    rules[rule.key] && styles.ruleChipActive,
+                    styles.navLabel,
+                    item.active && styles.navLabelActive,
                   ]}
-                  onPress={() => toggleRule(rule.key)}
                 >
-                  <Text style={styles.ruleIcon}>{rule.icon}</Text>
-                  <Text
-                    style={[
-                      styles.ruleText,
-                      rules[rule.key] && styles.ruleTextActive,
-                    ]}
-                  >
-                    {rule.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
+                  {item.label}
+                </Text>
+                {item.active && <View style={styles.navIndicator} />}
+              </Pressable>
+            ))}
           </View>
 
-          <Pressable style={styles.publishButton} onPress={handlePublish}>
-            <Text style={styles.publishText}>Publier le trajet</Text>
-          </Pressable>
-          {Platform.OS === 'ios' ? (
-            <>
-              {datePickerVisible && (
-                <Modal
-                  visible
-                  transparent
-                  animationType="fade"
-                  onRequestClose={() => setDatePickerVisible(false)}
-                >
-                  <View style={styles.pickerBackdrop}>
-                    <View style={styles.pickerCard}>
-                      <Text style={styles.pickerTitle}>Choisir une date</Text>
-                      <DateTimePicker
-                        value={selectedDate ?? new Date()}
-                        mode="date"
-                        display="spinner"
-                        onChange={handleDateChange}
-                        minimumDate={new Date()}
-                      />
-                      <Pressable
-                        style={styles.pickerAction}
-                        onPress={() => setDatePickerVisible(false)}
-                      >
-                        <Text style={styles.pickerActionText}>Fermer</Text>
-                      </Pressable>
-                    </View>
+          <>
+            {datePickerVisible && (
+              <Modal
+                visible
+                transparent
+                animationType="fade"
+                onRequestClose={() => setDatePickerVisible(false)}
+              >
+                <View style={styles.pickerBackdrop}>
+                  <View style={styles.pickerCard}>
+                    <Text style={styles.pickerTitle}>Choisir une date</Text>
+                    <DateTimePicker
+                      value={selectedDate ?? new Date()}
+                      mode="date"
+                      display="calendar"
+                      onChange={handleDateChange}
+                      minimumDate={new Date()}
+                    />
+                    <Pressable
+                      style={styles.pickerAction}
+                      onPress={() => setDatePickerVisible(false)}
+                    >
+                      <Text style={styles.pickerActionText}>Fermer</Text>
+                    </Pressable>
                   </View>
-                </Modal>
-              )}
-              {timePickerVisible && (
-                <Modal
-                  visible
-                  transparent
-                  animationType="fade"
-                  onRequestClose={() => setTimePickerVisible(false)}
-                >
-                  <View style={styles.pickerBackdrop}>
-                    <View style={styles.pickerCard}>
-                      <Text style={styles.pickerTitle}>Choisir une heure</Text>
-                      <DateTimePicker
-                        value={selectedTime ?? new Date()}
-                        mode="time"
-                        display="spinner"
-                        onChange={handleTimeChange}
-                        is24Hour
-                      />
-                      <Pressable
-                        style={styles.pickerAction}
-                        onPress={() => setTimePickerVisible(false)}
-                      >
-                        <Text style={styles.pickerActionText}>Fermer</Text>
-                      </Pressable>
-                    </View>
+                </View>
+              </Modal>
+            )}
+            {timePickerVisible && (
+              <Modal
+                visible
+                transparent
+                animationType="fade"
+                onRequestClose={() => setTimePickerVisible(false)}
+              >
+                <View style={styles.pickerBackdrop}>
+                  <View style={styles.pickerCard}>
+                    <Text style={styles.pickerTitle}>Choisir une heure</Text>
+                    <DateTimePicker
+                      value={selectedTime ?? new Date()}
+                      mode="time"
+                      display="spinner"
+                      onChange={handleTimeChange}
+                      is24Hour
+                    />
+                    <Pressable
+                      style={styles.pickerAction}
+                      onPress={() => setTimePickerVisible(false)}
+                    >
+                      <Text style={styles.pickerActionText}>Fermer</Text>
+                    </Pressable>
                   </View>
-                </Modal>
-              )}
-            </>
-          ) : (
-            <>
-              {datePickerVisible && (
-                <DateTimePicker
-                  value={selectedDate ?? new Date()}
-                  mode="date"
-                  display="calendar"
-                  onChange={handleDateChange}
-                  minimumDate={new Date()}
-                />
-              )}
-              {timePickerVisible && (
-                <DateTimePicker
-                  value={selectedTime ?? new Date()}
-                  mode="time"
-                  display="clock"
-                  onChange={handleTimeChange}
-                  is24Hour
-                />
-              )}
-            </>
-          )}
+                </View>
+              </Modal>
+            )}
+          </>
         </ScrollView>
       </SafeAreaView>
     </GradientBackground>
@@ -497,216 +425,89 @@ export default function CreateRideScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.xl,
-    paddingBottom: Spacing.xl,
   },
   safe: {
     flex: 1,
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    marginBottom: Spacing.md,
-  },
-  backButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.2)',
-  },
-  titleBlock: {
-    flex: 1,
-  },
-  heroTitle: {
-    color: '#fff',
-    fontSize: 26,
-    fontWeight: '800',
-  },
-  heroSubtitle: {
-    color: '#fff',
-    fontSize: 16,
-    marginTop: Spacing.xs,
-  },
-  form: {
+  content: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.xl,
     paddingBottom: Spacing.xxl,
     gap: Spacing.lg,
   },
-  mapPreview: {
-    backgroundColor: '#FDEED8',
-    borderRadius: 30,
-    padding: Spacing.md,
-    marginBottom: Spacing.sm,
-    minHeight: 180,
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  mapGrid: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  mapLine: {
-    position: 'absolute',
-    borderColor: '#FFE1BC',
-    borderWidth: 1,
-    opacity: 0.8,
-  },
-  mapNode: {
-    position: 'absolute',
-    padding: Spacing.sm,
-    gap: Spacing.xs,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 24,
-    minWidth: 80,
-  },
-  mapNodeLabel: {
-    marginTop: Spacing.xs,
-    backgroundColor: '#fff',
-    borderRadius: Radius.sm,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs / 2,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  fieldRow: {
-    gap: Spacing.sm,
-    marginTop: Spacing.sm,
-  },
-  fieldInput: {
-    backgroundColor: '#F7F7FB',
-    borderRadius: 22,
-    padding: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  fieldPlaceholder: {
-    color: '#A0A5B9',
-    fontWeight: '600',
-  },
-  fieldBubble: {
-    backgroundColor: '#F7F7FB',
-    borderRadius: 18,
-    padding: Spacing.sm,
-    flex: 1,
-    gap: Spacing.xs,
-  },
-  fieldInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.gray200,
-    paddingBottom: Spacing.xs,
-  },
-  fieldLabel: {
-    color: '#A0A5B9',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  fieldLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    marginBottom: Spacing.xs / 2,
-  },
-  fieldHint: {
-    color: Colors.gray500,
-    fontSize: 12,
-    marginTop: Spacing.xs / 2,
-  },
-  dropdownField: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  card: {
+  formCard: {
     backgroundColor: Colors.white,
-    borderRadius: 36,
-    padding: Spacing.lg,
-    gap: Spacing.sm,
+    borderRadius: 48,
+    padding: Spacing.xl,
+    gap: Spacing.md,
     ...Shadows.card,
   },
   cardTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: '800',
     color: Colors.ink,
   },
-  cardSubtitle: {
-    color: Colors.gray500,
-    fontSize: 13,
-    marginBottom: Spacing.sm,
-  },
-  labelRow: {
+  fieldBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
-  },
-  labelText: {
-    color: Colors.gray700,
-    fontWeight: '600',
-  },
-  inputField: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.sm + 2,
     borderWidth: 1,
     borderColor: Colors.gray200,
-    borderRadius: 24,
+  },
+  fieldSpacing: {
     marginTop: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    backgroundColor: Colors.gray50,
   },
   input: {
-    fontSize: 16,
+    flex: 1,
+    fontSize: 15,
     color: Colors.ink,
-    padding: 0,
   },
-  swapButton: {
-    alignSelf: 'center',
-    marginTop: Spacing.sm,
-    backgroundColor: Colors.gray50,
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    alignItems: 'center',
+  iconContainer: {
+    width: 28,
+    height: 28,
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: Colors.gray200,
-  },
-  dropdown: {
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    borderWidth: 1,
-    borderColor: Colors.gray200,
-    borderRadius: 24,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    marginTop: Spacing.sm,
-    backgroundColor: Colors.gray50,
   },
-  dropdownText: {
-    color: Colors.gray600,
+  row: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  dateField: {
+    flex: 1,
+  },
+  placeholderText: {
+    color: Colors.gray500,
+  },
+  rowLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: Spacing.sm,
+  },
+  fieldLabel: {
+    color: Colors.gray500,
+    fontSize: 12,
     fontWeight: '600',
   },
-  dropdownTextActive: {
-    color: Colors.ink,
+  dropdownField: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  priceField: {
+    flex: 1,
+  },
+  dropdownText: {
+    color: Colors.gray700,
+    fontWeight: '700',
   },
   dropdownList: {
-    marginTop: Spacing.sm,
+    backgroundColor: Colors.white,
     borderRadius: 18,
-    backgroundColor: Colors.gray50,
-    borderWidth: 1,
-    borderColor: Colors.gray200,
+    marginTop: Spacing.sm,
   },
   dropdownItem: {
     paddingVertical: Spacing.sm,
@@ -716,100 +517,81 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.gray100,
   },
   dropdownItemText: {
-    color: Colors.gray700,
+    color: Colors.gray600,
     fontWeight: '600',
   },
   dropdownItemTextActive: {
     color: Colors.ink,
   },
-  detailRow: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    marginTop: Spacing.md,
-  },
-  detailColumn: {
-    flex: 1,
-    gap: Spacing.xs,
-  },
-  detailLabel: {
-    color: Colors.gray500,
-    fontSize: 12,
-  },
-  detailBubbleText: {
-    color: Colors.gray600,
-    fontWeight: '600',
-    flex: 1,
-  },
-  detailBubble: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    borderWidth: 1,
-    borderColor: Colors.gray200,
-    borderRadius: 18,
-    padding: Spacing.sm,
-    backgroundColor: Colors.gray50,
-  },
-  detailInput: {
-    flex: 1,
-    fontSize: 14,
-    color: Colors.ink,
-    padding: 0,
-  },
-  textArea: {
-    minHeight: 100,
-    borderWidth: 1,
-    borderColor: Colors.gray200,
-    borderRadius: 18,
-    padding: Spacing.sm,
+  notesInput: {
     marginTop: Spacing.sm,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#F1F1F4',
+    backgroundColor: Colors.white,
+    padding: Spacing.sm,
+    minHeight: 120,
     textAlignVertical: 'top',
-    backgroundColor: Colors.gray50,
+    color: Colors.ink,
   },
-  rulesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
+  errorBanner: {
+    backgroundColor: Colors.dangerLight,
+    borderRadius: Radius.xl,
+    padding: Spacing.sm,
+    alignItems: 'center',
     marginTop: Spacing.sm,
   },
-  ruleChip: {
-    flexBasis: '48%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    padding: Spacing.sm,
-    borderRadius: 18,
-    backgroundColor: Colors.gray50,
-    borderWidth: 1,
-    borderColor: Colors.gray200,
-  },
-  ruleChipActive: {
-    backgroundColor: '#F2EBFF',
-    borderColor: Colors.accent,
-  },
-  ruleIcon: {
-    fontSize: 18,
-  },
-  ruleText: {
-    color: Colors.gray700,
+  errorText: {
+    color: Colors.danger,
     fontWeight: '600',
-    flex: 1,
-  },
-  ruleTextActive: {
-    color: Colors.accent,
   },
   publishButton: {
     marginTop: Spacing.lg,
-    backgroundColor: Colors.accent,
+    backgroundColor: '#9F6BFF',
     borderRadius: Radius['2xl'],
     paddingVertical: Spacing.md,
     alignItems: 'center',
     ...Shadows.card,
   },
+  publishButtonDisabled: {
+    backgroundColor: Colors.gray300,
+  },
+  publishButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+  },
   publishText: {
     color: '#fff',
     fontWeight: '800',
     fontSize: 16,
+  },
+  bottomNav: {
+    marginTop: Spacing.lg,
+    backgroundColor: '#fff',
+    borderRadius: 34,
+    paddingVertical: Spacing.md,
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    ...Shadows.card,
+  },
+  navItem: {
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  navLabel: {
+    fontSize: 12,
+    color: '#B7B7C6',
+  },
+  navLabelActive: {
+    color: '#9F6BFF',
+  },
+  navIndicator: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#9F6BFF',
   },
   pickerBackdrop: {
     flex: 1,

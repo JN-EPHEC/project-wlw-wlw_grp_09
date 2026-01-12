@@ -357,6 +357,29 @@ export const removeReview = (reviewId: string) => {
   notifyPassenger(target.passengerEmail);
 };
 
+export const purgeReviewsForEmail = (email: string) => {
+  if (!email) return;
+  const normalized = normaliseEmail(email);
+  const affectedDrivers = new Set<string>();
+  const affectedPassengers = new Set<string>();
+  const affectedRides = new Set<string>();
+  const remaining = reviews.filter((review) => {
+    const matches =
+      review.driverEmail === normalized || review.passengerEmail === normalized;
+    if (matches) {
+      affectedDrivers.add(review.driverEmail);
+      affectedPassengers.add(review.passengerEmail);
+      affectedRides.add(review.rideId);
+    }
+    return !matches;
+  });
+  if (remaining.length === reviews.length) return;
+  reviews = remaining;
+  affectedDrivers.forEach((driver) => notifyDriver(driver));
+  affectedPassengers.forEach((passenger) => notifyPassenger(passenger));
+  affectedRides.forEach((rideId) => notifyRide(rideId));
+};
+
 type RatingInput = {
   completedRides: number;
   averageRating: number;

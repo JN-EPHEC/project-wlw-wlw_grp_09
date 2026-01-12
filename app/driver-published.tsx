@@ -14,6 +14,7 @@ import {
   FALLBACK_COMPLETED,
   FALLBACK_UPCOMING,
 } from '@/app/data/driver-samples';
+import { CAMPUS_LOCATIONS } from '@/app/data/campus-locations';
 
 const formatRideBadgeDate = (timestamp: number) =>
   new Date(timestamp).toLocaleDateString('fr-BE', {
@@ -31,6 +32,7 @@ export default function DriverPublishedScreen() {
   const session = useAuthSession();
   const router = useRouter();
   const [rides, setRides] = useState<Ride[]>(() => getRides());
+  const [highlightedCampus, setHighlightedCampus] = useState(CAMPUS_LOCATIONS[0]);
 
   useEffect(() => {
     const unsubscribe = subscribeRides(setRides);
@@ -90,6 +92,13 @@ export default function DriverPublishedScreen() {
     [router]
   );
 
+  const handleHighlightCampus = useCallback((campusName: string) => {
+    const campus = CAMPUS_LOCATIONS.find((item) => item.name === campusName);
+    if (campus) {
+      setHighlightedCampus(campus);
+    }
+  }, []);
+
   return (
     <AppBackground>
       <GradientBackground colors={Gradients.driver} style={styles.hero}>
@@ -118,6 +127,47 @@ export default function DriverPublishedScreen() {
               {pendingRequestsCount} nouvelles {pendingRequestsCount > 1 ? 'demandes' : 'demande'} en attente
             </Text>
             <Text style={styles.alertSubtitle}>Acceptez ou refusez les demandes de réservation</Text>
+          </View>
+        </View>
+
+        <View style={styles.mapCard}>
+          <Text style={styles.mapTitle}>Campus partenaires</Text>
+          <View style={styles.mapFrame}>
+            <View style={styles.mapGrid}>
+              {[20, 40, 60, 80].map((value) => (
+                <View
+                  key={`v-${value}`}
+                  style={[styles.mapLine, { left: `${value}%`, height: '100%' }]}
+                />
+              ))}
+              {[20, 40, 60, 80].map((value) => (
+                <View
+                  key={`h-${value}`}
+                  style={[styles.mapLine, { top: `${value}%`, width: '100%' }]}
+                />
+              ))}
+            </View>
+            {CAMPUS_LOCATIONS.map((node) => {
+              const active = node.name === highlightedCampus.name;
+              return (
+                <Pressable
+                  key={node.name}
+                  style={[
+                    styles.mapNode,
+                    { backgroundColor: node.color, left: node.left, top: node.top },
+                    active && styles.mapNodeActive,
+                  ]}
+                  onPress={() => handleHighlightCampus(node.name)}
+                >
+                  <IconSymbol name={node.icon} size={20} color="#fff" />
+                  <Text style={styles.mapNodeLabel}>{node.name}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.mapDetail}>
+            <Text style={styles.mapDetailTitle}>{highlightedCampus.name}</Text>
+            <Text style={styles.mapDetailText}>{highlightedCampus.description}</Text>
           </View>
         </View>
 
@@ -415,5 +465,72 @@ const styles = StyleSheet.create({
   completedRoute: {
     fontWeight: '600',
     color: Colors.ink,
+  },
+  mapCard: {
+    backgroundColor: '#fff',
+    borderRadius: 28,
+    padding: Spacing.lg,
+    gap: Spacing.md,
+    ...Shadows.card,
+  },
+  mapTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: Colors.ink,
+  },
+  mapFrame: {
+    height: 220,
+    borderRadius: 20,
+    backgroundColor: '#F5F6FA',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  mapGrid: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  mapLine: {
+    position: 'absolute',
+    borderColor: '#E1E7F5',
+    borderWidth: 1,
+    opacity: 0.5,
+  },
+  mapNode: {
+    position: 'absolute',
+    width: 130,
+    padding: Spacing.xs,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+  },
+  mapNodeActive: {
+    borderWidth: 2,
+    borderColor: '#fff',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  mapNodeLabel: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  mapDetail: {
+    backgroundColor: '#F2F4FF',
+    borderRadius: 20,
+    padding: Spacing.md,
+  },
+  mapDetailTitle: {
+    fontWeight: '700',
+    color: Colors.ink,
+    fontSize: 16,
+  },
+  mapDetailText: {
+    color: Colors.gray600,
+    fontSize: 13,
+    marginTop: Spacing.xs,
   },
 });

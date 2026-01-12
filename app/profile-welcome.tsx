@@ -9,6 +9,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
 import { pickProfileDocument, pickProfileImage } from '@/app/utils/image-picker';
 import { getAvatarUrl } from '@/app/ui/avatar';
+import { uploadProfileSelfie } from '@/src/storageUploads';
 
 export default function ProfileWelcome() {
   const session = useAuthSession();
@@ -27,16 +28,21 @@ export default function ProfileWelcome() {
     if (updating) return;
     setUpdating(true);
     try {
+      const applySelectedAvatar = async (uri: string) => {
+        setAvatarUri(uri);
+        const storedUrl = await uploadProfileSelfie({ email: session.email!, uri });
+        await Auth.updateProfile(session.email!, { avatarUrl: storedUrl });
+        setAvatarUri(storedUrl);
+      };
+
       const fromDocs = await pickProfileDocument();
       if (fromDocs) {
-        await Auth.updateProfile(session.email!, { avatarUrl: fromDocs });
-        setAvatarUri(fromDocs);
+        await applySelectedAvatar(fromDocs);
         return;
       }
       const gallery = await pickProfileImage();
       if (gallery) {
-        await Auth.updateProfile(session.email!, { avatarUrl: gallery });
-        setAvatarUri(gallery);
+        await applySelectedAvatar(gallery);
       }
     } finally {
       setUpdating(false);

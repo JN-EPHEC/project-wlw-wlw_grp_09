@@ -434,7 +434,7 @@ const seedDemoWallet = (email: string, wallet: Wallet) => {
       id: randomId(),
       type: 'credit',
       amount: 5.5,
-      description: 'Trajet EPHEC → ULB',
+      description: 'Trajet EPHEC Woluwe → EPHEC Delta',
       createdAt: Date.now() - 1000 * 60 * 30,
       balanceAfter: 45.5,
     },
@@ -450,7 +450,7 @@ const seedDemoWallet = (email: string, wallet: Wallet) => {
       id: randomId(),
       type: 'credit',
       amount: 4,
-      description: 'Trajet UCL → VUB',
+      description: 'Trajet EPHEC Schaerbeek → EPHEC Delta',
       createdAt: Date.now() - 1000 * 60 * 60 * 48,
       balanceAfter: 43,
     },
@@ -458,7 +458,7 @@ const seedDemoWallet = (email: string, wallet: Wallet) => {
       id: randomId(),
       type: 'debit',
       amount: 2.5,
-      description: 'Trajet Bruxelles Centre → EPHEC',
+      description: 'Trajet EPHEC Woluwe → EPHEC LLN',
       createdAt: Date.now() - 1000 * 60 * 60 * 72,
       balanceAfter: 39,
     },
@@ -466,7 +466,7 @@ const seedDemoWallet = (email: string, wallet: Wallet) => {
       id: randomId(),
       type: 'credit',
       amount: 6,
-      description: 'Trajet EPHEC Woluwe → Ixelles',
+      description: 'Trajet EPHEC Delta → EPHEC Schaerbeek',
       createdAt: Date.now() - 1000 * 60 * 60 * 96,
       balanceAfter: 41.5,
     },
@@ -554,6 +554,31 @@ export const resetWallets = () => {
     };
     notify(key);
   });
+};
+
+const buildEmptyWallet = (): Wallet => ({
+  balance: 0,
+  lastWithdrawalAt: null,
+  transactions: [],
+  withdrawalDelayDays: DEFAULT_WITHDRAWAL_DELAY_DAYS,
+  points: 0,
+  rideCredits: 0,
+  payoutMethod: null,
+  paymentMethods: [],
+  defaultPaymentMethodId: null,
+  payoutAccount: null,
+  checklist: cloneChecklist(DEFAULT_CHECKLIST),
+  seeded: true,
+});
+
+export const clearWalletData = (email: string) => {
+  if (!email) return;
+  const key = email.toLowerCase();
+  if (wallets[key]) {
+    wallets[key] = buildEmptyWallet();
+    notify(email);
+  }
+  delete wallets[key];
 };
 
 export const getWithdrawalDelayDays = (email: string) => {
