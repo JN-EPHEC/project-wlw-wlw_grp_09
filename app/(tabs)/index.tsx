@@ -27,10 +27,15 @@ import type { Notification } from '@/app/services/notifications';
 import { subscribeNotifications } from '@/app/services/notifications';
 import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
+import { usePassengerRequests } from '@/hooks/use-passenger-requests';
 import { BRUSSELS_COMMUNES } from '@/constants/communes';
 import { getCurrentCommune, LocationPermissionError } from '@/app/services/location';
 
 type SectionKey = 'search' | 'requests' | 'trips';
+type SectionFocus = { key: SectionKey; token: number };
+
+const isSectionKey = (value: string | undefined): value is SectionKey =>
+  value === 'search' || value === 'requests' || value === 'trips';
 
 const CAMPUS_OPTIONS = [
   'EPHEC Delta',
@@ -145,15 +150,27 @@ const DRIVER_RULES = [
 
 export default function Home() {
   const session = useAuthSession();
-  const params = useLocalSearchParams<{ mode?: 'passenger' }>();
+  const params = useLocalSearchParams<{ mode?: string; section?: string }>();
   const [previewPassenger, setPreviewPassenger] = useState(params.mode === 'passenger');
+  const initialSection = Array.isArray(params.section) ? params.section[0] : params.section;
+  const [focusSection, setFocusSection] = useState<SectionFocus | null>(() =>
+    isSectionKey(initialSection) ? { key: initialSection, token: Date.now() } : null
+  );
 
   useEffect(() => {
     if (params.mode === 'passenger') {
       setPreviewPassenger(true);
-      router.replace('/(tabs)/index');
+      router.replace('/');
     }
   }, [params.mode, router]);
+
+  useEffect(() => {
+    const nextSection = Array.isArray(params.section) ? params.section[0] : params.section;
+    if (isSectionKey(nextSection)) {
+      setFocusSection({ key: nextSection, token: Date.now() });
+      router.replace('/');
+    }
+  }, [params.section, router]);
 
   useEffect(() => {
     if (!session.isDriver && previewPassenger) {
@@ -163,13 +180,13 @@ export default function Home() {
 
   const showPassenger = previewPassenger || !session.isDriver;
   return showPassenger ? (
-    <PassengerHome session={session} />
+    <PassengerHome session={session} focusSection={focusSection} />
   ) : (
     <DriverDashboard session={session} />
   );
 }
 
-function PassengerHome({ session }: { session: AuthSession }) {
+function PassengerHome({ session, focusSection }: { session: AuthSession; focusSection: SectionFocus | null }) {
   const scrollRef = useRef<ScrollView>(null);
   const sectionPositions = useRef<Record<SectionKey, number>>({
     search: 0,
@@ -215,6 +232,10 @@ function PassengerHome({ session }: { session: AuthSession }) {
     return unsubscribe;
   }, [session.email]);
 
+  const { pending: passengerPendingRequests, accepted: passengerAcceptedRequests } = usePassengerRequests(
+    session.email
+  );
+
   const recommendedRides = useMemo(() => rides.slice(0, 3), [rides]);
   const myReservations = useMemo(
     () =>
@@ -258,6 +279,7 @@ function PassengerHome({ session }: { session: AuthSession }) {
     () => notifications.filter((notif) => !notif.read).length,
     [notifications]
   );
+  const passengerRequestCount = passengerPendingRequests.length + passengerAcceptedRequests.length;
 
   const firstName = getFirstName(session.name);
   const walletBalance = wallet?.balance ?? 0;
@@ -271,7 +293,6 @@ function PassengerHome({ session }: { session: AuthSession }) {
     setCampus(value);
     setShowCampusList(false);
   };
-
   const handleSearch = () => {
     setShowCampusList(false);
     router.push({
@@ -324,7 +345,6 @@ function PassengerHome({ session }: { session: AuthSession }) {
       setLocationLoading(false);
     }
   }, []);
-
   const openRide = (ride: Ride | null) => {
     if (!ride) return;
     router.push({ pathname: '/ride/[id]', params: { id: ride.id } });
@@ -340,36 +360,41 @@ function PassengerHome({ session }: { session: AuthSession }) {
     sectionPositions.current[key] = event.nativeEvent.layout.y;
   };
 
-  const scrollToSection = (key: SectionKey) => {
-    setShowCampusList(false);
-    const position = sectionPositions.current[key] ?? 0;
-    scrollRef.current?.scrollTo({ y: Math.max(position - 16, 0), animated: true });
-  };
+  const scrollToSection = useCallback(
+    (key: SectionKey) => {
+      setShowCampusList(false);
+      const position = sectionPositions.current[key] ?? 0;
+      scrollRef.current?.scrollTo({ y: Math.max(position - 16, 0), animated: true });
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!focusSection) return;
+    const timeout = setTimeout(() => {
+      scrollToSection(focusSection.key);
+    }, 350);
+    return () => clearTimeout(timeout);
+  }, [focusSection, scrollToSection]);
 
   const quickActions = useMemo(
     () => [
       {
-        key: 'search' as SectionKey,
-        label: 'Rechercher',
-        icon: 'magnifyingglass' as const,
-        onPress: () => scrollToSection('search'),
-      },
-      {
         key: 'requests' as SectionKey,
         label: 'Mes demandes',
         icon: 'doc.text' as const,
-        badge: pendingRequests.length > 0 ? String(pendingRequests.length) : undefined,
-        onPress: () => scrollToSection('requests'),
+        badge: passengerRequestCount > 0 ? String(passengerRequestCount) : undefined,
+        onPress: () => router.push('/requests'),
       },
       {
         key: 'trips' as SectionKey,
         label: 'Mes trajets',
         icon: 'car.fill' as const,
         badge: tripBuckets[tripTab].length > 0 ? undefined : undefined,
-        onPress: () => scrollToSection('trips'),
+        onPress: () => router.push('/trips'),
       },
     ],
-    [pendingRequests.length, tripBuckets, tripTab]
+    [passengerRequestCount, tripBuckets, tripTab, router]
   );
 
   const itinerary = useMemo(() => {
@@ -418,7 +443,7 @@ function PassengerHome({ session }: { session: AuthSession }) {
                 <Text style={styles.heroLabel}>Bonjour {firstName ?? 'CampusRider'}</Text>
                 <Text style={styles.heroSubtitle}>Trouve ton prochain trajet</Text>
               </View>
-              <Pressable style={styles.notificationIcon} onPress={() => router.push('/(tabs)/messages')}>
+              <Pressable style={styles.notificationIcon} onPress={() => router.push('/notifications')}>
                 <IconSymbol name="bell.fill" size={22} color={Colors.white} />
                 {unreadNotifications > 0 ? (
                   <View style={styles.notificationBadge}>
@@ -426,22 +451,6 @@ function PassengerHome({ session }: { session: AuthSession }) {
                   </View>
                 ) : null}
               </Pressable>
-            </View>
-            <View style={styles.heroMeta}>
-              <View style={styles.heroChip}>
-                <IconSymbol name="shield.fill" size={16} color={Colors.white} />
-                <Text style={styles.heroChipText}>
-                  {session.isDriver ? 'Conducteur vérifié' : 'Passager CampusRide'}
-                </Text>
-              </View>
-              <Text style={styles.heroDescription}>
-                {pendingRequests.length > 0
-                  ? `Tu as ${pendingRequests.length} demande(s) active(s) aujourd’hui.`
-                  : 'Réserve un trajet ou deviens conducteur pour partager la route.'}
-              </Text>
-              <Text style={styles.heroWallet}>
-                Wallet : {walletBalance.toFixed(2)} € · {rideCredits} crédit(s)
-              </Text>
             </View>
             <View style={styles.quickActionsRow}>
               {quickActions.map((action) => (
@@ -451,88 +460,92 @@ function PassengerHome({ session }: { session: AuthSession }) {
                   onPress={action.onPress}
                   accessibilityRole="button"
                 >
-                  <View style={styles.quickIcon}>
-                    <IconSymbol name={action.icon} size={24} color={Colors.primary} />
+                  <View style={styles.quickIconWrapper}>
+                    <View style={styles.quickIcon}>
+                      <IconSymbol name={action.icon} size={24} color={Colors.primary} />
+                    </View>
+                    {action.badge ? (
+                      <View style={styles.quickActionBadge}>
+                        <Text style={styles.quickBadgeText}>{action.badge}</Text>
+                      </View>
+                    ) : null}
                   </View>
                   <Text style={styles.quickLabel}>{action.label}</Text>
-                  {action.badge ? <View style={styles.quickBadge}><Text style={styles.quickBadgeText}>{action.badge}</Text></View> : null}
                 </Pressable>
               ))}
             </View>
           </GradientBackground>
 
           <View style={styles.section} onLayout={registerSection('search')}>
-            <Text style={styles.sectionTitle}>Rechercher un trajet</Text>
-            <Text style={styles.sectionSubtitle}>Trouve un covoiturage vers ton campus</Text>
+            <Text style={styles.sectionTitle}>Choisir votre destination</Text>
             <View style={styles.formCard}>
               <Text style={styles.inputLabel}>Point de départ</Text>
-              <View style={styles.inputRow}>
-                <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
-                <TextInput
-                  placeholder="Où partez-vous ?"
-                  placeholderTextColor={Colors.gray400}
-                  value={departureInput}
-                  onChangeText={(value) => {
-                    setDepartureInput(value);
-                    setDetectedCommune(null);
-                  }}
-                  style={styles.input}
-                  onFocus={handleDepartureFocus}
-                  onBlur={handleDepartureBlur}
-                  autoCapitalize="words"
-                  autoCorrect={false}
-                />
-                <Pressable
-                  onPress={() => {
-                    setDepartureInput('');
-                    setDetectedCommune(null);
-                  }}
-                >
-                  <IconSymbol name="arrow.up.arrow.down" size={20} color={Colors.gray400} />
-                </Pressable>
-              </View>
-              <View style={styles.inputHelperRow}>
-                <Pressable
-                  style={[styles.locationChip, locationLoading && styles.locationChipDisabled]}
-                  onPress={handleUseLocation}
-                  accessibilityRole="button"
-                  disabled={locationLoading}
-                >
-                  <IconSymbol name="location.fill" size={14} color={Colors.secondary} />
-                  <Text style={styles.locationChipText}>
-                    {locationLoading ? 'Localisation…' : 'Utiliser ma position'}
-                  </Text>
-                </Pressable>
-                {detectedCommune ? (
-                  <Text style={styles.locationDetectedText}>
-                    Commune détectée : {detectedCommune}
-                  </Text>
+              <View style={styles.dropdownContainer}>
+                <View style={styles.inputRow}>
+                  <View style={[styles.inputWrapper, styles.inputWrapperSoft]}>
+                    <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+                    <TextInput
+                      placeholder="Saisir votre adresse"
+                      placeholderTextColor={Colors.gray400}
+                      value={departureInput}
+                      onChangeText={(value) => {
+                        setDepartureInput(value);
+                        setDetectedCommune(null);
+                      }}
+                      style={styles.input}
+                      onFocus={handleDepartureFocus}
+                      onBlur={handleDepartureBlur}
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                    />
+                  </View>
+                  <Pressable
+                    style={styles.swapButton}
+                    accessibilityRole="button"
+                    accessibilityLabel="Inverser départ et destination"
+                    onPress={() => {
+                      setDepartureInput(campus);
+                      setCampus(departureInput);
+                      setDetectedCommune(null);
+                      setShowCampusList(false);
+                    }}
+                  >
+                    <IconSymbol name="chevron.up" size={18} color={Colors.gray500} />
+                    <IconSymbol name="chevron.down" size={18} color={Colors.gray500} />
+                  </Pressable>
+                </View>
+                {showDepartureSuggestions ? (
+                  <View style={styles.dropdownListHome}>
+                    <ScrollView
+                      style={styles.suggestionScroll}
+                      keyboardShouldPersistTaps="handled"
+                      nestedScrollEnabled
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {[locationLoading ? 'Localisation…' : 'Ma position actuelle', ...departureSuggestions].map(
+                        (suggestion, index) => (
+                          <Pressable
+                            key={`${suggestion}-${index}`}
+                            style={styles.dropdownItemHome}
+                            onPress={() => {
+                              if (index === 0) {
+                                handleUseLocation();
+                                return;
+                              }
+                              selectDepartureSuggestion(suggestion);
+                            }}
+                          >
+                            <Text style={styles.dropdownItemHomeText}>{suggestion}</Text>
+                          </Pressable>
+                        )
+                      )}
+                    </ScrollView>
+                  </View>
                 ) : null}
               </View>
-              {showDepartureSuggestions ? (
-                <View style={styles.suggestionList}>
-                  <ScrollView
-                    style={styles.suggestionScroll}
-                    keyboardShouldPersistTaps="handled"
-                    nestedScrollEnabled
-                    showsVerticalScrollIndicator={false}
-                  >
-                    {departureSuggestions.map((suggestion) => (
-                      <Pressable
-                        key={suggestion}
-                        style={styles.suggestionItem}
-                        onPress={() => selectDepartureSuggestion(suggestion)}
-                      >
-                        <IconSymbol name="location.fill" size={16} color={Colors.gray500} />
-                        <Text style={styles.suggestionText}>{suggestion}</Text>
-                      </Pressable>
-                    ))}
-                  </ScrollView>
-                </View>
-              ) : null}
-              <Text style={styles.inputLabel}>Destination campus</Text>
-              <View>
-                <Pressable style={styles.selector} onPress={handleCampusSelect}>
+              <Text style={styles.inputLabel}>Destination</Text>
+              <View style={styles.dropdownContainer}>
+                <Pressable style={[styles.selector]} onPress={handleCampusSelect}>
                   <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
                   <Text style={[styles.selectorText, !campus && styles.selectorPlaceholder]}>
                     {campus || 'Sélectionnez un campus'}
@@ -568,28 +581,29 @@ function PassengerHome({ session }: { session: AuthSession }) {
                 <Text style={styles.primaryButtonText}>Rechercher</Text>
               </Pressable>
             </View>
-            <GradientBackground colors={sponsorSecondary.colors} style={styles.inlineSponsor}>
-              <View style={styles.inlineSponsorLogo}>
-                <Image
-                  source={sponsorSecondary.logo}
-                  style={styles.inlineSponsorLogoImage}
-                  resizeMode="contain"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                {sponsorSecondary.badge ? (
-                  <View style={styles.inlineBadge}>
-                    <Text style={styles.inlineBadgeText}>{sponsorSecondary.badge}</Text>
-                  </View>
-                ) : null}
-                <Text style={styles.inlineSponsorLabel}>{sponsorSecondary.brand}</Text>
-                <Text style={styles.inlineSponsorTagline}>{sponsorSecondary.tagline}</Text>
-              </View>
-              <Pressable onPress={() => openSponsor(sponsorSecondary.url)}>
-                <IconSymbol name="arrow.up.right.square" size={24} color={Colors.white} />
-              </Pressable>
-            </GradientBackground>
           </View>
+
+          <GradientBackground colors={sponsorSecondary.colors} style={[styles.inlineSponsor, styles.inlineSponsorStandalone]}>
+            <View style={styles.inlineSponsorLogo}>
+              <Image
+                source={sponsorSecondary.logo}
+                style={styles.inlineSponsorLogoImage}
+                resizeMode="contain"
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              {sponsorSecondary.badge ? (
+                <View style={styles.inlineBadge}>
+                  <Text style={styles.inlineBadgeText}>{sponsorSecondary.badge}</Text>
+                </View>
+              ) : null}
+              <Text style={styles.inlineSponsorLabel}>{sponsorSecondary.brand}</Text>
+              <Text style={styles.inlineSponsorTagline}>{sponsorSecondary.tagline}</Text>
+            </View>
+            <Pressable onPress={() => openSponsor(sponsorSecondary.url)}>
+              <IconSymbol name="arrow.up.right.square" size={24} color={Colors.white} />
+            </Pressable>
+          </GradientBackground>
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Trajets qui pourraient vous intéresser</Text>
@@ -677,7 +691,7 @@ function PassengerHome({ session }: { session: AuthSession }) {
                     style={styles.primaryButton}
                     onPress={() => openRide(pendingRequests[0])}
                   >
-                    <Text style={styles.primaryButtonText}>Voir les détails</Text>
+                    <Text style={styles.primaryButtonText}>Procéder au paiement</Text>
                   </Pressable>
                 </>
               ) : (
@@ -1090,45 +1104,43 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
-  heroMeta: {
-    gap: Spacing.sm,
-  },
-  heroChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.pill,
-  },
-  heroChipText: {
-    color: Colors.white,
-    fontWeight: '700',
-  },
-  heroDescription: {
-    color: Colors.white,
-    opacity: 0.9,
-    lineHeight: 20,
-  },
-  heroWallet: {
-    color: Colors.white,
-    fontWeight: '700',
-  },
   quickActionsRow: {
     flexDirection: 'row',
     gap: Spacing.md,
     marginTop: Spacing.sm,
+    justifyContent: 'center',
   },
   quickAction: {
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 150,
+    maxWidth: 180,
     borderRadius: Radius['2xl'],
     backgroundColor: Colors.card,
     paddingVertical: Spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
     ...Shadows.card,
+    position: 'relative',
+  },
+  quickIconWrapper: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickActionBadge: {
+    width: 22,
+    height: 22,
+    position: 'absolute',
+    top: -6,
+    right: -2,
+    backgroundColor: Colors.danger,
+    borderRadius: Radius.pill,
+    borderWidth: 2,
+    borderColor: Colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
   },
   quickIcon: {
     width: 48,
@@ -1144,31 +1156,26 @@ const styles = StyleSheet.create({
     color: Colors.ink,
     textAlign: 'center',
   },
-  quickBadge: {
-    marginTop: Spacing.xs,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.pill,
-    backgroundColor: Colors.secondary,
-  },
   quickBadgeText: {
     color: Colors.white,
     fontWeight: '700',
     fontSize: 12,
+    lineHeight: 14,
   },
   section: {
     gap: Spacing.sm,
     padding: Spacing.lg,
     borderRadius: Radius['2xl'],
     backgroundColor: 'rgba(255,255,255,0.1)',
+    position: 'relative',
+  },
+  sectionRaised: {
+    zIndex: 60,
   },
   sectionTitle: {
     fontSize: 20,
     fontWeight: '800',
     color: Colors.white,
-  },
-  sectionSubtitle: {
-    color: 'rgba(255,255,255,0.85)',
   },
   formCard: {
     backgroundColor: Colors.card,
@@ -1186,11 +1193,6 @@ const styles = StyleSheet.create({
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.gray200,
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md,
-    height: 48,
     gap: Spacing.sm,
   },
   input: {
@@ -1198,53 +1200,50 @@ const styles = StyleSheet.create({
     color: Colors.ink,
     fontSize: 15,
   },
-  inputHelperRow: {
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    gap: Spacing.xs,
-  },
-  locationChip: {
+  inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
+    borderWidth: 1,
+    borderColor: '#E5E7F2',
+    borderRadius: Radius.lg,
     paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.pill,
-    backgroundColor: Colors.gray100,
+    height: 56,
+    gap: Spacing.sm,
   },
-  locationChipDisabled: {
-    opacity: 0.6,
+  inputWrapperSoft: {
+    backgroundColor: '#F9F9FF',
+    borderColor: '#E5E7F2',
   },
-  locationChipText: {
-    color: Colors.gray700,
-    fontWeight: '600',
-    fontSize: 12,
-  },
-  locationDetectedText: {
-    marginLeft: Spacing.md,
-    fontSize: 12,
-    color: Colors.gray600,
-    fontWeight: '500',
-  },
-  suggestionList: {
-    marginTop: Spacing.sm,
+  swapButton: {
+    width: 48,
+    height: 56,
     borderRadius: Radius.lg,
     borderWidth: 1,
-    borderColor: Colors.gray200,
-    backgroundColor: Colors.gray50,
-    ...Shadows.card,
+    borderColor: '#E5E7F2',
+    backgroundColor: '#F9F9FF',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingVertical: Spacing.xs,
+  },
+  suggestionList: {
+    marginTop: Spacing.xs,
+    borderRadius: Radius.lg,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    overflow: 'hidden',
   },
   suggestionScroll: {
     maxHeight: 280,
   },
+  dropdownContainer: {
+    position: 'relative',
+  },
   suggestionItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.gray100,
   },
   suggestionText: {
     color: Colors.ink,
@@ -1254,11 +1253,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: Colors.gray200,
+    borderColor: '#E5E7F2',
     borderRadius: Radius.lg,
     paddingHorizontal: Spacing.md,
-    height: 48,
+    height: 56,
     gap: Spacing.sm,
+    backgroundColor: '#F9F9FF',
   },
   selectorText: {
     flex: 1,
@@ -1271,10 +1271,13 @@ const styles = StyleSheet.create({
   dropdownListInline: {
     marginTop: Spacing.xs,
     borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Colors.gray200,
-    backgroundColor: Colors.card,
+    backgroundColor: '#FFFFFF',
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
   dropdownItemInline: {
     paddingHorizontal: Spacing.md,
@@ -1621,16 +1624,23 @@ const styles = StyleSheet.create({
   },
   inlineSponsor: {
     borderRadius: Radius['2xl'],
-    padding: Spacing.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,
-    marginTop: Spacing.sm,
+    position: 'relative',
+    zIndex: 10,
+  },
+  inlineSponsorStandalone: {
+    marginHorizontal: 0,
+    marginTop: 0,
+    marginBottom: Spacing.md,
   },
   inlineSponsorLogo: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: 'rgba(255,255,255,0.15)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1662,6 +1672,11 @@ const styles = StyleSheet.create({
   inlineSponsorTagline: {
     color: Colors.white,
     opacity: 0.9,
+  },
+  searchHint: {
+    color: Colors.gray500,
+    fontSize: 12,
+    marginTop: Spacing.md,
   },
 });
 
@@ -1940,5 +1955,29 @@ const driverStyles = StyleSheet.create({
   addRideText: {
     color: '#FFFFFF',
     fontWeight: '700',
+  },
+  dropdownListHome: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderRadius: Radius.lg,
+    marginTop: Spacing.xs,
+    paddingVertical: Spacing.xs,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    zIndex: 100,
+    elevation: 10,
+  },
+  dropdownItemHome: {
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  dropdownItemHomeText: {
+    color: Colors.ink,
+    fontWeight: '600',
   },
 });

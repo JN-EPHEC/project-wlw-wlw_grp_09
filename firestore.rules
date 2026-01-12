@@ -15,6 +15,28 @@ service cloud.firestore {
       allow read, update, delete: if isDocumentOwner(resource.data.email);
     }
 
+    function isRideOwner() {
+      return isSignedIn() && (
+        (resource != null && resource.data.ownerEmail != null && resource.data.ownerEmail == request.auth.token.email) ||
+        (request.resource != null && request.resource.data.ownerEmail == request.auth.token.email)
+      );
+    }
+
+    match /rides/{rideId} {
+      allow create: if isRideOwner();
+      allow read: if isSignedIn();
+      allow update, delete: if isRideOwner();
+    }
+
+    match /wallets/{walletId} {
+      allow create: if isDocumentOwner(request.resource.data.email);
+      allow read, update, delete: if isDocumentOwner(resource.data.email);
+    }
+
+    match /trajets/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

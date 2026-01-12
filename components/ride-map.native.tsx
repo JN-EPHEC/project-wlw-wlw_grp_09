@@ -10,12 +10,19 @@ import { CAMPUS_LOCATIONS, findCampusLocation } from '@/constants/campuses';
 type Props = {
   rides: Ride[];
   selectedCampus?: string | null;
+  previewDepart?: string | null;
+  previewDestination?: string | null;
 };
 
 type RideMapData = {
   ride: Ride;
   origin: { latitude: number; longitude: number };
   destination: { latitude: number; longitude: number };
+};
+
+type Coordinates = {
+  latitude: number;
+  longitude: number;
 };
 
 const DEFAULT_REGION: Region = {
@@ -25,13 +32,14 @@ const DEFAULT_REGION: Region = {
   longitudeDelta: 0.45,
 };
 
-const computeRegion = (data: RideMapData[]): Region => {
-  if (data.length === 0) {
+const computeRegion = (data: RideMapData[], extraPoints: Coordinates[] = []): Region => {
+  const pairs = data.flatMap((item) => [item.origin, item.destination]).concat(extraPoints);
+  if (pairs.length === 0) {
     return DEFAULT_REGION;
   }
 
-  const lats = data.flatMap((item) => [item.origin.latitude, item.destination.latitude]);
-  const lngs = data.flatMap((item) => [item.origin.longitude, item.destination.longitude]);
+  const lats = pairs.map((point) => point.latitude);
+  const lngs = pairs.map((point) => point.longitude);
 
   const minLat = Math.min(...lats);
   const maxLat = Math.max(...lats);
@@ -70,7 +78,17 @@ const FALLBACK_ROUTES = [
   },
 ];
 
-const RideMapComponent = ({ rides, selectedCampus }: Props) => {
+const FALLBACK_POINTS: Coordinates[] = FALLBACK_ROUTES.flatMap((route) => [
+  route.start,
+  route.end,
+]);
+
+const RideMapComponent = ({
+  rides,
+  selectedCampus,
+  previewDepart,
+  previewDestination,
+}: Props) => {
   const mapped = useMemo<RideMapData[]>(() => {
     return rides.map((ride) => ({
       ride,
@@ -79,9 +97,27 @@ const RideMapComponent = ({ rides, selectedCampus }: Props) => {
     }));
   }, [rides]);
 
-  const showFallback = rides.length === 0;
+  const previewOrigin = useMemo(() => {
+    if (!previewDepart || !previewDepart.trim()) return null;
+    return getCoordinates(previewDepart);
+  }, [previewDepart]);
+  const previewDestinationCoords = useMemo(() => {
+    if (!previewDestination || !previewDestination.trim()) return null;
+    return getCoordinates(previewDestination);
+  }, [previewDestination]);
 
-  const [region, setRegion] = useState<Region>(() => computeRegion(mapped));
+  const showFallback = rides.length === 0 && !previewOrigin && !previewDestinationCoords;
+
+  const extraPoints = useMemo(() => {
+    const list: Coordinates[] = [];
+    if (previewOrigin) list.push(previewOrigin);
+    if (previewDestinationCoords) list.push(previewDestinationCoords);
+    return list;
+  }, [previewOrigin, previewDestinationCoords]);
+
+  const [region, setRegion] = useState<Region>(() =>
+    computeRegion(mapped, showFallback ? FALLBACK_POINTS : extraPoints)
+  );
 
   const regionEquals = (a: Region, b: Region) =>
     Math.abs(a.latitude - b.latitude) < 0.0001 &&
@@ -90,14 +126,14 @@ const RideMapComponent = ({ rides, selectedCampus }: Props) => {
     Math.abs(a.longitudeDelta - b.longitudeDelta) < 0.0001;
 
   useEffect(() => {
-    const next = computeRegion(mapped);
+    const next = computeRegion(mapped, showFallback ? FALLBACK_POINTS : extraPoints);
     setRegion((prev) => {
       if (!prev || !regionEquals(prev, next)) {
         return next;
       }
       return prev;
     });
-  }, [mapped]);
+  }, [extraPoints, mapped, showFallback]);
 
   useEffect(() => {
     if (!selectedCampus) return;
@@ -128,7 +164,7 @@ const RideMapComponent = ({ rides, selectedCampus }: Props) => {
           showsScale={false}
           toolbarEnabled={false}
         >
-          {mapped.map(({ ride, origin, destination }) => (
+        {mapped.map(({ ride, origin, destination }) => (
             <Fragment key={ride.id}>
               <Polyline
                 coordinates={[
@@ -178,6 +214,36 @@ const RideMapComponent = ({ rides, selectedCampus }: Props) => {
                 </Fragment>
             ))
           : null}
+        {previewOrigin ? (
+          <Marker
+            coordinate={previewOrigin}
+            title="Départ saisi"
+            description={previewDepart ?? ''}
+            pinColor={Colors.secondary}
+          />
+        ) : null}
+        {previewDestinationCoords ? (
+          <Marker
+            coordinate={previewDestinationCoords}
+            title="Destination saisie"
+            description={previewDestination ?? ''}
+            pinColor={Colors.primary}
+          />
+        ) : null}
+        {previewOrigin && previewDestinationCoords ? (
+          <Polyline
+            coordinates={[
+              { latitude: previewOrigin.latitude, longitude: previewOrigin.longitude },
+              {
+                latitude: previewDestinationCoords.latitude,
+                longitude: previewDestinationCoords.longitude,
+              },
+            ]}
+            strokeColor={Colors.secondary}
+            strokeWidth={3}
+            lineDashPattern={[4, 6]}
+          />
+        ) : null}
         {CAMPUS_LOCATIONS.map((campus) => {
           const isSelected =
             selectedCampus?.trim().toLowerCase() === campus.name.trim().toLowerCase();

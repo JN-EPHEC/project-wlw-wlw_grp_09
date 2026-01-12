@@ -15,7 +15,7 @@ export type Payment = {
   method: PaymentMethod;
 };
 
-export type PaymentMethod = 'card' | 'wallet' | 'pass';
+export type PaymentMethod = 'card' | 'wallet' | 'pass' | 'apple-pay';
 export type PaymentOptions = {
   method?: PaymentMethod;
 };

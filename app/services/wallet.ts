@@ -1,6 +1,10 @@
 // app/services/wallet.ts
 
 import { pushNotification } from './notifications';
+import {
+  persistWalletSnapshot,
+  type WalletSnapshotRecord,
+} from '@/src/firestoreWallets';
 
 type TransactionType = 'credit' | 'debit' | 'info';
 
@@ -75,6 +79,7 @@ const wallets: Record<string, Wallet> = {};
 const listeners: Record<string, Listener[]> = {};
 
 const randomId = () => Math.random().toString(36).slice(2, 9);
+const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
 const DEFAULT_WITHDRAWAL_DELAY_DAYS = 30;
 const MIN_WITHDRAWAL_DELAY_DAYS = 7;
@@ -120,7 +125,7 @@ const clone = (wallet: Wallet): WalletSnapshot => ({
 });
 
 const ensureWallet = (email: string) => {
-  const key = email.toLowerCase();
+  const key = normalizeEmail(email);
   if (!wallets[key]) {
     wallets[key] = {
       balance: 0,
@@ -144,10 +149,19 @@ const ensureWallet = (email: string) => {
   return key;
 };
 
+const persistWalletAsync = (email: string) => {
+  const key = ensureWallet(email);
+  const snapshot = clone(wallets[key]) as WalletSnapshotRecord;
+  void persistWalletSnapshot(email, snapshot).catch((error) => {
+    console.warn('[wallet][firestore] sync failed', error);
+  });
+};
+
 const notify = (email: string) => {
   const key = ensureWallet(email);
   const snapshot = clone(wallets[key]);
   listeners[key].forEach((listener) => listener(snapshot));
+  persistWalletAsync(email);
 };
 
 const pushTransaction = (wallet: Wallet, transaction: WalletTransaction) => {

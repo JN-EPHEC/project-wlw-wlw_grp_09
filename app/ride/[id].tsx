@@ -18,7 +18,6 @@ import {
 } from 'react-native';
 
 import { AppBackground } from '@/components/ui/app-background';
-import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { RatingStars } from '@/components/ui/rating-stars';
@@ -31,13 +30,11 @@ import {
   subscribeRides,
   type Ride,
 } from '@/app/services/rides';
-import type { PaymentMethod } from '@/app/services/payments';
+import { createThread } from '@/app/services/messages';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
-import {
-  subscribeDriverReviews,
-  subscribeRideReviews,
-  type Review,
-} from '@/app/services/reviews';
+import { logReservationRequest, removeReservationRequest } from '@/app/services/reservation-requests';
+import { usePassengerRequests } from '@/hooks/use-passenger-requests';
+import { subscribeDriverReviews } from '@/app/services/reviews';
 import { evaluateRewards } from '@/app/services/rewards';
 import { Colors, Gradients, Shadows, Spacing, Radius, Typography } from '@/app/ui/theme';
 import { getAvatarColor, getAvatarUrl } from '@/app/ui/avatar';
@@ -50,26 +47,18 @@ import { createReport } from '@/app/services/reports';
 import type { ReportReason } from '@/app/services/reports';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { CAMPUSRIDE_COMMISSION_RATE } from '@/app/constants/fuel';
+import { maskPlate } from '@/app/utils/plate';
+import { MeetingMap } from '@/components/meeting-map';
+import type { PaymentMethod } from '@/app/services/payments';
 
 const C = Colors;
 const S = Shadows;
+const PRICE_RATE_PER_KM = 0.4;
 
 const ensureStudentEmail = (email: string) => {
   if (!email) return '';
   const local = email.split('@')[0]?.toLowerCase() ?? email;
   return `${local}@students.ephec.be`;
-};
-
-const formatBelgianPlate = (value: string | undefined | null) => {
-  if (!value) return '2-AAA-001';
-  const clean = value
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '');
-  if (clean.length < 7) return clean || '2-AAA-001';
-  const segmentA = clean.slice(0, 1);
-  const segmentB = clean.slice(1, 4);
-  const segmentC = clean.slice(4, 7);
-  return `${segmentA}-${segmentB}-${segmentC}`;
 };
 
 export default function RideDetailScreen() {
@@ -86,7 +75,6 @@ export default function RideDetailScreen() {
   const [wallet, setWallet] = useState<WalletSnapshot | null>(() =>
     session.email ? getWallet(session.email) : null
   );
-  const [myReview, setMyReview] = useState<Review | null>(null);
   const [driverFeedback, setDriverFeedback] = useState<PassengerFeedback[]>([]);
   const [feedbackTarget, setFeedbackTarget] = useState<{ email: string; alias: string } | null>(null);
   const [feedbackRating, setFeedbackRating] = useState(4.5);
@@ -101,6 +89,10 @@ export default function RideDetailScreen() {
   const [reportComment, setReportComment] = useState('');
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const reportCommentRef = useRef<TextInput | null>(null);
+  const { pending: pendingRequests, accepted: activeAcceptedRequests } = usePassengerRequests(
+    session.email
+  );
+  const [paymentModalVisible, setPaymentModalVisible] = useState(false);
 
   const platformFeePerPassenger = useMemo(() => {
     if (!ride) return 0;
@@ -111,6 +103,21 @@ export default function RideDetailScreen() {
     if (!ride) return 0;
     return +(ride.price - platformFeePerPassenger).toFixed(2);
   }, [ride, platformFeePerPassenger]);
+  const acceptedReservation = useMemo(() => {
+    if (!ride) return null;
+    return activeAcceptedRequests.find((request) => request.rideId === ride.id) ?? null;
+  }, [activeAcceptedRequests, ride]);
+  const pendingReservation = useMemo(() => {
+    if (!ride) return null;
+    return pendingRequests.find((request) => request.rideId === ride.id) ?? null;
+  }, [pendingRequests, ride]);
+  const reservationAccepted = !!acceptedReservation;
+  const reservationPending = !!pendingReservation && !reservationAccepted;
+  const hasRequestedReservation = reservationPending || reservationAccepted;
+  const openDriverProfile = () => {
+    if (!ride) return;
+    router.push({ pathname: '/driver-profile/[email]', params: { email: ride.ownerEmail } });
+  };
 
   useEffect(() => {
     const unsubscribe = subscribeRides((rides) => {
@@ -165,18 +172,6 @@ export default function RideDetailScreen() {
   }, [session.email]);
 
 
-  useEffect(() => {
-    if (!ride?.id || !session.email) {
-      setMyReview(null);
-      return;
-    }
-    const unsubscribe = subscribeRideReviews(ride.id, (items) => {
-      const mine = items.find((review) => review.passengerEmail === session.email) ?? null;
-      setMyReview(mine);
-    });
-    return unsubscribe;
-  }, [ride?.id, session.email]);
-
   const amOwner = useMemo(
     () => !!session.email && ride?.ownerEmail === session.email,
     [ride, session.email]
@@ -189,6 +184,7 @@ export default function RideDetailScreen() {
 
   const seatsLeft = ride ? ride.seats - ride.passengers.length : 0;
   const departed = ride ? hasRideDeparted(ride) : false;
+  const canViewSensitiveDetails = amOwner || amPassenger || reservationAccepted;
   const reward = useMemo(
     () =>
       evaluateRewards({
@@ -198,18 +194,8 @@ export default function RideDetailScreen() {
       }),
     [driverCompleted, driverRating.average, driverRating.count]
   );
-  const hasReview = !!myReview;
-  const reviewDisabled = !departed || !amPassenger;
-  const reviewLabel = hasReview ? 'Mettre à jour mon avis' : 'Laisser un avis';
-  const reviewHint = !amPassenger
-    ? 'Seuls les passagers peuvent noter ce trajet.'
-    : !departed
-    ? 'Disponible une fois le trajet terminé.'
-    : '';
   const walletBalance = wallet?.balance ?? 0;
-  const rideCredits = wallet?.rideCredits ?? 0;
   const hasWalletBalance = ride ? walletBalance >= ride.price : false;
-  const hasRideCredits = rideCredits > 0;
 
   const departureDayLabel = useMemo(() => {
     if (!ride) return '';
@@ -256,6 +242,11 @@ export default function RideDetailScreen() {
     );
   }
 
+  const distanceLabel = useMemo(() => {
+    if (!ride) return '';
+    const km = ride.price / PRICE_RATE_PER_KM;
+    return `${km.toFixed(1)} km × €${PRICE_RATE_PER_KM.toFixed(2)}/km`;
+  }, [ride]);
   const driverAvatarBg = getAvatarColor(ride.ownerEmail);
   const driverAvatarUri = getAvatarUrl(ride.ownerEmail, 128);
   const driverMetaLabel =
@@ -267,35 +258,98 @@ export default function RideDetailScreen() {
       ? `${driverCompleted} trajet${driverCompleted > 1 ? 's' : ''} terminés`
       : 'Premier trajet à venir';
 
+  const requestReservation = () => {
+    if (!ride) return;
+    if (!session.email) {
+      router.push('/sign-up');
+      return;
+    }
+    if (departed) {
+      Alert.alert('Trajet terminé', 'Ce trajet est déjà parti.');
+      return;
+    }
+    if (amOwner) {
+      Alert.alert('Tu es conducteur', 'Tu peux gérer ce trajet depuis Explore.');
+      return;
+    }
+    if (amPassenger) {
+      Alert.alert('Déjà confirmé', 'Tu fais déjà partie de ce trajet.');
+      return;
+    }
+    if (hasRequestedReservation) {
+      Alert.alert('Demande déjà envoyée', 'Rends-toi dans Mes demandes pour suivre le statut.');
+      return;
+    }
+    if (seatsLeft <= 0) {
+      Alert.alert('Complet', 'Toutes les places ont été réservées.');
+      return;
+    }
+    const entry = logReservationRequest(session.email, ride, null);
+    if (!entry) return;
+    router.push({
+      pathname: '/ride/request-confirmation',
+      params: {
+        driver: ride.driver,
+        depart: ride.depart,
+        destination: ride.destination,
+      },
+    });
+  };
+
   const confirmReservation = (method: PaymentMethod) => {
-    if (!session.email || !ride) return router.push('/sign-up');
+    if (!ride) return;
+    if (!session.email) {
+      router.push('/sign-up');
+      return;
+    }
+    if (!reservationAccepted && !amPassenger) {
+      Alert.alert('En attente', 'Le conducteur doit accepter ta demande avant le paiement.');
+      return;
+    }
     const result = reserveSeat(ride.id, session.email, { paymentMethod: method });
     if (!result.ok) {
       switch (result.reason) {
         case 'FULL':
-          return Alert.alert('Complet', 'Toutes les places ont été réservées.');
+          Alert.alert('Complet', 'Toutes les places ont été réservées.');
+          return;
         case 'ALREADY_RESERVED':
-          return Alert.alert('Déjà réservé', 'Tu as déjà une place sur ce trajet.');
+          Alert.alert('Déjà réservé', 'Tu as déjà une place confirmée pour ce trajet.');
+          return;
         case 'DEPARTED':
-          return Alert.alert('Trop tard', 'Ce trajet est déjà parti.');
+          Alert.alert('Trop tard', 'Ce trajet est déjà parti.');
+          return;
         case 'PAYMENT_WALLET':
-          return Alert.alert('Solde insuffisant', 'Recharge ton wallet ou sélectionne un autre moyen de paiement.');
+          Alert.alert('Solde insuffisant', 'Ton wallet ne couvre pas le montant.');
+          return;
         case 'PAYMENT_PASS':
-          return Alert.alert('Crédits épuisés', 'Achète un nouveau pack CampusRide pour continuer à en profiter.');
+          Alert.alert('Crédits épuisés', 'Aucun crédit CampusRide disponible.');
+          return;
         default:
-          return Alert.alert('Paiement impossible', 'Le paiement n’a pas abouti. Réessaie dans un instant.');
+          Alert.alert('Paiement impossible', 'Nous n’avons pas pu finaliser le paiement.');
+          return;
       }
     }
-    const methodLabel =
-      method === 'wallet'
-        ? 'via ton wallet'
-        : method === 'pass'
-        ? 'avec un crédit CampusRide'
-        : 'par carte bancaire';
-    Alert.alert(
-      'Réservation confirmée ✅',
-      `Paiement ${methodLabel} accepté. Tu recevras un rappel avant le départ.`
-    );
+    removeReservationRequest(session.email, ride.id);
+    router.push({
+      pathname: '/ride/request-confirmation',
+      params: {
+        driver: ride.driver,
+        depart: ride.depart,
+        destination: ride.destination,
+        paid: '1',
+      },
+    });
+  };
+
+  const closePaymentModal = () => setPaymentModalVisible(false);
+
+  const confirmWalletPayment = () => {
+    if (!hasWalletBalance) {
+      Alert.alert('Solde insuffisant', 'Recharge ton wallet pour payer ce trajet.');
+      return;
+    }
+    closePaymentModal();
+    confirmReservation('wallet');
   };
 
   const onReserve = () => {
@@ -309,65 +363,65 @@ export default function RideDetailScreen() {
     if (amOwner) {
       return Alert.alert('Tu es conducteur', 'Tu peux gérer ce trajet depuis Explore.');
     }
-    if (seatsLeft <= 0) {
-      return Alert.alert('Complet', 'Toutes les places ont été réservées.');
-    }
     if (amPassenger) {
       return Alert.alert('Déjà réservé', 'Tu as déjà une place sur ce trajet.');
     }
-
-    const options: { label: string; method: PaymentMethod }[] = [
-      { label: 'Carte bancaire sécurisée', method: 'card' },
-    ];
-    if (hasWalletBalance) {
-      options.unshift({
-        label: `Wallet (€${walletBalance.toFixed(2)})`,
-        method: 'wallet',
-      });
+    if (seatsLeft <= 0) {
+      return Alert.alert('Complet', 'Toutes les places ont été réservées.');
     }
-    if (hasRideCredits) {
-      options.unshift({
-        label: `Pack CampusRide (${rideCredits} crédit${rideCredits > 1 ? 's' : ''})`,
-        method: 'pass',
-      });
+    if (!reservationAccepted) {
+      return Alert.alert('Demande en attente', 'Le conducteur doit accepter ta demande avant le paiement.');
     }
+    setPaymentModalVisible(true);
+  };
 
-    if (options.length === 1) {
-      confirmReservation(options[0].method);
-      return;
+  const contactDriver = () => {
+    if (!ride) return;
+    if (!session.email) {
+      return router.push('/sign-up');
     }
-
-    Alert.alert(
-      'Choisir le paiement',
-      'Sélectionne ton mode de paiement pour valider ce trajet.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        ...options.map((option) => ({
-          text: option.label,
-          onPress: () => confirmReservation(option.method),
-        })),
-      ]
-    );
+    if (ride.ownerEmail.toLowerCase() === session.email.toLowerCase()) {
+      return router.push('/(tabs)/messages');
+    }
+    const routeLabel = `${ride.depart} → ${ride.destination}`;
+    const thread = createThread({
+      rideId: ride.id,
+      routeLabel,
+      participants: [
+        { email: ride.ownerEmail, name: ride.driver, role: 'driver' },
+        {
+          email: session.email,
+          name: session.name ?? session.email,
+          role: session.isDriver && !session.isPassenger ? 'driver' : 'passenger',
+        },
+      ],
+    });
+    router.push({
+      pathname: '/(tabs)/messages',
+      params: { thread: thread.id, origin: `/ride/${ride.id}` },
+    });
   };
 
   const onCancel = () => {
-    if (!session.email) return;
-    Alert.alert(
-      'Annuler ma réservation',
-      'Confirme l’annulation ? Le conducteur sera notifié immédiatement.',
-      [
-        { text: 'Garder ma place', style: 'cancel' },
-        {
-          text: 'Annuler la réservation',
-          style: 'destructive',
-          onPress: () => {
-            if (!session.email) return;
-            cancelReservation(ride.id, session.email);
-            Alert.alert('Réservation annulée', 'Ta place a été libérée.');
-          },
-        },
-      ]
-    );
+    if (!session.email) {
+      router.push('/sign-up');
+      return;
+    }
+    const result = cancelReservation(ride.id, session.email);
+    if (!result) {
+      Alert.alert('Annulation impossible', 'Ta réservation est introuvable.');
+      return;
+    }
+    removeReservationRequest(session.email, ride.id);
+    router.push({
+      pathname: '/ride/request-confirmation',
+      params: {
+        driver: ride.driver,
+        depart: ride.depart,
+        destination: ride.destination,
+        cancelled: '1',
+      },
+    });
   };
 
   const onDelete = () => {
@@ -382,10 +436,6 @@ export default function RideDetailScreen() {
         },
       },
     ]);
-  };
-
-  const onOpenReview = () => {
-    router.push({ pathname: '/review/[rideId]', params: { rideId: ride.id } });
   };
 
   const formatAlias = (value: string) => {
@@ -524,8 +574,8 @@ const statHighlights = [
       key: 'price',
       icon: 'creditcard.fill' as const,
       label: 'Tarif',
-      value: `${ride.price.toFixed(2)} €`,
-      hint: 'par passager',
+      value: canViewSensitiveDetails ? `${ride.price.toFixed(2)} €` : '—',
+      hint: canViewSensitiveDetails ? 'par passager' : 'Visible après acceptation',
     },
     {
       key: 'seats',
@@ -558,60 +608,90 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
             contentContainerStyle={[styles.scroll, isCompact && styles.scrollCompact]}
             showsVerticalScrollIndicator={false}
           >
-            <GradientBackground
-              colors={Gradients.background}
-              style={[styles.heroCard, isCompact && styles.heroCardCompact]}
-            >
-              <View style={[styles.heroHeader, isCompact && styles.heroHeaderCompact]}>
-                <Pressable style={styles.heroBackButton} onPress={() => router.back()}>
-                  <IconSymbol name="chevron.left" size={18} color={Colors.white} />
-                  <Text style={styles.heroBackText}>Retour</Text>
-                </Pressable>
-                <View style={styles.heroHeaderText}>
-                  <Text style={styles.heroTitle}>Trajet vers {ride.destination}</Text>
-                  <Text style={styles.heroSubtitle}>
-                    {ride.depart} • {ride.time} • {departureDayLabel}
-                  </Text>
+            <View style={styles.heroHeader}>
+              <Pressable style={styles.heroBackButton} onPress={() => router.back()}>
+                <IconSymbol name="chevron.left" size={20} color={Colors.white} />
+              </Pressable>
+              <Text style={styles.pageTitle}>Informations du trajet</Text>
+            </View>
+            {reservationAccepted ? (
+              <View style={[styles.acceptBanner, isCompact && styles.acceptBannerCompact]}>
+                <View style={styles.acceptIconCircle}>
+                  <Image
+                    source={require('@/assets/images/verifier.png')}
+                    style={styles.acceptIconImage}
+                    resizeMode="contain"
+                  />
                 </View>
-                <View style={[styles.heroStatusPill, isCompact && styles.heroStatusPillCompact]}>
-                  <IconSymbol name={heroStatusIcon} size={16} color={Colors.white} />
-                  <Text style={styles.heroStatusText}>{heroStatusLabel}</Text>
+                <View style={styles.acceptTextGroup}>
+                  <Text style={styles.acceptTitle}>Demande acceptée !</Text>
+                  <Text style={styles.acceptSubtitle}>{ride.driver} a validé ta réservation.</Text>
                 </View>
               </View>
+            ) : null}
+            {reservationPending ? (
+              <View style={[styles.noticeBanner, isCompact && styles.noticeBannerCompact]}>
+                <View style={styles.noticeIcon}>
+                  <IconSymbol name="clock.badge.exclamationmark" size={28} color={Colors.white} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.noticeTitle}>Demande envoyée</Text>
+                  <Text style={styles.noticeSubtitle}>
+                    {ride.driver} doit accepter ta demande avant de révéler le point de rencontre.
+                  </Text>
+                </View>
+              </View>
+            ) : null}
+            <View style={[styles.heroCard, isCompact && styles.heroCardCompact]}>
+              <Text style={styles.heroCardTitle}>Le conducteur</Text>
               <View style={[styles.heroDriverRow, isCompact && styles.heroDriverRowCompact]}>
                 <View style={[styles.heroAvatar, { backgroundColor: driverAvatarBg }]}>
                   <Image source={{ uri: driverAvatarUri }} style={styles.heroAvatarImage} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.heroDriverName}>{ride.driver}</Text>
-                  <Text style={styles.heroDriverEmail}>{driverStudentEmail}</Text>
+                  <Text
+                    style={styles.heroDriverEmail}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.8}
+                    ellipsizeMode="clip"
+                  >
+                    {driverStudentEmail}
+                  </Text>
                   <View style={styles.heroRatingRow}>
                     <RatingStars
                       value={driverRating.count > 0 ? driverRating.average : 0}
                       size={18}
                       editable={false}
                     />
-                    <Text style={styles.heroRatingText}>{driverMetaLabel}</Text>
+                    <Pressable
+                      onPress={() =>
+                        router.push({ pathname: '/reviews/[email]', params: { email: ride.ownerEmail } })
+                      }
+                      accessibilityRole="button"
+                      style={styles.heroRatingMetaButton}
+                    >
+                      <Text style={styles.heroRatingText}>{driverMetaLabel}</Text>
+                    </Pressable>
                   </View>
-                  <Text style={styles.heroDriverMeta}>{driverCompletedLabel}</Text>
-                  <Pressable
-                    style={styles.heroReviewsLink}
-                    onPress={() =>
-                      router.push({ pathname: '/reviews/[email]', params: { email: ride.ownerEmail } })
-                    }
-                  >
-                    <Text style={styles.heroReviewsText}>Voir les avis du conducteur</Text>
-                  </Pressable>
+                  <View style={styles.heroActionRow}>
+                    <Pressable
+                      style={[styles.heroProfileButton, styles.heroProfileButtonPrimary]}
+                      onPress={openDriverProfile}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.heroProfileButtonText}>Voir le profil</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.heroProfileButton, styles.heroProfileButtonPrimary]}
+                      onPress={contactDriver}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.heroProfileButtonText}>Contacter</Text>
+                    </Pressable>
+                  </View>
                 </View>
-                {!amOwner ? (
-                  <Pressable
-                    style={[styles.heroReportButton, isCompact && styles.heroReportButtonCompact]}
-                    onPress={reportDriver}
-                  >
-                    <IconSymbol name="exclamationmark.triangle" size={16} color={Colors.white} />
-                    <Text style={styles.heroReportText}>Signaler</Text>
-                  </Pressable>
-                ) : null}
               </View>
               {reward.badgeLabel ? (
                 <View style={styles.heroReward}>
@@ -621,7 +701,7 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                   ) : null}
                 </View>
               ) : null}
-            </GradientBackground>
+            </View>
 
             <View style={[styles.statsRow, isCompact && styles.statsRowCompact]}>
               {statHighlights.map((stat) => (
@@ -644,7 +724,7 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
               <View style={styles.infoRow}>
                 <IconSymbol name="doc.text" size={18} color={Colors.gray500} />
                 <Text style={styles.infoLabel}>Plaque</Text>
-                <Text style={styles.infoValue}>{formatBelgianPlate(ride.plate)}</Text>
+                <Text style={styles.infoValue}>{maskPlate(ride.plate)}</Text>
               </View>
               <View style={styles.infoRow}>
                 <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
@@ -659,24 +739,73 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
             </View>
 
             <View style={[styles.sectionCard, isCompact && styles.sectionCardCompact]}>
+              <Text style={styles.sectionTitle}>Point de rencontre</Text>
+              {canViewSensitiveDetails ? (
+                <>
+                  <View style={styles.meetingRow}>
+                    <View style={styles.meetingIcon}>
+                      <IconSymbol name="mappin.and.ellipse" size={22} color={Colors.white} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.meetingLabel}>Lieu de rendez-vous</Text>
+                      <Text style={styles.meetingAddress}>{ride.depart}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.meetingRow}>
+                    <View style={styles.meetingIcon}>
+                      <IconSymbol name="clock" size={20} color={Colors.white} />
+                    </View>
+                    <Text style={styles.meetingTimeText}>
+                      Heure de départ : <Text style={styles.meetingTimeValue}>{ride.time}</Text>
+                    </Text>
+                  </View>
+                  <MeetingMap address={ride.depart} style={styles.meetingMap} />
+                </>
+              ) : (
+                <View style={styles.restrictedNotice}>
+                  <Text style={styles.restrictedNoticeTitle}>Visible après acceptation</Text>
+                  <Text style={styles.restrictedNoticeText}>
+                    Le conducteur partagera le lieu exact dès que ta demande sera acceptée.
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            <View style={[styles.sectionCard, isCompact && styles.sectionCardCompact]}>
               <Text style={styles.sectionTitle}>Transparence paiement</Text>
-              <View style={styles.priceBreakRow}>
-                <Text style={styles.priceBreakLabel}>Montant par passager</Text>
-                <Text style={styles.priceBreakValue}>€{ride.price.toFixed(2)}</Text>
-              </View>
-              <View style={styles.priceBreakRow}>
-                <Text style={styles.priceBreakLabel}>CampusRide (20 %)</Text>
-                <Text style={[styles.priceBreakValue, styles.priceBreakFee]}>
-                  €{platformFeePerPassenger.toFixed(2)}
-                </Text>
-              </View>
-              <View style={styles.priceBreakRow}>
-                <Text style={styles.priceBreakLabel}>Versé au conducteur</Text>
-                <Text style={styles.priceBreakValue}>€{driverNetPerPassenger.toFixed(2)}</Text>
-              </View>
-              <Text style={styles.priceBreakHint}>
-                Ce détail apparaît avant toute confirmation afin que tu saches exactement ce qui est prélevé.
-              </Text>
+              {canViewSensitiveDetails ? (
+                <>
+                  <View style={styles.priceBreakRow}>
+                    <Text style={styles.priceBreakLabel}>Montant par passager</Text>
+                    <View>
+                      <Text style={styles.priceBreakValue}>€{ride.price.toFixed(2)}</Text>
+                      <Text style={styles.priceBreakHint}>
+                        Calculé à partir de {distanceLabel}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.priceBreakRow}>
+                    <Text style={styles.priceBreakLabel}>CampusRide (20 %)</Text>
+                    <Text style={[styles.priceBreakValue, styles.priceBreakFee]}>
+                      €{platformFeePerPassenger.toFixed(2)}
+                    </Text>
+                  </View>
+                  <View style={styles.priceBreakRow}>
+                    <Text style={styles.priceBreakLabel}>Versé au conducteur</Text>
+                    <Text style={styles.priceBreakValue}>€{driverNetPerPassenger.toFixed(2)}</Text>
+                  </View>
+                  <Text style={styles.priceBreakHint}>
+                    Ce détail apparaît avant toute confirmation afin que tu saches exactement ce qui est prélevé.
+                  </Text>
+                </>
+              ) : (
+                <View style={styles.restrictedNotice}>
+                  <Text style={styles.restrictedNoticeTitle}>Montant masqué</Text>
+                  <Text style={styles.restrictedNoticeText}>
+                    Tu verras le tarif exact dès que ta demande aura été acceptée par le conducteur.
+                  </Text>
+                </View>
+              )}
             </View>
 
             <View style={styles.actionStack}>
@@ -713,9 +842,9 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                   onPress={onCancel}
                   accessibilityRole="button"
                 />
-              ) : (
+              ) : reservationAccepted ? (
                 <GradientButton
-                  title={seatsLeft > 0 ? 'Réserver ma place' : 'Complet'}
+                  title={seatsLeft > 0 ? 'Procéder au paiement' : 'Complet'}
                   size="sm"
                   variant="cta"
                   fullWidth
@@ -724,122 +853,78 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                   disabled={seatsLeft <= 0}
                   accessibilityRole="button"
                 />
-              )}
-            </View>
-
-            {session.email && (amPassenger || hasReview) ? (
-              <View style={[styles.sectionCard, isCompact && styles.sectionCardCompact]}>
-                <Text style={styles.sectionTitle}>Ton avis</Text>
-                <Text style={styles.reviewSubtitle}>
-                  {hasReview
-                    ? 'Merci ! Tu peux mettre à jour ton commentaire à tout moment.'
-                    : 'Partage ton expérience avec les prochains passagers.'}
-                </Text>
-                <Pressable
-                  style={[styles.reviewButton, reviewDisabled && styles.reviewButtonDisabled]}
-                  onPress={onOpenReview}
-                  disabled={reviewDisabled}
-                >
-                  <Text
-                    style={[
-                      styles.reviewButtonText,
-                      reviewDisabled && styles.reviewButtonTextDisabled,
-                    ]}
-                  >
-                    {reviewDisabled ? reviewHint : reviewLabel}
-                  </Text>
-                </Pressable>
-                {!reviewDisabled && !hasReview ? (
-                  <Text style={styles.reviewHint}>
-                    Prends une minute pour laisser un commentaire détaillé.
-                  </Text>
-                ) : reviewHint && reviewDisabled ? (
-                  <Text style={styles.reviewHint}>{reviewHint}</Text>
-                ) : null}
-                {hasReview && myReview ? (
-                  <View style={styles.reviewPreview}>
-                    <View style={styles.reviewPreviewHeader}>
-                      <RatingStars value={myReview.rating} size={16} editable={false} />
-                      <Text style={styles.reviewPreviewMeta}>
-                        {myReview.rating.toFixed(1)}/5 •{' '}
-                        {new Date(myReview.updatedAt).toLocaleDateString('fr-BE', {
-                          day: 'numeric',
-                          month: 'short',
-                        })}
-                      </Text>
-                    </View>
-                    {myReview.comment ? (
-                      <Text style={styles.reviewPreviewText}>{myReview.comment}</Text>
-                    ) : null}
-                  </View>
-                ) : null}
-              </View>
-            ) : null}
-
-            <View style={[styles.sectionCard, isCompact && styles.sectionCardCompact]}>
-              <Text style={styles.sectionTitle}>Passagers confirmés</Text>
-              {ride.passengers.length === 0 ? (
-                <Text style={styles.passengerEmpty}>
-                  Personne n’a encore réservé. Sois le premier !
-                </Text>
+              ) : reservationPending ? (
+                <>
+                  <Text style={styles.statusText}>Demande en attente de confirmation.</Text>
+                  <GradientButton
+                    title="Voir mes demandes"
+                    size="sm"
+                    variant="lavender"
+                    fullWidth
+                    style={[styles.actionButton, isCompact && styles.actionButtonFull]}
+                    onPress={() => router.push('/requests')}
+                    accessibilityRole="button"
+                  />
+                </>
               ) : (
-                ride.passengers.map((mail) => {
-                  const alias = formatAlias(mail);
-                  const feedback = passengerFeedbackMap.get(mail);
-                  const canEvaluate = amOwner && departed;
-                  return (
-                    <View key={mail} style={[styles.passengerRow, isCompact && styles.passengerRowCompact]}>
-                      <View style={{ flex: 1, gap: 4 }}>
-                        <Text style={styles.passengerName}>{alias}</Text>
-                        <Text style={styles.passengerMeta}>
-                          {feedback
-                            ? `${feedback.rating.toFixed(1)}/5 • ${new Date(
-                                feedback.updatedAt
-                              ).toLocaleDateString('fr-BE', {
-                                day: 'numeric',
-                                month: 'short',
-                              })}`
-                            : 'Pas encore évalué'}
-                        </Text>
-                        {feedback?.comment ? (
-                          <Text style={styles.passengerComment}>{feedback.comment}</Text>
-                        ) : null}
-                      </View>
-                      {amOwner ? (
-                        <View
-                          style={[
-                            styles.passengerActions,
-                            isCompact && styles.passengerActionsCompact,
-                          ]}
-                        >
-                          <Pressable
-                            style={[
-                              styles.passengerActionPrimary,
-                              !canEvaluate && styles.passengerActionDisabled,
-                            ]}
-                            onPress={() => openPassengerFeedbackModal(mail)}
-                            disabled={!canEvaluate}
-                          >
-                            <Text style={styles.passengerActionPrimaryText}>
-                              {feedback ? 'Modifier' : 'Noter'}
-                            </Text>
-                          </Pressable>
-                          <Pressable
-                            style={styles.passengerActionSecondary}
-                            onPress={() => reportPassenger(mail)}
-                          >
-                            <Text style={styles.passengerActionSecondaryText}>Signaler</Text>
-                          </Pressable>
-                        </View>
-                      ) : null}
-                    </View>
-                  );
-                })
+                <GradientButton
+                  title={seatsLeft > 0 ? 'Demander ce trajet' : 'Complet'}
+                  size="sm"
+                  variant="cta"
+                  fullWidth
+                  style={[styles.actionButton, isCompact && styles.actionButtonFull]}
+                  onPress={requestReservation}
+                  disabled={seatsLeft <= 0}
+                  accessibilityRole="button"
+                />
               )}
             </View>
+
           </ScrollView>
         </SafeAreaView>
       </AppBackground>
+      {paymentModalVisible ? (
+        <View style={styles.inlineModalPortal}>
+          <View style={[styles.modalBackdrop, isCompact && styles.modalBackdropCompact]}>
+            <View style={[styles.modalCard, styles.paymentModalCard, isCompact && styles.modalCardCompact]}>
+              <Text style={styles.modalTitle}>Choisis un moyen de paiement</Text>
+              <Text style={styles.modalSubtitle}>
+                Sélectionne une option pour confirmer ta réservation.
+              </Text>
+              <View style={styles.walletSummary}>
+                <Text style={styles.walletSummaryLabel}>Solde du wallet</Text>
+                <Text style={styles.walletSummaryValue}>€{walletBalance.toFixed(2)}</Text>
+              </View>
+              <View style={styles.walletDetails}>
+                <View>
+                  <Text style={styles.walletDetailsLabel}>Montant à payer</Text>
+                  <Text style={styles.walletDetailsValue}>€{ride.price.toFixed(2)}</Text>
+                </View>
+                {!hasWalletBalance ? (
+                  <Text style={styles.walletWarning}>Solde insuffisant pour ce trajet.</Text>
+                ) : null}
+              </View>
+              <GradientButton
+                title="Payer avec mon wallet"
+                size="sm"
+                variant="cta"
+                fullWidth
+                style={styles.walletPayButton}
+                onPress={confirmWalletPayment}
+                disabled={!hasWalletBalance}
+              />
+              <TouchableOpacity
+                activeOpacity={0.85}
+                style={styles.walletCancelButton}
+                onPress={closePaymentModal}
+                accessibilityRole="button"
+              >
+                <Text style={styles.walletCancelButtonText}>Annuler</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      ) : null}
       <Modal
         visible={!!feedbackTarget}
         animationType="slide"
@@ -986,6 +1071,8 @@ const styles = StyleSheet.create({
     borderRadius: Radius['2xl'],
     padding: Spacing.xl,
     gap: Spacing.lg,
+    backgroundColor: C.card,
+    ...(S.card as object),
   },
   heroCardCompact: {
     padding: Spacing.lg,
@@ -994,58 +1081,35 @@ const styles = StyleSheet.create({
   heroHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: Spacing.md,
-  },
-  heroHeaderCompact: {
-    flexDirection: 'column',
-    alignItems: 'flex-start',
+    gap: Spacing.sm,
   },
   heroBackButton: {
-    flexDirection: 'row',
+    width: 44,
+    height: 44,
+    borderRadius: Radius.lg,
+    backgroundColor: 'rgba(0,0,0,0.15)',
     alignItems: 'center',
-    gap: Spacing.xs,
-    paddingVertical: Spacing.xs,
+    justifyContent: 'center',
   },
-  heroBackText: {
-    color: '#fff',
-    fontWeight: '700',
-  },
-  heroHeaderText: {
-    flex: 1,
-    gap: 2,
-    minWidth: 0,
-  },
-  heroTitle: {
+  pageTitle: {
     color: '#fff',
     fontSize: 22,
     fontWeight: '800',
     letterSpacing: Typography.heading.letterSpacing,
     flexShrink: 1,
   },
-  heroSubtitle: {
-    color: 'rgba(255,255,255,0.85)',
-  },
-  heroStatusPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.pill,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-  },
-  heroStatusPillCompact: {
-    alignSelf: 'flex-start',
-  },
-  heroStatusText: {
-    color: '#fff',
-    fontWeight: '700',
+  heroCardTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: C.ink,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
   },
   heroDriverRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: Spacing.md,
+    flexWrap: 'wrap',
   },
   heroDriverRowCompact: {
     flexDirection: 'column',
@@ -1064,34 +1128,64 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   heroDriverName: {
-    color: '#fff',
+    color: C.ink,
     fontSize: 18,
     fontWeight: '700',
   },
   heroDriverEmail: {
-    color: 'rgba(255,255,255,0.85)',
+    color: C.gray600,
     fontSize: 13,
+    flexShrink: 1,
+    width: '100%',
   },
   heroRatingRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: Spacing.sm,
     marginTop: 4,
   },
+  heroRatingMetaButton: {
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+    borderRadius: Radius.pill,
+  },
   heroRatingText: {
-    color: 'rgba(255,255,255,0.85)',
+    color: Colors.accent,
     fontSize: 12,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
+  heroActionRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+    flexWrap: 'wrap',
+  },
+  heroProfileButton: {
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+  },
+  heroProfileButtonPrimary: {
+    borderColor: Colors.primary,
+  },
+  heroProfileButtonText: {
+    color: Colors.primary,
+    fontWeight: '700',
   },
   heroDriverMeta: {
-    color: 'rgba(255,255,255,0.85)',
+    color: C.gray600,
     fontSize: 12,
     marginTop: 2,
   },
-  heroReviewsLink: {
-    marginTop: Spacing.xs,
+  heroReviewsLinkInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   heroReviewsText: {
-    color: '#fff',
+    color: Colors.primary,
     fontWeight: '700',
     fontSize: 12,
     textDecorationLine: 'underline',
@@ -1106,6 +1200,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.4)',
     backgroundColor: 'rgba(255,255,255,0.15)',
+    alignSelf: 'flex-start',
   },
   heroReportButtonCompact: {
     alignSelf: 'stretch',
@@ -1116,18 +1211,88 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 12,
   },
-  heroReward: {
+  acceptBanner: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    backgroundColor: '#12B76A',
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.xl,
+    gap: Spacing.lg,
+    marginBottom: Spacing.lg,
+  },
+  acceptBannerCompact: {
+    gap: Spacing.md,
+  },
+  noticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: Radius['2xl'],
     backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  noticeBannerCompact: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+  },
+  noticeIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: Radius['2xl'],
+    backgroundColor: 'rgba(0,0,0,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noticeTitle: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 16,
+  },
+  noticeSubtitle: {
+    color: 'rgba(255,255,255,0.9)',
+  },
+  acceptIconCircle: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: 'rgba(255,255,255,0.28)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  acceptIconImage: {
+    width: '80%',
+    height: '80%',
+  },
+  acceptTextGroup: {
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  acceptTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: Colors.white,
+    textAlign: 'center',
+  },
+  acceptSubtitle: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 18,
+    textAlign: 'center',
+  },
+  heroReward: {
+    backgroundColor: C.primaryLight,
     borderRadius: Radius.lg,
     padding: Spacing.md,
     gap: 2,
   },
   heroRewardText: {
-    color: '#fff',
+    color: C.primaryDark,
     fontWeight: '700',
   },
   heroRewardHint: {
-    color: 'rgba(255,255,255,0.85)',
+    color: C.primaryDark,
     fontSize: 12,
   },
   statsRow: {
@@ -1175,6 +1340,22 @@ const styles = StyleSheet.create({
   sectionCardCompact: {
     padding: Spacing.md,
   },
+  restrictedNotice: {
+    borderRadius: Radius.xl,
+    backgroundColor: C.gray50,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: C.gray200,
+    gap: Spacing.xs,
+  },
+  restrictedNoticeTitle: {
+    fontWeight: '700',
+    color: C.gray700,
+  },
+  restrictedNoticeText: {
+    color: C.gray600,
+    fontSize: 13,
+  },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '800',
@@ -1195,6 +1376,40 @@ const styles = StyleSheet.create({
   infoValue: {
     color: C.ink,
     fontWeight: '700',
+  },
+  meetingRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    alignItems: 'center',
+  },
+  meetingIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFB380',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  meetingLabel: {
+    fontWeight: '800',
+    color: C.ink,
+  },
+  meetingAddress: {
+    color: C.gray700,
+    fontSize: 14,
+  },
+  meetingTimeText: {
+    color: C.gray700,
+    fontWeight: '600',
+  },
+  meetingTimeValue: {
+    color: C.ink,
+    fontWeight: '800',
+  },
+  meetingMap: {
+    height: 180,
+    borderRadius: Radius.xl,
+    marginTop: Spacing.md,
   },
   priceBreakRow: {
     flexDirection: 'row',
@@ -1235,50 +1450,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
     alignSelf: 'center',
     minWidth: 160,
-  },
-  reviewSubtitle: {
-    color: C.gray600,
-    fontSize: 13,
-  },
-  reviewButton: {
-    backgroundColor: C.primary,
-    borderRadius: Radius.pill,
-    paddingVertical: Spacing.md,
-    alignItems: 'center',
-  },
-  reviewButtonDisabled: {
-    backgroundColor: C.gray200,
-  },
-  reviewButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  reviewButtonTextDisabled: {
-    color: C.gray600,
-  },
-  reviewHint: {
-    color: C.gray500,
-    fontSize: 12,
-  },
-  reviewPreview: {
-    backgroundColor: C.gray150,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    gap: Spacing.xs,
-  },
-  reviewPreviewHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  reviewPreviewMeta: {
-    color: C.gray600,
-    fontSize: 12,
-  },
-  reviewPreviewText: {
-    color: C.gray700,
-    fontSize: 13,
-    lineHeight: 18,
   },
   passengerEmpty: {
     color: C.gray600,
@@ -1344,6 +1515,11 @@ const styles = StyleSheet.create({
   passengerActionDisabled: {
     opacity: 0.4,
   },
+  inlineModalPortal: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 999,
+    justifyContent: 'center',
+  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(16, 32, 48, 0.55)',
@@ -1369,6 +1545,63 @@ const styles = StyleSheet.create({
   },
   modalCardCompact: {
     padding: Spacing.lg,
+  },
+  paymentModalCard: {
+    gap: Spacing.md,
+  },
+  walletSummary: {
+    borderRadius: Radius['2xl'],
+    backgroundColor: 'rgba(255,127,80,0.12)',
+    padding: Spacing.lg,
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  walletSummaryLabel: {
+    color: C.gray600,
+    fontSize: 13,
+  },
+  walletSummaryValue: {
+    color: C.ink,
+    fontSize: 26,
+    fontWeight: '800',
+  },
+  walletDetails: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: C.gray150,
+    padding: Spacing.md,
+    gap: Spacing.xs,
+    backgroundColor: '#fff',
+  },
+  walletDetailsLabel: {
+    color: C.gray600,
+    fontSize: 13,
+  },
+  walletDetailsValue: {
+    color: C.ink,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  walletWarning: {
+    marginTop: Spacing.xs,
+    color: C.danger,
+    fontWeight: '600',
+  },
+  walletPayButton: {
+    marginTop: Spacing.sm,
+  },
+  walletCancelButton: {
+    width: '100%',
+    borderRadius: Radius.pill,
+    paddingVertical: Spacing.md,
+    backgroundColor: 'rgba(13, 34, 64, 0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  walletCancelButtonText: {
+    color: C.gray700,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   modalTitle: {
     color: C.ink,

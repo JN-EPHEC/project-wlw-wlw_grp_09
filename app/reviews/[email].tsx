@@ -285,14 +285,6 @@ export default function DriverReviewsScreen() {
               <IconSymbol name="chevron.left" size={18} color={Colors.white} />
               <Text style={styles.backText}>Retour</Text>
             </Pressable>
-            {session.email ? (
-              <Pressable style={styles.addButton} onPress={openNewReviewModal}>
-                <IconSymbol name="plus" size={18} color="#fff" />
-                <Text style={styles.addButtonText}>Avis</Text>
-              </Pressable>
-            ) : (
-              <View style={{ width: 80 }} />
-            )}
           </View>
           <View style={styles.heroContent}>
             <Image source={{ uri: driverAvatar }} style={styles.heroAvatar} />
@@ -311,7 +303,10 @@ export default function DriverReviewsScreen() {
           </View>
           <View style={styles.heroActions}>
             <Pressable
-              style={[styles.heroPrimaryButton, !session.email && styles.heroPrimaryButtonDisabled]}
+              style={[
+                styles.heroPrimaryButton,
+                !session.email && styles.heroPrimaryButtonDisabled,
+              ]}
               onPress={session.email ? openNewReviewModal : () => router.push('/sign-up')}
             >
               <Text style={styles.heroPrimaryText}>
@@ -633,7 +628,7 @@ const styles = StyleSheet.create({
   },
   heroPrimaryButton: {
     flex: 1,
-    backgroundColor: Colors.white,
+    backgroundColor: Colors.primary,
     borderRadius: Radius.pill,
     paddingVertical: Spacing.sm,
     alignItems: 'center',
@@ -642,7 +637,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   heroPrimaryText: {
-    color: Colors.primary,
+    color: Colors.white,
     fontWeight: '700',
   },
   heroSecondaryButton: {

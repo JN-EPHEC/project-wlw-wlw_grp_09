@@ -2,7 +2,10 @@ const KNOWN_PLACES: Record<string, { lat: number; lng: number }> = {
   etterbeek: { lat: 50.8281, lng: 4.3869 },
   ixelles: { lat: 50.8277, lng: 4.3661 },
   'ephec louvain-la-neuve': { lat: 50.6686, lng: 4.6145 },
+  'ephec delta': { lat: 50.8205, lng: 4.4025 },
+  'ephec woluwe': { lat: 50.8456, lng: 4.4585 },
   'ephec woluwé': { lat: 50.8471, lng: 4.4513 },
+  'ephec schaerbeek': { lat: 50.8726, lng: 4.3816 },
   'uclouvain': { lat: 50.6678, lng: 4.6144 },
   'ulb - solbosch': { lat: 50.8122, lng: 4.3817 },
   wavre: { lat: 50.7176, lng: 4.6019 },
@@ -16,7 +19,13 @@ const BOUNDS = {
   maxLng: 4.75,
 };
 
-const normaliseKey = (value: string) => value.trim().toLowerCase();
+const normaliseKey = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9\s]/g, ' ')
+    .trim()
+    .toLowerCase();
 
 const fallbackCoordinate = (value: string) => {
   const key = normaliseKey(value);
@@ -35,10 +44,14 @@ const fallbackCoordinate = (value: string) => {
 const resolve = (value: string) => {
   const key = normaliseKey(value);
   const direct = KNOWN_PLACES[key];
-  if (direct) return direct;
-  const matchKey = Object.keys(KNOWN_PLACES).find((known) => key.includes(known));
-  if (matchKey) return KNOWN_PLACES[matchKey as keyof typeof KNOWN_PLACES];
-  return fallbackCoordinate(value);
+  const matchKey = direct
+    ? null
+    : Object.keys(KNOWN_PLACES).find(
+        (known) => key.includes(known) || known.includes(key)
+      );
+  const base =
+    direct ?? (matchKey ? KNOWN_PLACES[matchKey as keyof typeof KNOWN_PLACES] : fallbackCoordinate(value));
+  return { lat: base.lat, lng: base.lng, latitude: base.lat, longitude: base.lng };
 };
 
 const toUnit = (lat: number, lng: number) => {

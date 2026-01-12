@@ -30,9 +30,7 @@ import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useAuthSession } from '@/hooks/use-auth-session';
-import * as Auth from '@/app/services/auth';
-import { deleteAccountData } from '@/app/services/account';
+import { pushNotification } from '@/app/services/notifications';
 
 const C = Colors;
 
@@ -306,6 +304,12 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
     setProcessing(true);
     try {
       creditWallet(session.email, amount, { description: 'Recharge wallet' });
+      pushNotification({
+        to: session.email,
+        title: 'Recharge réussie',
+        body: `${formatCurrency(amount)} ajoutés à ton wallet.`,
+        metadata: { action: 'wallet-topup', amount },
+      });
       Alert.alert('Recharge confirmée', `${formatCurrency(amount)} ajoutés à ton wallet.`);
       setAddAmount('0');
       setView('home');

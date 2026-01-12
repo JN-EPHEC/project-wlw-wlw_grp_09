@@ -18,7 +18,6 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 
 import * as Auth from "./services/auth"; // <= on utilise ton service Firebase
 import { useAuthSession } from "@/hooks/use-auth-session";
-import { savePassenger } from "@/src/firestoreUsers";
 
 import { AppBackground } from "@/components/ui/app-background";
 import { GradientBackground } from "@/components/ui/gradient-background";
@@ -164,14 +163,6 @@ export default function SignUp() {
         studentCardUrl: "",
         wantsDriver: false,
         wantsPassenger: true,
-      });
-
-      await savePassenger({
-        firstName: autoNames.firstName,
-        lastName: autoNames.lastName,
-        email,
-        phone: "",
-        campus: "",
       });
 
       // 2. Envoi de l’e-mail de vérification Firebase
@@ -425,7 +416,7 @@ export default function SignUp() {
               <GradientButton
                 title="S’inscrire"
                 onPress={onSubmit}
-                disabled={!isValid || loading}
+                disabled={loading}
                 style={styles.cta}
                 textStyle={styles.ctaText}
                 accessibilityRole="button"

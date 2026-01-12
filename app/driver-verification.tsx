@@ -100,15 +100,25 @@ export default function DriverVerificationScreen() {
     () => vehiclePlate.replace(/[^A-Za-z0-9]/g, '').toUpperCase(),
     [vehiclePlate]
   );
-  const onVehiclePlateChange = (value: string) => {
+  const belgianPlatePattern = useMemo(() => /^[0-9][A-Z]{3}[0-9]{3}$/, []);
+
+  const formatVehiclePlate = (value: string) => {
     const cleaned = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-    let formatted = cleaned;
-    if (cleaned.length > 4) {
-      formatted = `${cleaned.slice(0, 1)}-${cleaned.slice(1, 4)}-${cleaned.slice(4, 7)}`;
-    } else if (cleaned.length > 1) {
-      formatted = `${cleaned.slice(0, 1)}-${cleaned.slice(1)}`;
+    const trimmed = cleaned.slice(0, 7);
+    if (!trimmed) {
+      return '';
     }
-    setVehiclePlate(formatted);
+    if (trimmed.length === 1) {
+      return trimmed;
+    }
+    if (trimmed.length <= 4) {
+      return `${trimmed.slice(0, 1)}-${trimmed.slice(1)}`;
+    }
+    return `${trimmed.slice(0, 1)}-${trimmed.slice(1, 4)}-${trimmed.slice(4)}`;
+  };
+
+  const onVehiclePlateChange = (value: string) => {
+    setVehiclePlate(formatVehiclePlate(value));
   };
 
   const onLicenseExpiryChange = (value: string) => {
@@ -264,6 +274,7 @@ export default function DriverVerificationScreen() {
       await saveDriverDocuments(session.email, {
         vehiclePlate: formatted,
         ...(expiryLabel ? { licenseExpiryLabel: expiryLabel } : {}),
+        ...(expiryISO ? { licenseExpiryISO: expiryISO } : {}),
       });
       setVehiclePlate(formatted);
       if (expiryLabel) {
@@ -349,7 +360,7 @@ export default function DriverVerificationScreen() {
 
   useEffect(() => {
     if (security?.vehicle.plate) {
-      setVehiclePlate(security.vehicle.plate);
+      setVehiclePlate(formatVehiclePlate(security.vehicle.plate));
     }
   }, [security?.vehicle.plate]);
 

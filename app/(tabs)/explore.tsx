@@ -28,7 +28,7 @@ import { useAuthSession } from '@/hooks/use-auth-session';
 import { useDriverSecurity } from '@/hooks/use-driver-security';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import type { AuthSnapshot } from '@/app/services/auth';
-import { buildPriceBand, clampPriceToBand, roughKmFromText } from '../services/pricing';
+import { buildPriceBand, estimatePrice, roughKmFromText, type PriceQuote } from '../services/pricing';
 import {
   addRide,
   getRide,
@@ -45,11 +45,14 @@ import {
   remindVehicleMismatch,
 } from '../services/security';
 import { getCoordinates, getDistanceKm, getDurationMinutes } from '../services/distance';
+import { loadGoogleMapsApi } from '../services/google-maps-loader';
 import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
 import { getAvatarUrl } from '../ui/avatar';
 import { BRUSSELS_COMMUNES } from '@/constants/communes';
-import { CAMPUS_LOCATIONS } from '@/constants/campuses';
+import { CAMPUS_LOCATIONS, findCampusLocation } from '@/constants/campuses';
 import { getCurrentCommune, LocationPermissionError } from '../services/location';
+import { maskPlate } from '@/app/utils/plate';
+import { getWallet, subscribeWallet, type WalletSnapshot } from '../services/wallet';
 
 const DefaultColors = {
   primary: '#E63946',
@@ -121,18 +124,11 @@ const defaultRouteVisual = {
 };
 const HERO_MAP_IMAGE = require('../../assets/images/publish-map.png');
 
-const RESULT_FILTERS = [
-  { id: 'recommended', label: 'Pertinence' },
-  { id: 'earliest', label: 'Plus tôt' },
-  { id: 'price', label: 'Prix ↑' },
-  { id: 'distance', label: 'Distance' },
-] as const;
+const PRICE_MIN = 2;
+const PRICE_MAX = 12;
+const PRICE_STEP = 0.5;
 
-const LEGEND_ICONS = ['building.columns', 'graduationcap.fill', 'book.fill'];
-
-type ResultFilterId = (typeof RESULT_FILTERS)[number]['id'];
-type ResultsFilterAnchor = 'search';
-type ExploreParams = { edit?: string; depart?: string; campus?: string };
+type ExploreParams = { edit?: string; depart?: string; campus?: string; requireSchedule?: string };
 
 const derivePseudoRating = (ride: Ride) => {
   const seed = ride.driver.length + ride.destination.length;
@@ -140,30 +136,32 @@ const derivePseudoRating = (ride: Ride) => {
   return Math.min(4.9, Math.round(base * 10) / 10);
 };
 
-type PriceFilterId = 'all' | 'lt4' | '4to6' | 'gt6';
-const PRICE_FILTERS: { id: PriceFilterId; label: string; predicate: (price: number) => boolean }[] = [
-  { id: 'all', label: 'Tous', predicate: () => true },
-  { id: 'lt4', label: '<4€', predicate: (price) => price < 4 },
-  { id: '4to6', label: '4€-6€', predicate: (price) => price >= 4 && price <= 6 },
-  { id: 'gt6', label: '>6€', predicate: (price) => price > 6 },
-];
+type PassengerExplorePersistedState = {
+  fromCampus: string;
+  toCampus: string;
+  selectedDateISO: string;
+  travelTime: string;
+  hasConfirmedDate: boolean;
+  hasConfirmedTime: boolean;
+  priceLimit: number;
+  draftPriceLimit: number;
+  moreFiltersVisible: boolean;
+  searchResults: Ride[];
+  searchPerformed: boolean;
+  validationTouched: boolean;
+  searchInstance: number;
+  scrollOffset: number;
+};
 
-type DurationFilterId = 'all' | 'short' | 'medium' | 'long';
-const DURATION_FILTERS: { id: DurationFilterId; label: string; predicate: (minutes: number) => boolean }[] = [
-  { id: 'all', label: 'Toutes', predicate: () => true },
-  { id: 'short', label: '<30 min', predicate: (minutes) => minutes > 0 && minutes < 30 },
-  { id: 'medium', label: '30-45 min', predicate: (minutes) => minutes >= 30 && minutes <= 45 },
-  { id: 'long', label: '>45 min', predicate: (minutes) => minutes > 45 },
-];
+let passengerExplorePersistedState: PassengerExplorePersistedState | null = null;
 
-type HourFilterId = 'all' | 'morning' | 'afternoon' | 'evening' | 'night';
-const HOUR_FILTERS: { id: HourFilterId; label: string; range: [number, number] | null }[] = [
-  { id: 'all', label: 'Toutes', range: null },
-  { id: 'morning', label: 'Matin', range: [5 * 60, 11 * 60] },
-  { id: 'afternoon', label: 'Après-midi', range: [11 * 60, 16 * 60] },
-  { id: 'evening', label: 'Soir', range: [16 * 60, 21 * 60] },
-  { id: 'night', label: 'Nuit', range: [21 * 60, 24 * 60] },
-];
+const cloneRideList = (list: Ride[]): Ride[] =>
+  list.map((ride) => ({
+    ...ride,
+    passengers: [...ride.passengers],
+    canceledPassengers: [...ride.canceledPassengers],
+  }));
+
 
 const normalizeText = (value: string) =>
   value
@@ -176,13 +174,34 @@ const timeToMinutes = (value: string) => {
   return hours * 60 + minutes;
 };
 
+const PLATE_FORMAT_PATTERN = /^\d-[A-Z]{3}-\d{3}$/;
+
+const formatPlateInputValue = (raw: string) => {
+  const clean = raw.replace(/[^0-9A-Za-z]/g, '').toUpperCase().slice(0, 7);
+  if (!clean) return '';
+  if (clean.length === 1) return clean;
+  if (clean.length <= 4) {
+    return `${clean.slice(0, 1)}-${clean.slice(1)}`;
+  }
+  return `${clean.slice(0, 1)}-${clean.slice(1, 4)}-${clean.slice(4)}`;
+};
+
 const isTime = (s: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
+type QuickSuggestion = {
+  label: string;
+  depart: string;
+  destination: string;
+  time: string;
+  seats: string;
+};
+
 export default function ExplorePublish() {
   const session = useAuthSession();
   const params = useLocalSearchParams<ExploreParams>();
   const passengerOnly = session.isPassenger && !session.isDriver;
   const initialDepart = typeof params.depart === 'string' ? params.depart : undefined;
   const initialDestination = typeof params.campus === 'string' ? params.campus : undefined;
+  const requireScheduleConfirmation = params.requireSchedule === '1';
   const editId = typeof params.edit === 'string' ? params.edit : undefined;
   if (passengerOnly) {
     return (
@@ -190,6 +209,7 @@ export default function ExplorePublish() {
         session={session}
         initialDepart={initialDepart}
         initialDestination={initialDestination}
+        requireSchedule={requireScheduleConfirmation}
       />
     );
   }
@@ -213,31 +233,42 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
   const [rideDate, setRideDate] = useState('');
   const [notes, setNotes] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [customPrice, setCustomPrice] = useState<number>(0);
-  const [priceTouched, setPriceTouched] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [rewardSnapshot, setRewardSnapshot] = useState<RewardSnapshot | null>(null);
   const [pricingMode, setPricingMode] = useState<'single' | 'double'>('single');
-  const [customPriceInput, setCustomPriceInput] = useState('0.00');
-  const [publishedRide, setPublishedRide] = useState<{
-    depart: string;
-    destination: string;
-    time: string;
-    rideDate: string;
-  } | null>(null);
+
+  const myRides = useMemo(
+    () =>
+      rides
+        .filter((ride) => ride.ownerEmail === session.email)
+        .sort((a, b) => a.departureAt - b.departureAt),
+    [rides, session.email]
+  );
+  const completedRides = useMemo(
+    () => myRides.filter((ride) => hasRideDeparted(ride)).length,
+    [myRides]
+  );
+  const ratingSummary = useMemo(() => {
+    if (reviews.length === 0) return { average: 0, count: 0 };
+    const total = reviews.reduce((acc, review) => acc + review.rating, 0);
+    return { average: Math.round((total / reviews.length) * 10) / 10, count: reviews.length };
+  }, [reviews]);
+
+  const unreadNotifications = useMemo(
+    () => notifications.filter((notif) => !notif.read),
+    [notifications]
+  );
 
   const populateForm = useCallback((draft: Ride) => {
     setEditingId(draft.id);
     setDriver(draft.driver);
-    setPlate(draft.plate);
+    setPlate(formatPlateInputValue(draft.plate ?? ''));
     setDepart(draft.depart);
     setDestination(draft.destination);
     setTime(draft.time);
     setSeats(String(draft.seats));
-    setCustomPrice(draft.price);
-    setCustomPriceInput(draft.price.toFixed(2));
-    const band = buildPriceBand(roughKmFromText(draft.depart, draft.destination), draft.seats);
-    setPricingMode(draft.price >= band.double * 0.9 ? 'double' : 'single');
-    setPriceTouched(true);
-    setPublishedRide(null);
+    setPricingMode(draft.pricingMode ?? 'single');
   }, []);
 
   useEffect(() => {
@@ -254,62 +285,141 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
     const storedNormalized = normalizePlate(storedPlate);
     const currentNormalized = normalizePlate(plate);
     if (storedNormalized && storedNormalized !== currentNormalized) {
-      setPlate(storedPlate);
+      setPlate(formatPlateInputValue(storedPlate));
     }
   }, [driverSecurity, driverSecurity?.vehicle.plate, driverSecurity?.vehicle.updatedAt, editingId, plate]);
 
-  const km = useMemo(() => roughKmFromText(depart, destination), [depart, destination]);
+  const computeAccurateDistance = useCallback((from: string, to: string) => {
+    const distance = getDistanceKm(from, to);
+    if (!Number.isFinite(distance) || distance <= 0) {
+      return roughKmFromText(from, to);
+    }
+    return distance;
+  }, []);
+  const km = useMemo(() => computeAccurateDistance(depart, destination), [depart, destination, computeAccurateDistance]);
   const seatsCount = useMemo(() => {
     const parsed = Number(seats);
     if (!Number.isFinite(parsed)) return 1;
     return Math.max(1, Math.min(4, Math.round(parsed)));
   }, [seats]);
   const priceBand = useMemo(() => buildPriceBand(km, seatsCount), [km, seatsCount]);
+  const commissionPerPassenger = priceQuote.commissionPerPassenger;
+  const customPrice = useMemo(
+    () => (pricingMode === 'double' ? priceBand.double : priceBand.suggested),
+    [priceBand.double, priceBand.suggested, pricingMode]
+  );
+  const baseFare = priceBand.suggested || 1;
+  const priceMultiplier = customPrice / baseFare;
+  const commissionPerPassengerEffective = +(
+    commissionPerPassenger * (Number.isFinite(priceMultiplier) ? priceMultiplier : 1)
+  ).toFixed(2);
+  const commissionTotal = +(commissionPerPassengerEffective * seatsCount).toFixed(2);
+  const driverNetPerPassengerRecommended = priceQuote.driverTakeHomePerPassenger;
+  const driverNetPerPassenger = +(customPrice - commissionPerPassengerEffective).toFixed(2);
+  const driverNetTotal = +(driverNetPerPassenger * seatsCount).toFixed(2);
+  const driverNetTotalRecommended = +(driverNetPerPassengerRecommended * seatsCount).toFixed(2);
+  const rideTotal = +(customPrice * seatsCount).toFixed(2);
 
-  useEffect(() => {
-    setCustomPrice((prev) => clampPriceToBand(prev || priceBand.suggested, km, seatsCount));
-  }, [priceBand.min, priceBand.max, priceBand.suggested, km, seatsCount]);
-
-  useEffect(() => {
-    if (editingId || priceTouched) return;
-    setCustomPrice(priceBand.suggested);
-    setPricingMode('single');
-  }, [priceBand.suggested, editingId, priceTouched]);
-
-  useEffect(() => {
-    setCustomPriceInput(customPrice.toFixed(2));
-  }, [customPrice]);
-
-  const onPriceInputChange = (value: string) => {
-    setCustomPriceInput(value);
-    const sanitized = value.replace(',', '.');
-    const parsed = parseFloat(sanitized);
-    if (!Number.isFinite(parsed)) {
-      return;
-    }
-    setPriceTouched(true);
-    setCustomPrice(clampPriceToBand(parsed, km, seatsCount));
+  const applyPricingMode = (mode: 'single' | 'double') => {
+    setPricingMode(mode);
   };
+  const firstName = useMemo(() => {
+    const raw = session.name ? session.name.split(' ')[0] : 'conducteur';
+    if (!raw) return 'Conducteur';
+    return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+  }, [session.name]);
+
+  const quickSuggestions = useMemo<QuickSuggestion[]>(
+    () => [
+      {
+        label: 'Navette Etterbeek → LLN (07:45)',
+        depart: 'Etterbeek',
+        destination: 'EPHEC Louvain-la-Neuve',
+        time: '07:45',
+        seats: '3',
+      },
+      {
+        label: 'Retour Woluwé (17:30)',
+        depart: 'EPHEC Woluwé',
+        destination: 'Etterbeek',
+        time: '17:30',
+        seats: '2',
+      },
+      {
+        label: 'Trajet express vers EPHEC Louvain-la-Neuve (08:10)',
+        depart: 'Ixelles',
+        destination: 'EPHEC Louvain-la-Neuve',
+        time: '08:10',
+        seats: '3',
+      },
+    ],
+    []
+  );
+
+  const impactPoints = useMemo(
+    () => [
+      { icon: 'fuelpump.fill', text: 'Optimise tes frais de carburant à chaque trajet.' },
+      { icon: 'bell.fill', text: 'Tes passagers reçoivent une notification instantanée.' },
+      { icon: 'wallet.pass.fill', text: 'Ton wallet est crédité automatiquement après le trajet.' },
+    ],
+    []
+  );
+
+  const applySuggestion = useCallback((suggestion: QuickSuggestion) => {
+    setDepart(suggestion.depart);
+    setDestination(suggestion.destination);
+    setTime(suggestion.time);
+    setSeats(suggestion.seats);
+  }, []);
+
+  const pricingBreakdown = useMemo(
+    () => [
+      {
+        label: 'Tarif distance',
+        description: `${priceQuote.distanceKm.toFixed(1)} km × €${priceQuote.assumptions.ratePerKm.toFixed(2)}/km`,
+        amount: customPrice,
+      },
+      {
+        label: 'Commission CampusRide',
+        description: `${(priceQuote.assumptions.commissionRate * 100).toFixed(0)}% pour l’assurance, support et plateforme`,
+        amount: commissionPerPassengerEffective,
+      },
+      {
+        label: 'Net conducteur',
+        description: `€${driverNetPerPassenger.toFixed(2)} / passager`,
+        amount: driverNetPerPassenger,
+      },
+    ],
+    [priceQuote, customPrice, commissionPerPassengerEffective, driverNetPerPassenger]
+  );
+
+  const handleRemoveRide = useCallback((ride: Ride) => {
+    try {
+      removeRide(ride.id);
+      Alert.alert('Trajet supprimé ✅', 'Ton annonce a été retirée.');
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Suppression impossible pour ce trajet.';
+      Alert.alert('Action impossible', message);
+    }
+  }, []);
 
   const errors = useMemo(() => {
     const e: Record<string, string> = {};
     if (!driver.trim()) e.driver = 'Nom conducteur requis';
     if (!plate.trim()) {
       e.plate = 'Plaque requise';
-    } else if (!/^[A-Za-z0-9-]{4,10}$/.test(plate.trim())) {
-      e.plate = 'Plaque invalide (ex. ABC-123)';
+    } else if (!PLATE_FORMAT_PATTERN.test(plate.trim())) {
+      e.plate = 'Plaque invalide (ex. 2-EEE-222)';
     }
     if (!depart.trim()) e.depart = 'Lieu de départ requis';
     if (!destination.trim()) e.destination = 'Destination requise';
     if (!isTime(time)) e.time = 'Heure au format HH:MM';
     const s = Number(seats);
     if (!Number.isInteger(s) || s < 1 || s > 3) e.seats = 'Places : 1 à 3';
-    if (customPrice < priceBand.min || customPrice > priceBand.max) {
-      e.price = `Prix entre €${priceBand.min.toFixed(2)} et €${priceBand.max.toFixed(2)} par passager`;
-    }
     if (!session.email) e.session = 'Connecte-toi pour publier un trajet.';
     return e;
-  }, [driver, plate, depart, destination, time, seats, customPrice, priceBand.min, priceBand.max, session.email]);
+  }, [driver, plate, depart, destination, time, seats, session.email]);
 
   const isValid = Object.keys(errors).filter((key) => key !== 'session').length === 0;
 
@@ -347,16 +457,12 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
   const resetForm = () => {
     setEditingId(null);
     setDriver(session.name ?? '');
-    setPlate(driverSecurity?.vehicle.plate ?? '');
+    setPlate(formatPlateInputValue(driverSecurity?.vehicle.plate ?? ''));
     setDepart('');
     setDestination('');
     setTime('');
     setSeats('1');
     setPricingMode('single');
-    setPriceTouched(false);
-    setCustomPrice(priceBand.suggested);
-    setRideDate('');
-    setNotes('');
     router.replace('/(tabs)/explore');
   };
 
@@ -405,7 +511,7 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
       }
     }
 
-    const finalPrice = clampPriceToBand(customPrice, km, seatsCount);
+    const finalPrice = customPrice;
     const payload: RidePayload = {
       id: editingId ?? Date.now().toString(),
       driver: driver.trim(),
@@ -475,139 +581,249 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
             </View>
           </View>
 
-          <View style={styles(C, S).detailsStack}>
-            <GradientBackground
-              colors={Gradients.card}
-              style={[styles(C, S).card, styles(C, S).tripDetailsCard]}
-            >
-              <Text style={styles(C, S).tripDetailsTitle}>Détails du trajet</Text>
-              <View style={styles(C, S).detailInputRow}>
-                <IconSymbol name="mappin.and.ellipse" size={18} color={C.gray500} />
-                <TextInput
-                  placeholder="Point de départ"
-                  placeholderTextColor={C.gray400}
-                  value={depart}
-                  onChangeText={setDepart}
-                  autoCapitalize="words"
-                  style={styles(C, S).detailInputField}
-                />
+        {km > 0 ? (
+          <GradientBackground
+            colors={Gradients.card}
+            style={[styles(C, S).card, styles(C, S).pricingCard]}
+          >
+            <View style={styles(C, S).pricingHeader}>
+              <IconSymbol name="eurosign.circle.fill" size={22} color={C.primary} />
+              <Text style={styles(C, S).pricingTitle}>Estimation tarifaire</Text>
+            </View>
+            <View style={styles(C, S).pricingSummaryRow}>
+              <View style={styles(C, S).pricingSummaryBlock}>
+                <Text style={styles(C, S).pricingSummaryLabel}>Distance</Text>
+                <Text style={styles(C, S).pricingSummaryValue}>{priceQuote.distanceKm.toFixed(1)} km</Text>
               </View>
-              <View style={styles(C, S).detailInputRow}>
-                <IconSymbol name="building.columns" size={18} color={C.gray500} />
-                <TextInput
-                  placeholder="Destination (Campus)"
-                  placeholderTextColor={C.gray400}
-                  value={destination}
-                  onChangeText={setDestination}
-                  autoCapitalize="words"
-                  style={styles(C, S).detailInputField}
-                />
+              <View style={styles(C, S).pricingSummaryBlock}>
+                <Text style={styles(C, S).pricingSummaryLabel}>Tarif conseillé</Text>
+                <Text style={styles(C, S).pricingSummaryValue}>€{priceBand.suggested.toFixed(2)} / passager</Text>
               </View>
-              <View style={styles(C, S).dateTimeRow}>
-                <View style={styles(C, S).dateField}>
-                  <IconSymbol name="calendar" size={18} color={C.gray500} />
-                  <TextInput
-                    placeholder="jj/mm/aaaa"
-                    placeholderTextColor={C.gray400}
-                    value={rideDate}
-                    onChangeText={setRideDate}
-                    style={styles(C, S).dateFieldInput}
-                  />
-                </View>
-                <View style={styles(C, S).dateField}>
-                  <IconSymbol name="clock.fill" size={18} color={C.gray500} />
-                  <TextInput
-                    placeholder="--:--"
-                    placeholderTextColor={C.gray400}
-                    value={time}
-                    onChangeText={setTime}
-                    keyboardType="numeric"
-                    style={styles(C, S).dateFieldInput}
-                  />
-                </View>
+              <View style={styles(C, S).pricingSummaryBlock}>
+                <Text style={styles(C, S).pricingSummaryLabel}>Mon tarif</Text>
+                <Text style={styles(C, S).pricingSummaryValue}>€{customPrice.toFixed(2)} / passager</Text>
               </View>
-              <View style={styles(C, S).metaRow}>
-                <View style={styles(C, S).metaBlock}>
-                  <Text style={styles(C, S).metaLabel}>Places disponibles</Text>
-                  <TextInput
-                    placeholder="1 place"
-                    placeholderTextColor={C.gray400}
-                    value={seats}
-                    onChangeText={setSeats}
-                    keyboardType="number-pad"
-                    style={styles(C, S).metaValueInput}
-                  />
-                </View>
-                <View style={styles(C, S).metaBlock}>
-                  <Text style={styles(C, S).metaLabel}>Prix par place</Text>
-                  <View style={styles(C, S).priceInputRow}>
-                    <Text style={styles(C, S).priceInputPrefix}>€</Text>
-                    <TextInput
-                      placeholder="0.00€"
-                      placeholderTextColor={C.gray400}
-                      value={customPriceInput}
-                      onChangeText={onPriceInputChange}
-                      keyboardType="decimal-pad"
-                      style={[styles(C, S).metaValueInput, styles(C, S).priceInput]}
-                    />
+              <View style={styles(C, S).pricingSummaryBlock}>
+                <Text style={styles(C, S).pricingSummaryLabel}>Recette totale</Text>
+                <Text style={styles(C, S).pricingSummaryValue}>€{rideTotal.toFixed(2)}</Text>
+              </View>
+            </View>
+            <View style={styles(C, S).pricingChipsRow}>
+              <View style={styles(C, S).pricingChipDriver}>
+                <Text style={styles(C, S).pricingChipTitle}>Net conducteur</Text>
+                <Text style={styles(C, S).pricingChipValue}>€{driverNetPerPassenger.toFixed(2)} / passager • €{driverNetTotal.toFixed(2)} / trajet</Text>
+                <Text style={styles(C, S).pricingChipHint}>Recommandé : €{driverNetPerPassengerRecommended.toFixed(2)} / passager • €{driverNetTotalRecommended.toFixed(2)} / trajet</Text>
+              </View>
+              <View style={styles(C, S).pricingChipPlatform}>
+                <Text style={styles(C, S).pricingChipTitle}>CampusRide</Text>
+                <Text style={styles(C, S).pricingChipValue}>€{commissionPerPassengerEffective.toFixed(2)} / passager • €{commissionTotal.toFixed(2)} / trajet</Text>
+              </View>
+            </View>
+            <View style={styles(C, S).pricingBreakdown}>
+              {pricingBreakdown.map((tier) => (
+                <View key={tier.label} style={styles(C, S).pricingRow}>
+                  <Text style={styles(C, S).pricingRowLabel}>{tier.label}</Text>
+                  <View style={styles(C, S).pricingRowContent}>
+                    <Text style={styles(C, S).pricingRowValue}>{tier.description}</Text>
+                    <Text style={styles(C, S).pricingRowAmount}>€{tier.amount.toFixed(2)}</Text>
                   </View>
                 </View>
-              </View>
-              <TextInput
-                placeholder="Ex: Départ devant la bibliothèque..."
-                placeholderTextColor={C.gray400}
-                value={notes}
-                onChangeText={setNotes}
-                style={styles(C, S).notesInput}
-                multiline
-              />
-              <GradientButton
-                title={editingId ? 'Mettre à jour' : 'Publier le trajet'}
-                onPress={submit}
-                disabled={!isValid || !!errors.session || !!securityBlockingMessage}
-                accessibilityRole="button"
-                fullWidth
-                style={styles(C, S).detailsButton}
-                variant="lavender"
-              >
-                <IconSymbol name="paperplane.fill" size={18} color="#fff" />
-              </GradientButton>
-              {errors.session ? <Text style={styles(C, S).error}>{errors.session}</Text> : null}
-            </GradientBackground>
-            {publishedRide ? (
-              <View style={[styles(C, S).successCard, styles(C, S).successCardCompact]}>
-                <Text style={styles(C, S).successTitle}>Trajet publié avec succès !</Text>
-                <View style={styles(C, S).successMessageBox}>
-                  <Text style={styles(C, S).successMessageText}>
-                    Votre trajet est maintenant visible par les passagers. Vous recevrez une
-                    notification quand quelqu'un réservera.
+              ))}
+            </View>
+            <Text style={styles(C, S).pricingHint}>
+              Les passagers voient ce prix avant de confirmer leur paiement sécurisé.
+            </Text>
+          </GradientBackground>
+        ) : null}
+
+        <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).notificationsCard]}>
+          <View style={styles(C, S).notificationsHeader}>
+            <Text style={styles(C, S).notificationsTitle}>Activité passagers</Text>
+            <Text style={styles(C, S).notificationsSubtitle}>
+              Mises à jour sur les réservations reçues pour tes trajets durant les dernières 24h.
+            </Text>
+          </View>
+          {unreadNotifications.length > 0 ? (
+            unreadNotifications.slice(0, 3).map((notif) => (
+              <View key={notif.id} style={styles(C, S).notificationRow}>
+                <IconSymbol name="bell.fill" size={18} color={C.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles(C, S).notificationBody}>{notif.body}</Text>
+                  <Text style={styles(C, S).notificationTime}>
+                    {new Date(notif.createdAt).toLocaleTimeString('fr-BE', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
                   </Text>
                 </View>
-                <View style={styles(C, S).successInfoRow}>
-                  <View>
-                    <View style={styles(C, S).successRoute}>
-                      <IconSymbol name="location.fill" size={18} color="#B8B8C7" />
-                      <Text style={styles(C, S).successText}>{publishedRide.depart}</Text>
-                      <IconSymbol name="arrow.right" size={16} color="#B8B8C7" />
-                      <IconSymbol name="mappin.and.ellipse" size={18} color="#9F6BFF" />
-                      <Text style={[styles(C, S).successText, styles(C, S).successTextActive]}>
-                        {publishedRide.destination}
-                      </Text>
-                    </View>
-                    <Text style={styles(C, S).successDetailText}>
-                      {publishedRide.rideDate
-                        ? `${publishedRide.rideDate} • ${publishedRide.time || '00:00'}`
-                        : `Date • ${publishedRide.time || '00:00'}`}
-                    </Text>
-                  </View>
-                  <View style={styles(C, S).successBadge}>
-                    <Text style={styles(C, S).successBadgeText}>Actif</Text>
-                  </View>
-                </View>
+                <Pressable
+                  onPress={() => acknowledgeNotification(notif.id)}
+                  style={styles(C, S).notificationRead}
+                >
+                  <Text style={styles(C, S).notificationReadText}>Vu</Text>
+                </Pressable>
               </View>
-            ) : null}
+            ))
+          ) : (
+            <Text style={styles(C, S).notificationEmpty}>
+              Aucun nouveau passager pour tes trajets aujourd’hui. Partage ton annonce pour la booster !
+            </Text>
+          )}
+          {notifications.length > unreadNotifications.length ? (
+            <Text style={styles(C, S).notificationHint}>
+              {notifications.length - unreadNotifications.length} notification(s) déjà consultée(s).
+            </Text>
+          ) : null}
+        </GradientBackground>
+
+        {rewardSnapshot ? (
+          <RewardBadge
+            snapshot={rewardSnapshot}
+            actionLabel={ratingSummary.count > 0 ? 'Voir mes avis' : undefined}
+            onPressAction={ratingSummary.count > 0 ? () => router.push('/(tabs)/profile') : undefined}
+          />
+        ) : null}
+
+        <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).mapCard]}>
+          <Text style={styles(C, S).mapTitle}>Carte en temps réel</Text>
+          <RideMap
+            rides={rides}
+            selectedCampus={destination || null}
+            previewDepart={depart}
+            previewDestination={destination}
+          />
+          <Text style={styles(C, S).mapHint}>
+            Les trajets publiés (y compris le tien) apparaissent instantanément pour les étudiants
+            connectés.
+          </Text>
+        </GradientBackground>
+
+        {myRides.length > 0 ? (
+          <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).ridesCard]}>
+            <Text style={styles(C, S).ridesTitle}>Mes trajets à venir</Text>
+            <Text style={styles(C, S).ridesSubtitle}>
+              Gère tes annonces avant le départ. Les trajets passés sont archivés automatiquement.
+            </Text>
+            {myRides.map((ride) => (
+              <MyRideRow
+                key={ride.id}
+                ride={ride}
+                C={C}
+                S={S}
+                onEdit={() => populateForm(ride)}
+                onRemove={handleRemoveRide}
+              />
+            ))}
+          </GradientBackground>
+        ) : null}
+
+        <GradientBackground colors={Gradients.card} style={[styles(C, S).card, styles(C, S).formCard]}>
+          <Field
+            label="Nom du conducteur"
+            placeholder="Ex. Lina Dupont"
+            autoCapitalize="words"
+            value={driver}
+            onChangeText={setDriver}
+            error={errors.driver}
+            C={C}
+          />
+          <Field
+            label="Plaque d'immatriculation"
+            placeholder="2-EEE-222"
+            autoCapitalize="characters"
+            value={plate}
+            onChangeText={(value) => setPlate(formatPlateInputValue(value))}
+            error={errors.plate}
+            C={C}
+          />
+          <Field
+            label="Lieu de départ"
+            placeholder="Ex. Etterbeek"
+            value={depart}
+            onChangeText={setDepart}
+            error={errors.depart}
+            C={C}
+          />
+          <Field
+            label="Destination"
+            placeholder="Ex. EPHEC Louvain-la-Neuve"
+            value={destination}
+            onChangeText={setDestination}
+            error={errors.destination}
+            C={C}
+          />
+          <Field
+            label="Heure (HH:MM)"
+            placeholder="08:15"
+            inputMode="numeric"
+            value={time}
+            onChangeText={setTime}
+            error={errors.time}
+            C={C}
+          />
+          <Field
+            label="Places disponibles"
+            placeholder="1"
+            inputMode="numeric"
+            value={seats}
+            onChangeText={setSeats}
+            error={errors.seats}
+            C={C}
+          />
+
+          <View style={styles(C, S).priceSection}>
+            <Text style={styles(C, S).priceLabel}>Tarif par passager</Text>
+            <View style={styles(C, S).priceModeRow}>
+              <GradientButton
+                title="Aller simple"
+                size="sm"
+                variant={pricingMode === 'single' ? 'cta' : 'soft'}
+                onPress={() => applyPricingMode('single')}
+                style={styles(C, S).priceModeButton}
+                accessibilityRole="button"
+              />
+              <GradientButton
+                title="Aller + retour"
+                size="sm"
+                variant={pricingMode === 'double' ? 'cta' : 'soft'}
+                onPress={() => applyPricingMode('double')}
+                style={styles(C, S).priceModeButton}
+                accessibilityRole="button"
+              />
+            </View>
+            <View style={styles(C, S).priceStaticRow}>
+              <Text style={styles(C, S).priceInputPrefix}>€</Text>
+              <Text style={styles(C, S).priceStaticValue}>{customPrice.toFixed(2)}</Text>
+            </View>
+            <Text style={styles(C, S).priceBandText}>
+              Tarif calculé automatiquement (0,40 €/km) : €{priceBand.suggested.toFixed(2)} par passager
+            </Text>
           </View>
-        </View>
+
+          <View style={styles(C, S).preview}>
+            <Text style={styles(C, S).previewText}>
+              Mon tarif : <Text style={styles(C, S).price}>€{customPrice.toFixed(2)}</Text> / passager • Total €{rideTotal.toFixed(2)}
+            </Text>
+            <Text style={styles(C, S).previewHint}>
+              Tarif conseillé : €{priceBand.suggested.toFixed(2)} • Aller + retour : €{priceBand.double.toFixed(2)}
+            </Text>
+          </View>
+
+          <GradientButton
+            title={editingId ? 'Mettre à jour' : 'Publier'}
+            onPress={submit}
+            disabled={!isValid || !!errors.session || !!securityBlockingMessage}
+            style={styles(C, S).cta}
+            accessibilityRole="button"
+            fullWidth
+          />
+          {editingId ? (
+            <Pressable onPress={resetForm} style={styles(C, S).ctaGhost}>
+              <Text style={styles(C, S).ctaGhostText}>Annuler la modification</Text>
+            </Pressable>
+          ) : null}
+          {errors.session ? <Text style={styles(C, S).error}>{errors.session}</Text> : null}
+        </GradientBackground>
         </ScrollView>
       </SafeAreaView>
     </AppBackground>
@@ -618,13 +834,17 @@ function PassengerPublishScreen({
   session,
   initialDepart,
   initialDestination,
+  requireSchedule,
 }: {
   session: AuthSnapshot;
   initialDepart?: string;
   initialDestination?: string;
+  requireSchedule?: boolean;
 }) {
   const router = useRouter();
   const scrollRef = useRef<ScrollView | null>(null);
+  const restoredState = passengerExplorePersistedState;
+  const scheduleRequired = !!requireSchedule;
   const tabBarInset = useTabBarInset(Spacing.xl);
   const pinchScale = useRef(new Animated.Value(1)).current;
   const baseScale = useRef(new Animated.Value(1)).current;
@@ -669,10 +889,18 @@ function PassengerPublishScreen({
     next.setHours(0, 0, 0, 0);
     return next;
   }, []);
-  const [fromCampus, setFromCampus] = useState(initialDepart || 'Ixelles');
-  const [toCampus, setToCampus] = useState(initialDestination || 'EPHEC Woluwe');
-  const [selectedDate, setSelectedDate] = useState(defaultTomorrow);
-  const [travelTime, setTravelTime] = useState('09:00');
+  const [fromCampus, setFromCampus] = useState(restoredState?.fromCampus ?? initialDepart ?? '');
+  const [toCampus, setToCampus] = useState(restoredState?.toCampus ?? initialDestination ?? '');
+  const [selectedDate, setSelectedDate] = useState(() => {
+    if (restoredState?.selectedDateISO) {
+      const parsed = new Date(restoredState.selectedDateISO);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    return defaultTomorrow;
+  });
+  const [travelTime, setTravelTime] = useState(restoredState?.travelTime ?? '09:00');
+  const [hasConfirmedDate, setHasConfirmedDate] = useState(restoredState?.hasConfirmedDate ?? false);
+  const [hasConfirmedTime, setHasConfirmedTime] = useState(restoredState?.hasConfirmedTime ?? false);
   const [showDestList, setShowDestList] = useState(false);
   const [showFromList, setShowFromList] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -680,29 +908,47 @@ function PassengerPublishScreen({
   const [calendarMonth, setCalendarMonth] = useState(selectedDate.getMonth());
   const [calendarYear, setCalendarYear] = useState(selectedDate.getFullYear());
   const campusOptions = ['EPHEC Woluwe', 'EPHEC Delta', 'EPHEC Louvain-la-Neuve', 'EPHEC Schaerbeek'];
-  const campusFilterOptions = useMemo(() => ['all', ...campusOptions], [campusOptions]);
   const [rides, setRides] = useState<Ride[]>([]);
   const [ridesReady, setRidesReady] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
   const [detectedCommune, setDetectedCommune] = useState<string | null>(null);
-  const [searchResults, setSearchResults] = useState<Ride[]>([]);
-  const [resultsFilterState, setResultsFilterState] = useState<{
-    visible: boolean;
-    anchor: ResultsFilterAnchor;
-  }>({ visible: false, anchor: 'search' });
-  const [activeResultFilter, setActiveResultFilter] = useState<ResultFilterId>('recommended');
-  const [onlyAvailableSeats, setOnlyAvailableSeats] = useState(true);
-  const [priceFilter, setPriceFilter] = useState<PriceFilterId>('all');
-  const [durationFilter, setDurationFilter] = useState<DurationFilterId>('all');
-  const [campusFilter, setCampusFilter] = useState<string>('all');
-  const [hourFilter, setHourFilter] = useState<HourFilterId>('all');
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchResults, setSearchResults] = useState<Ride[]>(() =>
+    restoredState?.searchResults ? cloneRideList(restoredState.searchResults) : []
+  );
+  const [wallet, setWallet] = useState<WalletSnapshot | null>(() =>
+    session.email ? getWallet(session.email) : null
+  );
+  const [moreFiltersVisible, setMoreFiltersVisible] = useState(restoredState?.moreFiltersVisible ?? false);
+  const restoredPriceLimit = restoredState?.priceLimit ?? 8;
+  const restoredDraftPriceLimit = restoredState?.draftPriceLimit ?? restoredPriceLimit;
+  const [priceLimit, setPriceLimit] = useState(restoredPriceLimit);
+  const [draftPriceLimit, setDraftPriceLimit] = useState(restoredDraftPriceLimit);
+  const [priceSliderWidth, setPriceSliderWidth] = useState(1);
+  const [searchPerformed, setSearchPerformed] = useState(restoredState?.searchPerformed ?? false);
   const [isSearching, setIsSearching] = useState(false);
-  const [searchInstance, setSearchInstance] = useState(0);
+  const [searchInstance, setSearchInstance] = useState(restoredState?.searchInstance ?? 0);
   const [resultsOffset, setResultsOffset] = useState<number | null>(null);
-  const [showAllRides, setShowAllRides] = useState(false);
-  const initialSearchTriggered = useRef(false);
   const fromBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [validationTouched, setValidationTouched] = useState(restoredState?.validationTouched ?? false);
+  const [useManualCardEntry, setUseManualCardEntry] = useState(false);
+  const scrollOffsetRef = useRef(restoredState?.scrollOffset ?? 0);
+  const stateSnapshotRef = useRef<PassengerExplorePersistedState | null>(null);
+
+  useEffect(() => {
+    if (scheduleRequired) {
+      setHasConfirmedDate(false);
+      setHasConfirmedTime(false);
+    }
+  }, [scheduleRequired]);
+
+  useEffect(() => {
+    if (!restoredState?.scrollOffset) return;
+    requestAnimationFrame(() => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTo({ y: restoredState.scrollOffset, animated: false });
+      }
+    });
+  }, [restoredState?.scrollOffset]);
 
   useEffect(() => {
     if (initialDepart) {
@@ -715,21 +961,58 @@ function PassengerPublishScreen({
       setToCampus(initialDestination);
     }
   }, [initialDestination]);
-  const filterPanelAnchor = resultsFilterState.visible ? resultsFilterState.anchor : null;
-  const toggleResultsFilters = useCallback(
-    (anchor: ResultsFilterAnchor) => {
-      setResultsFilterState((prev) => {
-        if (prev.anchor !== anchor) {
-          return { anchor, visible: true };
-        }
-        return { anchor, visible: !prev.visible };
-      });
-    },
-    []
-  );
-  const [reservingRideId, setReservingRideId] = useState<string | null>(null);
-  const [paymentRide, setPaymentRide] = useState<Ride | null>(null);
-  const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'card'>('apple-pay');
+  useEffect(() => {
+    if (!session.email) {
+      setWallet(null);
+      return;
+    }
+    setWallet(getWallet(session.email));
+    const unsubscribe = subscribeWallet(session.email, setWallet);
+    return unsubscribe;
+  }, [session.email]);
+useEffect(() => {
+  setDraftPriceLimit(priceLimit);
+}, [priceLimit]);
+useEffect(() => {
+  stateSnapshotRef.current = {
+    fromCampus,
+    toCampus,
+    selectedDateISO: selectedDate.toISOString(),
+    travelTime,
+    hasConfirmedDate,
+    hasConfirmedTime,
+    priceLimit,
+    draftPriceLimit,
+    moreFiltersVisible,
+    searchResults: cloneRideList(searchResults),
+    searchPerformed,
+    validationTouched,
+    searchInstance,
+    scrollOffset: scrollOffsetRef.current,
+  };
+}, [
+  fromCampus,
+  toCampus,
+  selectedDate,
+  travelTime,
+  hasConfirmedDate,
+  hasConfirmedTime,
+  priceLimit,
+  draftPriceLimit,
+  moreFiltersVisible,
+  searchResults,
+  searchPerformed,
+  validationTouched,
+  searchInstance,
+]);
+useEffect(() => {
+  return () => {
+    passengerExplorePersistedState = stateSnapshotRef.current;
+  };
+}, []);
+const [reservingRideId, setReservingRideId] = useState<string | null>(null);
+const [paymentRide, setPaymentRide] = useState<Ride | null>(null);
+const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'card' | 'wallet'>('apple-pay');
   const [cardNumber, setCardNumber] = useState('');
   const [cardExpiry, setCardExpiry] = useState('');
   const [cardCvv, setCardCvv] = useState('');
@@ -785,136 +1068,60 @@ function PassengerPublishScreen({
   const heroDepartLabel = fromCampus || 'Commune au choix';
   const heroArrivalLabel = toCampus || 'Destination EPHEC';
   const heroDurationLabel = sampledMinutes ? `${sampledMinutes} min estimées` : 'Temps estimé';
-  const scopedResults = useMemo(
-    () => (showAllRides ? upcomingHomeRides : searchResults),
-    [showAllRides, upcomingHomeRides, searchResults]
-  );
-  const applyRideFilters = useCallback(
-    (list: Ride[]) => {
-      let filtered = [...list];
-      if (onlyAvailableSeats) {
-        filtered = filtered.filter((ride) => ride.passengers.length < ride.seats);
-      }
-      if (priceFilter !== 'all') {
-        const predicate = PRICE_FILTERS.find((entry) => entry.id === priceFilter)?.predicate;
-        if (predicate) {
-          filtered = filtered.filter((ride) => predicate(ride.price));
-        }
-      }
-      if (durationFilter !== 'all') {
-        const predicate = DURATION_FILTERS.find((entry) => entry.id === durationFilter)?.predicate;
-        if (predicate) {
-          filtered = filtered.filter((ride) => {
-            const minutes = getRideDuration(ride);
-            if (minutes === Number.MAX_SAFE_INTEGER) return false;
-            return predicate(minutes);
-          });
-        }
-      }
-      if (campusFilter !== 'all') {
-        const campusKey = normalizeText(campusFilter);
-        filtered = filtered.filter((ride) =>
-          normalizeText(ride.destination).includes(campusKey)
-        );
-      }
-      if (hourFilter !== 'all') {
-        const entry = HOUR_FILTERS.find((item) => item.id === hourFilter);
-        filtered = filtered.filter((ride) => {
-          const minutes = timeToMinutes(ride.time);
-          if (!Number.isFinite(minutes)) return false;
-          if (!entry || !entry.range) return true;
-          const [start, end] = entry.range;
-          if (hourFilter === 'night') {
-            const wrapLimit = 5 * 60;
-            if (minutes >= start) return true;
-            return minutes < wrapLimit;
-          }
-          return minutes >= start && minutes < end;
-        });
-      }
-      switch (activeResultFilter) {
-        case 'earliest':
-          filtered.sort((a, b) => a.departureAt - b.departureAt);
-          break;
-        case 'price':
-          filtered.sort((a, b) => a.price - b.price);
-          break;
-        case 'distance':
-          filtered.sort((a, b) => getRideDistance(a) - getRideDistance(b));
-          break;
-        case 'recommended':
-        default:
-          filtered.sort((a, b) => {
-            const seatsA = Math.max(0, a.seats - a.passengers.length);
-            const seatsB = Math.max(0, b.seats - b.passengers.length);
-            if (seatsB !== seatsA) return seatsB - seatsA;
-            return a.departureAt - b.departureAt;
-          });
-          break;
-      }
-      return filtered;
-    },
-    [
-      onlyAvailableSeats,
-      activeResultFilter,
-      getRideDistance,
-      priceFilter,
-      durationFilter,
-      campusFilter,
-      hourFilter,
-      getRideDuration,
-    ]
-  );
-  const filteredSearchResults = useMemo(
-    () => applyRideFilters(scopedResults),
-    [applyRideFilters, scopedResults]
-  );
+  const scopedResults = searchResults;
+  const ridesCardList = useMemo(() => {
+    return [...scopedResults]
+      .filter((ride) => ride.seats - ride.passengers.length >= 1)
+      .filter((ride) => ride.price <= priceLimit + 0.001)
+      .sort((a, b) => a.departureAt - b.departureAt);
+  }, [priceLimit, scopedResults]);
   const resultsCountLabel = useMemo(() => {
     if (!searchPerformed) return 'Prêt à lancer une recherche';
-    if (filteredSearchResults.length === 0) {
-      if (showAllRides) {
-        return scopedResults.length === 0 ? 'Aucun trajet planifié' : '0 après filtres';
-      }
-      return scopedResults.length === 0 ? 'Aucun trajet' : '0 après filtres';
+    if (ridesCardList.length === 0) {
+      return scopedResults.length === 0 ? 'Aucun trajet' : 'Aucun trajet disponible';
     }
-    if (filteredSearchResults.length === scopedResults.length || scopedResults.length === 0) {
-      return showAllRides
-        ? `${filteredSearchResults.length} trajet(s) affiché(s)`
-        : `${filteredSearchResults.length} trouvés`;
-    }
-    return `${filteredSearchResults.length}/${scopedResults.length} affichés`;
-  }, [
-    filteredSearchResults.length,
-    scopedResults.length,
-    searchPerformed,
-    showAllRides,
-  ]);
+    return `${ridesCardList.length} trouvés`;
+  }, [ridesCardList.length, scopedResults.length, searchPerformed]);
   const resultsEmptyLabel = useMemo(() => {
-    if (showAllRides) {
-      if (scopedResults.length === 0) {
-        return 'Aucun trajet n’est prévu pour le moment.';
-      }
-      return 'Aucun trajet ne correspond à ces filtres. Allège-les pour voir davantage d’options.';
-    }
     if (scopedResults.length === 0) {
       return 'Aucun trajet ne correspond à cette recherche. Ajuste les horaires ou retente plus tard.';
     }
-    return 'Aucun trajet ne correspond à ces filtres. Essaie de les assouplir pour voir plus d’options.';
-  }, [scopedResults.length, showAllRides]);
+    return 'Aucun trajet ne correspond à cette recherche. Ajuste les horaires ou retente plus tard.';
+  }, [scopedResults.length]);
 
-  const showResultsCard = searchPerformed;
   const ridesCardCountLabel = resultsCountLabel;
-  const ridesCardList = filteredSearchResults;
   const fallbackHomeResults = useMemo(() => {
     return upcomingHomeRides.filter((ride) => ride.passengers.length < ride.seats).slice(0, 4);
   }, [upcomingHomeRides]);
-  const showFallbackHome =
-    searchPerformed && ridesCardList.length === 0 && fallbackHomeResults.length > 0;
-
+  const hasPrimaryResults = ridesCardList.length > 0;
+  const fallbackCountLabel = `${fallbackHomeResults.length} suggestion(s)`;
+  const walletBalance = wallet?.balance ?? 0;
+  const defaultWalletCard = useMemo(() => {
+    if (!wallet) return null;
+    const preferred = wallet.defaultPaymentMethodId
+      ? wallet.paymentMethods.find((method) => method.id === wallet.defaultPaymentMethodId)
+      : null;
+    return preferred ?? wallet.paymentMethods[0] ?? null;
+  }, [wallet]);
+  const defaultWalletCardLabel = useMemo(() => {
+    if (!defaultWalletCard) return null;
+    const brand = defaultWalletCard.brand || 'Carte';
+    return `${brand} ••••${defaultWalletCard.last4}`;
+  }, [defaultWalletCard]);
+  const defaultWalletCardExpiry = useMemo(() => {
+    if (!defaultWalletCard?.expMonth || !defaultWalletCard?.expYear) return null;
+    const month = String(defaultWalletCard.expMonth).padStart(2, '0');
+    const year = String(defaultWalletCard.expYear).slice(-2);
+    return `${month}/${year}`;
+  }, [defaultWalletCard]);
+  const canUseSavedCard = !!defaultWalletCard;
   useEffect(() => {
-    if (!showAllRides) return;
-    if (!searchPerformed) setSearchPerformed(true);
-  }, [showAllRides, searchPerformed]);
+    if (paymentMethodChoice !== 'card') {
+      setUseManualCardEntry(false);
+    } else if (!canUseSavedCard) {
+      setUseManualCardEntry(true);
+    }
+  }, [paymentMethodChoice, canUseSavedCard]);
 
   const cardNumberDisplay = useMemo(() => {
     if (!cardNumber) return '';
@@ -939,6 +1146,49 @@ function PassengerPublishScreen({
     LayoutAnimation.configureNext(LayoutAnimation.create(160, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity));
   }, []);
   const travelDateLabel = useMemo(() => formatDateLabel(selectedDate), [selectedDate, formatDateLabel]);
+  const selectedDateTime = useMemo(() => {
+    const [hours, minutes] = travelTime.split(':').map((value) => parseInt(value, 10));
+    const date = new Date(selectedDate);
+    if (Number.isFinite(hours) && Number.isFinite(minutes)) {
+      date.setHours(hours, minutes, 0, 0);
+    } else {
+      date.setHours(0, 0, 0, 0);
+    }
+    return date;
+  }, [selectedDate, travelTime]);
+  const isScheduleInPast = useMemo(() => selectedDateTime.getTime() < Date.now(), [selectedDateTime]);
+  const isLocationReady = fromCampus.trim().length > 0 && toCampus.trim().length > 0;
+  const scheduleReady = !scheduleRequired || (hasConfirmedDate && hasConfirmedTime);
+  const allFieldsReady = isLocationReady && scheduleReady;
+  const canSubmitSearch = allFieldsReady && !isScheduleInPast;
+  const validationMessage = useMemo(() => {
+    if (!validationTouched) return null;
+    if (!allFieldsReady) {
+      return 'Remplissez tous les champs avant de lancer la recherche.';
+    }
+    if (isScheduleInPast) {
+      return "Choisis une date et une heure futures.";
+    }
+    return null;
+  }, [validationTouched, allFieldsReady, isScheduleInPast]);
+  const showResultsCard = searchPerformed && scheduleReady && isLocationReady;
+  const handlePriceSliderChange = useCallback(
+    (locationX: number) => {
+      const width = priceSliderWidth || 1;
+      const ratio = Math.min(Math.max(locationX / width, 0), 1);
+      const rawValue = PRICE_MIN + ratio * (PRICE_MAX - PRICE_MIN);
+      const stepped = Math.round(rawValue / PRICE_STEP) * PRICE_STEP;
+      setDraftPriceLimit(Number(Math.min(PRICE_MAX, Math.max(PRICE_MIN, stepped)).toFixed(1)));
+    },
+    [priceSliderWidth]
+  );
+  const priceSliderRatio = useMemo(() => {
+    return Math.min(1, Math.max(0, (draftPriceLimit - PRICE_MIN) / (PRICE_MAX - PRICE_MIN)));
+  }, [draftPriceLimit]);
+  const applyPriceFilter = useCallback(() => {
+    setPriceLimit(draftPriceLimit);
+  }, [draftPriceLimit]);
+  const priceApplyDisabled = draftPriceLimit === priceLimit;
   const dropdownOpen = showFromList || showDestList;
   const closeDropdowns = useCallback(() => {
     animateDropdown();
@@ -1030,30 +1280,20 @@ function PassengerPublishScreen({
   const renderSheetContent = () => (
     <>
       <Text style={passengerStyles.sheetTitle}>Choisir votre destination</Text>
-      <View style={passengerStyles.campusChipsRow}>
-        {campusOptions.map((campus) => {
-          const selected = campus === toCampus;
-          return (
-            <Pressable
-              key={campus}
-              onPress={() => selectDestinationCampus(campus)}
-              style={[passengerStyles.campusChip, selected && passengerStyles.campusChipSelected]}
-              accessibilityRole="button"
-              accessibilityLabel={`Aller vers ${campus}`}
-              hitSlop={8}
-            >
-              <Text
-                style={[passengerStyles.campusChipText, selected && passengerStyles.campusChipTextSelected]}
-              >
-                {campus.replace('EPHEC ', '')}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-      <View style={passengerStyles.destinationRow}>
-        <View style={passengerStyles.destinationColumn}>
+      <View
+        style={[
+          passengerStyles.destinationRow,
+          dropdownOpen && passengerStyles.destinationRowRaised,
+        ]}
+      >
+        <View
+          style={[
+            passengerStyles.destinationColumn,
+            dropdownOpen && passengerStyles.dropdownRaised,
+          ]}
+        >
           <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperTop]}>
+            <Text style={passengerStyles.dropdownLabel}>POINT DE DÉPART</Text>
             <View style={passengerStyles.inputWrapper}>
               <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
               <TextInput
@@ -1067,7 +1307,7 @@ function PassengerPublishScreen({
                     setShowFromList(true);
                   }
                 }}
-                placeholder="Votre commune de départ"
+                placeholder="Saisir votre adresse"
                 placeholderTextColor={Colors.gray400}
                 onFocus={handleFromFocus}
                 onBlur={handleFromBlur}
@@ -1076,27 +1316,11 @@ function PassengerPublishScreen({
                 returnKeyType="done"
               />
             </View>
-            <View style={passengerStyles.locationHelperRow}>
-              <Pressable
-                style={[
-                  passengerStyles.locationChip,
-                  locationLoading && passengerStyles.locationChipDisabled,
-                ]}
-                onPress={handleUseLocation}
-                disabled={locationLoading}
-                accessibilityRole="button"
-              >
-                <IconSymbol name="location.fill" size={14} color={Colors.secondary} />
-                <Text style={passengerStyles.locationChipText}>
-                  {locationLoading ? 'Localisation…' : 'Utiliser ma position'}
-                </Text>
-              </Pressable>
-              {detectedCommune ? (
-                <Text style={passengerStyles.locationDetectedText}>
-                  Commune détectée : {detectedCommune}
-                </Text>
-              ) : null}
-            </View>
+            {detectedCommune ? (
+              <Text style={passengerStyles.locationDetectedText}>
+                Commune détectée : {detectedCommune}
+              </Text>
+            ) : null}
             {showFromList && communeSuggestions.length > 0 ? (
               <View style={passengerStyles.dropdownList}>
                 {communeSuggestions.map((commune) => (
@@ -1112,15 +1336,23 @@ function PassengerPublishScreen({
             ) : null}
           </View>
           <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperBottom]}>
+            <Text style={passengerStyles.dropdownLabel}>DESTINATION</Text>
             <View style={[passengerStyles.inputWrapper, passengerStyles.toInput]}>
-              <IconSymbol name="location.fill" size={18} color="#FF70A0" />
+              <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
               <Pressable
                 style={passengerStyles.dropdownTrigger}
                 onPress={toggleDestList}
                 accessibilityRole="button"
                 accessibilityLabel="Choisir un campus de destination"
               >
-                <Text style={passengerStyles.dropdownText}>{toCampus}</Text>
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    (!toCampus || !toCampus.trim()) && passengerStyles.dropdownTextPlaceholder,
+                  ]}
+                >
+                  {toCampus && toCampus.trim() ? toCampus : 'Sélectionnez un campus'}
+                </Text>
               </Pressable>
             </View>
             {showDestList ? (
@@ -1148,7 +1380,6 @@ function PassengerPublishScreen({
               setFromCampus(toCampus);
               setToCampus(fromCampus);
               setDetectedCommune(null);
-              setPreciseDepartCoords(null);
             }}
           >
             <IconSymbol name="chevron.up" size={18} color="#7A7A98" />
@@ -1157,47 +1388,129 @@ function PassengerPublishScreen({
         </View>
       </View>
       <View style={passengerStyles.dateSection}>
-        {!dropdownOpen ? (
-          <View style={passengerStyles.dateRow}>
-            <Pressable
-              style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-              onPress={() => {
-                closeDropdowns();
-                openDatePicker();
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Sélectionner une date"
+        <View style={passengerStyles.dateRow} pointerEvents={dropdownOpen ? 'none' : 'auto'}>
+          <Pressable
+            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
+            onPress={() => {
+              closeDropdowns();
+              openDatePicker();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Sélectionner une date"
+          >
+            <IconSymbol name="calendar" size={18} color={Colors.gray500} />
+            <Text
+              style={[
+                passengerStyles.dropdownText,
+                !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+              ]}
             >
-              <IconSymbol name="calendar" size={18} color={Colors.gray500} />
-              <Text style={passengerStyles.dropdownText}>{travelDateLabel}</Text>
-            </Pressable>
-            <Pressable
-              style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-              onPress={() => {
-                closeDropdowns();
-                setShowTimePicker(true);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Sélectionner une heure"
+              {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
+            onPress={() => {
+              closeDropdowns();
+              setShowTimePicker(true);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Sélectionner une heure"
+          >
+            <IconSymbol name="clock" size={18} color={Colors.gray500} />
+            <Text
+              style={[
+                passengerStyles.dropdownText,
+                !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+              ]}
             >
-              <IconSymbol name="clock" size={18} color={Colors.gray500} />
-              <Text style={passengerStyles.dropdownText}>{travelTime}</Text>
+              {hasConfirmedTime ? travelTime : 'Choisir une heure'}
+            </Text>
+          </Pressable>
+        </View>
+        {validationMessage ? <Text style={passengerStyles.dateError}>{validationMessage}</Text> : null}
+      </View>
+      <Pressable
+        style={[passengerStyles.moreFiltersButton, moreFiltersVisible && passengerStyles.moreFiltersButtonActive]}
+        onPress={() => setMoreFiltersVisible((prev) => !prev)}
+        accessibilityRole="button"
+      >
+        <IconSymbol
+          name={moreFiltersVisible ? 'line.horizontal.3.decrease.circle.fill' : 'line.horizontal.3.decrease.circle'}
+          size={20}
+          color={moreFiltersVisible ? Colors.primary : Colors.gray600}
+        />
+        <Text
+          style={[
+            passengerStyles.moreFiltersButtonText,
+            moreFiltersVisible && passengerStyles.moreFiltersButtonTextActive,
+          ]}
+        >
+          Plus de filtres
+        </Text>
+      </Pressable>
+      {moreFiltersVisible ? (
+        <View style={passengerStyles.moreFiltersPanel}>
+          <View style={passengerStyles.filterGroup}>
+            <Text style={passengerStyles.filterGroupLabel}>Prix</Text>
+            <View style={passengerStyles.sliderLabelRow}>
+              <Text style={passengerStyles.sliderValue}>{draftPriceLimit.toFixed(1)} €</Text>
+            </View>
+            <View
+              style={passengerStyles.sliderTrack}
+              onLayout={(event) => setPriceSliderWidth(Math.max(event.nativeEvent.layout.width, 1))}
+              onStartShouldSetResponder={() => true}
+              onMoveShouldSetResponder={() => true}
+              onResponderGrant={(event) => {
+                handlePriceSliderChange(event.nativeEvent.locationX);
+              }}
+              onResponderMove={(event) => {
+                handlePriceSliderChange(event.nativeEvent.locationX);
+              }}
+            >
+              <View style={passengerStyles.sliderTrackBackground} />
+              <View style={[passengerStyles.sliderTrackFill, { width: `${priceSliderRatio * 100}%` }]} />
+              <View
+                style={[
+                  passengerStyles.sliderThumb,
+                  { left: `${priceSliderRatio * 100}%` },
+                ]}
+              />
+            </View>
+            <View style={passengerStyles.sliderScale}>
+              <Text style={passengerStyles.sliderScaleLabel}>{PRICE_MIN} €</Text>
+              <Text style={passengerStyles.sliderScaleLabel}>{PRICE_MAX} €</Text>
+            </View>
+            <Pressable
+              style={[
+                passengerStyles.filterApplyButton,
+                priceApplyDisabled && passengerStyles.filterApplyButtonDisabled,
+              ]}
+              onPress={applyPriceFilter}
+              disabled={priceApplyDisabled}
+              accessibilityRole="button"
+            >
+              <Text style={passengerStyles.filterApplyButtonText}>Appliquer</Text>
             </Pressable>
           </View>
-        ) : (
-          <View style={passengerStyles.dateRowPlaceholder} />
-        )}
+        </View>
+      ) : null}
+      <View style={passengerStyles.searchButtonWrapper}>
+        <GradientButton
+          title="Chercher"
+          onPress={onSearch}
+          variant="cta"
+          disabled={dropdownOpen || isSearching || !canSubmitSearch}
+          style={passengerStyles.fullSearchButton}
+        />
+        {!canSubmitSearch ? (
+          <Pressable
+            style={passengerStyles.searchButtonShield}
+            onPress={onSearch}
+            accessibilityRole="button"
+          />
+        ) : null}
       </View>
-      <GradientButton
-        title="Chercher"
-        onPress={onSearch}
-        variant="cta"
-        disabled={dropdownOpen || isSearching}
-        style={[
-          passengerStyles.fullSearchButton,
-          dropdownOpen && passengerStyles.fullSearchButtonLowered,
-        ]}
-      />
       {isSearching ? (
         <View style={passengerStyles.searchLoading}>
           <ActivityIndicator color={Colors.primary} size="small" />
@@ -1282,6 +1595,7 @@ function PassengerPublishScreen({
   };
   const handleSelectDate = (date: Date) => {
     setSelectedDate(date);
+    setHasConfirmedDate(true);
     setShowDatePicker(false);
   };
 
@@ -1321,14 +1635,15 @@ function PassengerPublishScreen({
       }
       if (!response) return false;
       if (response.ok) {
-        Alert.alert(
-          'Réservation confirmée',
-          `Ta place pour ${ride.depart} → ${ride.destination} est réservée.`,
-          [
-            { text: 'Voir le trajet', onPress: () => openRide(ride.id) },
-            { text: 'OK', style: 'default' },
-          ]
-        );
+        router.push({
+          pathname: '/ride/request-confirmation',
+          params: {
+            driver: ride.driver,
+            depart: ride.depart,
+            destination: ride.destination,
+            paid: '1',
+          },
+        });
         return true;
       }
       if (response.reason === 'PAYMENT_WALLET' && method !== 'card') {
@@ -1389,7 +1704,13 @@ function PassengerPublishScreen({
         return;
       }
       setPaymentRide(ride);
-      setPaymentMethodChoice('apple-pay');
+      if (walletBalance >= ride.price) {
+        setPaymentMethodChoice('wallet');
+      } else if (defaultWalletCard) {
+        setPaymentMethodChoice('card');
+      } else {
+        setPaymentMethodChoice('apple-pay');
+      }
       setCardNumber('');
       setCardExpiry('');
       setCardCvv('');
@@ -1399,8 +1720,9 @@ function PassengerPublishScreen({
       setExpiryYear(null);
       setPickerExpiryMonth(null);
       setPickerExpiryYear(null);
+      setUseManualCardEntry(false);
     },
-    [session.email, router]
+    [session.email, router, walletBalance, defaultWalletCard]
   );
 
   const closePaymentSheet = useCallback(() => {
@@ -1415,13 +1737,17 @@ function PassengerPublishScreen({
     setPickerExpiryMonth(null);
     setPickerExpiryYear(null);
     setShowExpiryPicker(false);
+    setUseManualCardEntry(false);
   }, []);
 
-  const confirmPayment = useCallback(
-    (methodChoice: 'card' | 'apple-pay' | 'google-pay') => {
-      if (!paymentRide) return;
-      setPaymentError(null);
-      if (methodChoice === 'card') {
+  const confirmPayment = useCallback(() => {
+    if (!paymentRide) return;
+    setPaymentError(null);
+    const usingSavedCard = paymentMethodChoice === 'card' && canUseSavedCard && !useManualCardEntry;
+    let method: PaymentMethod;
+    if (paymentMethodChoice === 'card') {
+      method = 'card';
+      if (!usingSavedCard) {
         const digits = cardNumber.replace(/[^0-9]/g, '');
         if (digits.length < 12) {
           setPaymentError('Numéro de carte invalide.');
@@ -1442,14 +1768,32 @@ function PassengerPublishScreen({
           return;
         }
       }
-      const success = handleReserveRide(paymentRide, 'card');
-      if (success) {
-        setCardMasked(true);
-        closePaymentSheet();
+    } else if (paymentMethodChoice === 'wallet') {
+      method = 'wallet';
+      if (walletBalance + 0.0001 < paymentRide.price) {
+        setPaymentError('Solde insuffisant dans ton wallet.');
+        return;
       }
-    },
-    [paymentRide, cardNumber, cardExpiry, cardCvv, handleReserveRide, closePaymentSheet]
-  );
+    } else {
+      method = 'apple-pay';
+    }
+    const success = handleReserveRide(paymentRide, method);
+    if (success) {
+      setCardMasked(true);
+      closePaymentSheet();
+    }
+  }, [
+    paymentRide,
+    paymentMethodChoice,
+    canUseSavedCard,
+    useManualCardEntry,
+    cardNumber,
+    cardExpiry,
+    cardCvv,
+    walletBalance,
+    handleReserveRide,
+    closePaymentSheet,
+  ]);
 
   const renderRideResult = useCallback(
     (ride: Ride) => {
@@ -1466,14 +1810,9 @@ function PassengerPublishScreen({
           : `${Math.round(durationMinutes)} min`;
       const ratingValue = derivePseudoRating(ride);
       const avatarUri = getAvatarUrl(ride.ownerEmail, 72);
-      const reserving = reservingRideId === ride.id;
       return (
         <GradientBackground key={ride.id} colors={Gradients.soft} style={passengerStyles.resultCardWrapper}>
-          <Pressable
-            style={passengerStyles.resultCard}
-            onPress={() => openRide(ride.id)}
-            accessibilityRole="button"
-          >
+          <View style={passengerStyles.resultCard}>
             <View style={passengerStyles.resultDriverRow}>
               <Image source={{ uri: avatarUri }} style={passengerStyles.resultAvatar} />
               <View style={passengerStyles.resultDriverTexts}>
@@ -1512,196 +1851,32 @@ function PassengerPublishScreen({
               </View>
             </View>
             <GradientButton
-              title={seatsLeft > 0 ? 'Réserver' : 'Complet'}
-              onPress={() => startPaymentFlow(ride)}
+              title={seatsLeft > 0 ? 'Voir les détails' : 'Complet'}
+              onPress={() => openRide(ride.id)}
               size="sm"
-              variant="twilight"
+              variant="cta"
               fullWidth
               style={passengerStyles.resultReserveButton}
               accessibilityRole="button"
-              disabled={seatsLeft <= 0 || reserving}
-            >
-              {reserving ? <ActivityIndicator color="#fff" /> : null}
-            </GradientButton>
-          </Pressable>
+              disabled={seatsLeft <= 0}
+            />
+          </View>
         </GradientBackground>
       );
     },
-    [formatDeparture, getRideDistance, getRideDuration, openRide, startPaymentFlow, reservingRideId]
+    [formatDeparture, getRideDistance, getRideDuration, openRide]
   );
 
-  const renderResultsFilters = () => (
-    <View style={passengerStyles.filterPanel}>
-      <View style={passengerStyles.filterChipsRow}>
-        {RESULT_FILTERS.map((filter) => {
-          const selected = activeResultFilter === filter.id;
-          return (
-            <Pressable
-              key={filter.id}
-              style={[passengerStyles.filterChip, selected && passengerStyles.filterChipActive]}
-              onPress={() => setActiveResultFilter(filter.id)}
-              accessibilityRole="button"
-            >
-              <Text
-                style={[
-                  passengerStyles.filterChipLabel,
-                  selected && passengerStyles.filterChipLabelActive,
-                ]}
-              >
-                {filter.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-      <View style={passengerStyles.filterGroup}>
-        <Text style={passengerStyles.filterGroupLabel}>Prix</Text>
-        <View style={passengerStyles.filterChipsRow}>
-          {PRICE_FILTERS.map((filter) => {
-            const selected = priceFilter === filter.id;
-            return (
-              <Pressable
-                key={filter.id}
-                style={[passengerStyles.filterChip, selected && passengerStyles.filterChipActive]}
-                onPress={() => setPriceFilter(filter.id)}
-                accessibilityRole="button"
-              >
-                <Text
-                  style={[
-                    passengerStyles.filterChipLabel,
-                    selected && passengerStyles.filterChipLabelActive,
-                  ]}
-                >
-                  {filter.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
-      <View style={passengerStyles.filterGroup}>
-        <Text style={passengerStyles.filterGroupLabel}>Durée</Text>
-        <View style={passengerStyles.filterChipsRow}>
-          {DURATION_FILTERS.map((filter) => {
-            const selected = durationFilter === filter.id;
-            return (
-              <Pressable
-                key={filter.id}
-                style={[passengerStyles.filterChip, selected && passengerStyles.filterChipActive]}
-                onPress={() => setDurationFilter(filter.id)}
-                accessibilityRole="button"
-              >
-                <Text
-                  style={[
-                    passengerStyles.filterChipLabel,
-                    selected && passengerStyles.filterChipLabelActive,
-                  ]}
-                >
-                  {filter.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
-      <View style={passengerStyles.filterGroup}>
-        <Text style={passengerStyles.filterGroupLabel}>Campus</Text>
-        <View style={passengerStyles.filterChipsRow}>
-          {campusFilterOptions.map((option) => {
-            const selected = campusFilter === option;
-            const label = option === 'all' ? 'Tous' : option.replace('EPHEC ', '');
-            return (
-              <Pressable
-                key={option}
-                style={[passengerStyles.filterChip, selected && passengerStyles.filterChipActive]}
-                onPress={() => setCampusFilter(option)}
-                accessibilityRole="button"
-              >
-                <Text
-                  style={[
-                    passengerStyles.filterChipLabel,
-                    selected && passengerStyles.filterChipLabelActive,
-                  ]}
-                >
-                  {label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
-      <View style={passengerStyles.filterGroup}>
-        <Text style={passengerStyles.filterGroupLabel}>Heure</Text>
-        <View style={passengerStyles.filterChipsRow}>
-          {HOUR_FILTERS.map((filter) => {
-            const selected = hourFilter === filter.id;
-            return (
-              <Pressable
-                key={filter.id}
-                style={[passengerStyles.filterChip, selected && passengerStyles.filterChipActive]}
-                onPress={() => setHourFilter(filter.id)}
-                accessibilityRole="button"
-              >
-                <Text
-                  style={[
-                    passengerStyles.filterChipLabel,
-                    selected && passengerStyles.filterChipLabelActive,
-                  ]}
-                >
-                  {filter.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
-      <Pressable
-        style={passengerStyles.filterToggle}
-        onPress={() => setOnlyAvailableSeats((prev) => !prev)}
-        accessibilityRole="switch"
-        accessibilityState={{ checked: onlyAvailableSeats }}
-      >
-        <View
-          style={[
-            passengerStyles.filterToggleSwitch,
-            onlyAvailableSeats && passengerStyles.filterToggleSwitchActive,
-          ]}
-        >
-          <View
-            style={[
-              passengerStyles.filterToggleThumb,
-              onlyAvailableSeats && passengerStyles.filterToggleThumbActive,
-            ]}
-          />
-        </View>
-        <Text style={passengerStyles.filterToggleLabel}>Places disponibles uniquement</Text>
-      </Pressable>
-      <Pressable
-        style={passengerStyles.filterToggle}
-        onPress={() => setShowAllRides((prev) => !prev)}
-        accessibilityRole="switch"
-        accessibilityState={{ checked: showAllRides }}
-      >
-        <View
-          style={[
-            passengerStyles.filterToggleSwitch,
-            showAllRides && passengerStyles.filterToggleSwitchActive,
-          ]}
-        >
-          <View
-            style={[
-              passengerStyles.filterToggleThumb,
-              showAllRides && passengerStyles.filterToggleThumbActive,
-            ]}
-          />
-        </View>
-        <Text style={passengerStyles.filterToggleLabel}>Afficher tous les trajets</Text>
-      </Pressable>
-    </View>
-  );
 
   const onSearch = useCallback(() => {
+    setValidationTouched(true);
     closeDropdowns();
+    if (!allFieldsReady) {
+      return;
+    }
+    if (isScheduleInPast) {
+      return;
+    }
     setSearchPerformed(true);
     setIsSearching(true);
     setSearchInstance((count) => count + 1);
@@ -1731,15 +1906,9 @@ function PassengerPublishScreen({
     rides,
     isSameDay,
     selectedDate,
+    isScheduleInPast,
+    allFieldsReady,
   ]);
-
-  useEffect(() => {
-    if (initialSearchTriggered.current) return;
-    if (!ridesReady) return;
-    if (!initialDepart && !initialDestination) return;
-    initialSearchTriggered.current = true;
-    onSearch();
-  }, [initialDepart, initialDestination, onSearch, ridesReady]);
 
   useEffect(() => {
     if (!searchPerformed) return;
@@ -1765,11 +1934,15 @@ function PassengerPublishScreen({
           contentContainerStyle={scrollContentStyle}
           showsVerticalScrollIndicator={false}
           onScrollBeginDrag={closeDropdowns}
+          onScroll={(event) => {
+            scrollOffsetRef.current = event.nativeEvent.contentOffset.y;
+          }}
+          scrollEventThrottle={16}
         >
           {Platform.OS === 'web' ? (
             <View style={passengerStyles.heroColumnWeb}>
               <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardWebMap]}>
-                <HeroWebMap rides={rides} />
+                <HeroWebMap rides={rides} depart={fromCampus} destination={toCampus} />
               </View>
               <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardCompact]}>
                 {renderSheetContent()}
@@ -1842,51 +2015,22 @@ function PassengerPublishScreen({
               <View style={passengerStyles.resultsHeader}>
                 <View>
                   <Text style={passengerStyles.resultsTitle}>Trajets disponibles</Text>
-                  <Text style={passengerStyles.resultsCount}>{ridesCardCountLabel}</Text>
-                </View>
-                <Pressable
-                  style={[
-                    passengerStyles.filterButton,
-                    filterPanelAnchor === 'search' && passengerStyles.filterButtonActive,
-                  ]}
-                  onPress={() => toggleResultsFilters('search')}
-                  accessibilityRole="button"
-                >
-                  <IconSymbol
-                    name="line.3.horizontal.decrease.circle.fill"
-                    size={20}
-                    color={filterPanelAnchor === 'search' ? Colors.primary : Colors.gray600}
-                  />
-                  <Text style={passengerStyles.filterButtonText}>Filtres</Text>
-                </Pressable>
-              </View>
-              {filterPanelAnchor === 'search' ? renderResultsFilters() : null}
-              {ridesCardList.length === 0 ? (
-                <Text style={passengerStyles.resultsEmpty}>{resultsEmptyLabel}</Text>
-              ) : (
-                <View style={passengerStyles.resultsList}>
-                  {ridesCardList.map((ride) => renderRideResult(ride))}
-                </View>
-              )}
-            </GradientBackground>
-          ) : null}
-          {showFallbackHome ? (
-            <GradientBackground colors={Gradients.card} style={passengerStyles.resultsCard}>
-              <View style={passengerStyles.resultsHeader}>
-                <View>
-                  <Text style={passengerStyles.resultsTitle}>Autres trajets disponibles</Text>
                   <Text style={passengerStyles.resultsCount}>
-                    {`${fallbackHomeResults.length} suggestion(s)`}
+                    {hasPrimaryResults ? ridesCardCountLabel : fallbackCountLabel}
                   </Text>
                 </View>
               </View>
-              <Text style={passengerStyles.resultsHint}>
-                Aucun trajet ne correspond exactement à ta recherche. Voici les trajets encore disponibles autour
-                de ta zone.
-              </Text>
-              <View style={passengerStyles.resultsList}>
-                {fallbackHomeResults.map((ride) => renderRideResult(ride))}
-              </View>
+              {hasPrimaryResults ? (
+                <View style={passengerStyles.resultsList}>
+                  {ridesCardList.map((ride) => renderRideResult(ride))}
+                </View>
+              ) : fallbackHomeResults.length > 0 ? (
+                <View style={passengerStyles.resultsList}>
+                  {fallbackHomeResults.map((ride) => renderRideResult(ride))}
+                </View>
+              ) : (
+                <Text style={passengerStyles.resultsEmpty}>{resultsEmptyLabel}</Text>
+              )}
             </GradientBackground>
           ) : null}
         </ScrollView>
@@ -1955,6 +2099,7 @@ function PassengerPublishScreen({
                     ]}
                     onPress={() => {
                       setTravelTime(slot);
+                      setHasConfirmedTime(true);
                       setShowTimePicker(false);
                     }}
                   >
@@ -1991,155 +2136,218 @@ function PassengerPublishScreen({
                 </View>
               ) : null}
               <View style={passengerStyles.paymentMethodsRow}>
-                {(['apple-pay', 'card'] as const).map((method) => {
-                  const selected = paymentMethodChoice === method;
+                {[
+                  {
+                    key: 'wallet' as const,
+                    label: `Wallet (€${walletBalance.toFixed(2)})`,
+                    disabled: !paymentRide || walletBalance + 0.0001 < (paymentRide?.price ?? 0),
+                  },
+                  { key: 'apple-pay' as const, label: 'Apple Pay' },
+                  { key: 'card' as const, label: 'Carte bancaire' },
+                ].map((option) => {
+                  const selected = paymentMethodChoice === option.key;
+                  const disabled = option.disabled;
+                  const caption =
+                    option.key === 'wallet'
+                      ? paymentRide && walletBalance + 0.0001 >= paymentRide.price
+                        ? 'Solde suffisant'
+                        : 'Solde insuffisant'
+                      : option.key === 'card' && defaultWalletCardLabel
+                      ? defaultWalletCardLabel
+                      : null;
                   return (
                     <Pressable
-                      key={method}
+                      key={option.key}
                       style={[
                         passengerStyles.paymentMethodButton,
                         selected && passengerStyles.paymentMethodButtonActive,
+                        disabled && passengerStyles.paymentMethodButtonDisabled,
                       ]}
-                      onPress={() => setPaymentMethodChoice(method)}
+                      onPress={() => {
+                        if (disabled) return;
+                        setPaymentMethodChoice(option.key);
+                      }}
                       accessibilityRole="button"
                     >
                       <Text
                         style={[
                           passengerStyles.paymentMethodText,
                           selected && passengerStyles.paymentMethodTextActive,
+                          disabled && passengerStyles.paymentMethodTextDisabled,
                         ]}
                       >
-                        {method === 'apple-pay' ? 'Apple Pay' : 'Carte bancaire'}
+                        {option.label}
                       </Text>
+                      {caption ? (
+                        <Text style={passengerStyles.paymentMethodCaption}>{caption}</Text>
+                      ) : null}
                     </Pressable>
                   );
                 })}
               </View>
               {paymentMethodChoice === 'card' ? (
-                <>
-                  <View style={passengerStyles.paymentForm}>
-                    <TextInput
-                      value={cardNumberDisplay}
-                      onChangeText={(value) => {
-                        const digits = value.replace(/[^0-9]/g, '').slice(0, 16);
-                        setCardNumber(digits);
-                        setCardMasked(false);
-                      }}
-                      onFocus={() => setCardMasked(false)}
-                      onBlur={() => setCardMasked(true)}
-                      placeholder="Numéro de carte"
-                      keyboardType="number-pad"
-                      style={passengerStyles.paymentInput}
-                      placeholderTextColor={Colors.gray500}
-                      maxLength={19}
-                    />
-                    <View style={passengerStyles.paymentRow}>
-                      <Pressable
-                        style={[
-                          passengerStyles.paymentInput,
-                          passengerStyles.paymentInputHalf,
-                          passengerStyles.paymentInputPressable,
-                        ]}
-                        onPress={() => {
-                          setPickerExpiryMonth(expiryMonth);
-                          setPickerExpiryYear(expiryYear);
-                          setShowExpiryPicker(true);
+                canUseSavedCard && !useManualCardEntry ? (
+                  <View style={passengerStyles.savedCardBox}>
+                    <Text style={passengerStyles.savedCardLabel}>{defaultWalletCardLabel}</Text>
+                    {defaultWalletCardExpiry ? (
+                      <Text style={passengerStyles.savedCardHint}>Expire le {defaultWalletCardExpiry}</Text>
+                    ) : null}
+                    <Pressable onPress={() => setUseManualCardEntry(true)} accessibilityRole="button">
+                      <Text style={passengerStyles.paymentLink}>Utiliser une autre carte</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <>
+                    <View style={passengerStyles.paymentForm}>
+                      <TextInput
+                        value={cardNumberDisplay}
+                        onChangeText={(value) => {
+                          const digits = value.replace(/[^0-9]/g, '').slice(0, 16);
+                          setCardNumber(digits);
+                          setCardMasked(false);
                         }}
-                        accessibilityRole="button"
-                      >
-                        <Text
+                        onFocus={() => setCardMasked(false)}
+                        onBlur={() => setCardMasked(true)}
+                        placeholder="Numéro de carte"
+                        keyboardType="number-pad"
+                        style={passengerStyles.paymentInput}
+                        placeholderTextColor={Colors.gray500}
+                        maxLength={19}
+                      />
+                      <View style={passengerStyles.paymentRow}>
+                        <Pressable
                           style={[
-                            passengerStyles.paymentInputValue,
-                            !cardExpiry && passengerStyles.paymentInputPlaceholder,
+                            passengerStyles.paymentInput,
+                            passengerStyles.paymentInputHalf,
+                            passengerStyles.paymentInputPressable,
                           ]}
+                          onPress={() => {
+                            setPickerExpiryMonth(expiryMonth);
+                            setPickerExpiryYear(expiryYear);
+                            setShowExpiryPicker(true);
+                          }}
+                          accessibilityRole="button"
                         >
-                          {cardExpiry || 'MM/AA'}
+                          <Text
+                            style={[
+                              passengerStyles.paymentInputValue,
+                              !cardExpiry && passengerStyles.paymentInputPlaceholder,
+                            ]}
+                          >
+                            {cardExpiry || 'MM/AA'}
+                          </Text>
+                        </Pressable>
+                        <TextInput
+                          value={cardCvv}
+                          onChangeText={(value) => {
+                            const digits = value.replace(/[^0-9]/g, '').slice(0, 4);
+                            setCardCvv(digits);
+                          }}
+                          placeholder="CVV"
+                          keyboardType="number-pad"
+                          style={[passengerStyles.paymentInput, passengerStyles.paymentInputHalf]}
+                          placeholderTextColor={Colors.gray500}
+                          maxLength={4}
+                          secureTextEntry
+                        />
+                      </View>
+                    </View>
+                    {canUseSavedCard ? (
+                      <Pressable
+                        onPress={() => {
+                          setUseManualCardEntry(false);
+                          setCardNumber('');
+                          setCardExpiry('');
+                          setCardCvv('');
+                        }}
+                      >
+                        <Text style={passengerStyles.paymentLink}>
+                          Utiliser {defaultWalletCardLabel || 'ma carte enregistrée'}
                         </Text>
                       </Pressable>
-                      <TextInput
-                        value={cardCvv}
-                        onChangeText={(value) => {
-                          const digits = value.replace(/[^0-9]/g, '').slice(0, 4);
-                          setCardCvv(digits);
-                        }}
-                        placeholder="CVV"
-                        keyboardType="number-pad"
-                        style={[passengerStyles.paymentInput, passengerStyles.paymentInputHalf]}
-                        placeholderTextColor={Colors.gray500}
-                        maxLength={4}
-                        secureTextEntry
-                      />
-                    </View>
-                  </View>
-                  <Pressable
-                    style={[
-                      passengerStyles.cardPayButton,
-                      reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.cardPayButtonDisabled,
-                    ]}
-                    onPress={() => confirmPayment('card')}
-                    disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
-                    accessibilityRole="button"
-                  >
-                    {paymentRide && reservingRideId === paymentRide.id ? (
-                      <ActivityIndicator color="#fff" />
-                    ) : (
-                      <View style={passengerStyles.cardPayContent}>
-                        <Text style={passengerStyles.cardPayIcon}>💳</Text>
-                        <Text style={passengerStyles.cardPayText}>
-                          {paymentRide ? `Payer €${paymentRide.price.toFixed(2)}` : 'Payer par carte'}
-                        </Text>
-                      </View>
-                    )}
-                  </Pressable>
-                </>
+                    ) : null}
+                  </>
+                )
+              ) : paymentMethodChoice === 'wallet' ? (
+                <View style={passengerStyles.paymentNoteBox}>
+                  <Text style={passengerStyles.paymentNote}>
+                    {paymentRide
+                      ? walletBalance + 0.0001 >= paymentRide.price
+                        ? `€${paymentRide.price.toFixed(2)} seront débités de ton wallet (solde: €${walletBalance.toFixed(
+                            2
+                          )}).`
+                        : 'Solde insuffisant. Recharge ton wallet ou choisis un autre moyen de paiement.'
+                      : 'Ton wallet sera débité pour ce trajet.'}
+                  </Text>
+                </View>
               ) : (
-                <>
-                  <View style={passengerStyles.paymentNoteBox}>
-                    <Text style={passengerStyles.paymentNote}>
-                      Apple Pay sera utilisé sur ton appareil pour finaliser la transaction.
+                <View style={passengerStyles.paymentNoteBox}>
+                  <Text style={passengerStyles.paymentNote}>
+                    Apple Pay sera utilisé sur ton appareil pour finaliser la transaction.
+                  </Text>
+                </View>
+              )}
+              {paymentError ? <Text style={passengerStyles.paymentError}>{paymentError}</Text> : null}
+              {paymentMethodChoice === 'apple-pay' ? (
+                <Pressable
+                  style={[
+                    passengerStyles.applePayButton,
+                    reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.applePayButtonDisabled,
+                  ]}
+                  onPress={confirmPayment}
+                  disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
+                  accessibilityRole="button"
+                >
+                  {paymentRide && reservingRideId === paymentRide.id ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={passengerStyles.applePayText}> Pay</Text>
+                  )}
+                </Pressable>
+              ) : paymentMethodChoice === 'wallet' ? (
+                <Pressable
+                  style={[
+                    passengerStyles.walletPayButton,
+                    ((paymentRide && (walletBalance + 0.0001 < paymentRide.price || reservingRideId === paymentRide.id)) ||
+                      !paymentRide) &&
+                      passengerStyles.walletPayButtonDisabled,
+                  ]}
+                  onPress={confirmPayment}
+                  disabled={
+                    !paymentRide ||
+                    (paymentRide && (walletBalance + 0.0001 < paymentRide.price || reservingRideId === paymentRide.id))
+                  }
+                  accessibilityRole="button"
+                >
+                  {paymentRide && reservingRideId === paymentRide.id ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={passengerStyles.walletPayText}>
+                      {paymentRide ? `Débiter €${paymentRide.price.toFixed(2)}` : 'Débiter mon wallet'}
                     </Text>
-                  </View>
-                  <Pressable
-                    style={[
-                      passengerStyles.applePayButton,
-                      reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.applePayButtonDisabled,
-                    ]}
-                    onPress={() => confirmPayment('apple-pay')}
-                    disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
-                    accessibilityRole="button"
-                  >
-                    {paymentRide && reservingRideId === paymentRide.id ? (
-                      <ActivityIndicator color="#fff" />
-                    ) : (
-                      <Text style={passengerStyles.applePayText}> Pay</Text>
-                    )}
-                  </Pressable>
-                  <View style={[passengerStyles.paymentNoteBox, passengerStyles.googlePayNoteBox]}>
-                    <Text style={[passengerStyles.paymentNote, passengerStyles.googlePayNoteText]}>
-                      Google Pay sera utilisé sur ton appareil pour finaliser la transaction.
-                    </Text>
-                  </View>
-                  <Pressable
-                    style={[
-                      passengerStyles.googlePayButton,
-                      reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.googlePayButtonDisabled,
-                    ]}
-                    onPress={() => confirmPayment('google-pay')}
-                    disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
-                    accessibilityRole="button"
-                  >
-                    {paymentRide && reservingRideId === paymentRide.id ? (
-                      <ActivityIndicator color="#1A73E8" />
-                    ) : (
-                      <View style={passengerStyles.googlePayContent}>
-                        <View style={passengerStyles.googlePayBadge}>
-                          <Text style={passengerStyles.googlePayBadgeText}>G</Text>
-                        </View>
-                        <Text style={passengerStyles.googlePayText}>Google Pay</Text>
-                      </View>
-                    )}
-                  </Pressable>
-                </>
+                  )}
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={[
+                    passengerStyles.cardPayButton,
+                    reservingRideId && paymentRide?.id === reservingRideId && passengerStyles.cardPayButtonDisabled,
+                  ]}
+                  onPress={confirmPayment}
+                  disabled={!!reservingRideId && paymentRide?.id === reservingRideId}
+                  accessibilityRole="button"
+                >
+                  {paymentRide && reservingRideId === paymentRide.id ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <View style={passengerStyles.cardPayContent}>
+                      <Text style={passengerStyles.cardPayIcon}>💳</Text>
+                      <Text style={passengerStyles.cardPayText}>
+                        {paymentRide ? `Payer €${paymentRide.price.toFixed(2)}` : 'Payer par carte'}
+                      </Text>
+                    </View>
+                  )}
+                </Pressable>
               )}
               <Pressable onPress={closePaymentSheet} style={passengerStyles.paymentCancel}>
                 <Text style={passengerStyles.paymentCancelText}>Annuler</Text>
@@ -2421,34 +2629,11 @@ const passengerStyles = StyleSheet.create({
   destinationColumn: {
     flex: 1,
     gap: Spacing.md,
+    position: 'relative',
   },
-  campusChipsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
-    marginTop: Spacing.sm,
-  },
-  campusChip: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: Colors.gray200,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 6,
-    backgroundColor: 'rgba(255,255,255,0.8)',
-  },
-  campusChipSelected: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryLight,
-  },
-  campusChipText: {
-    fontWeight: '600',
-    color: Colors.gray600,
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  campusChipTextSelected: {
-    color: Colors.primaryDark,
+  dropdownRaised: {
+    zIndex: 3000,
+    elevation: 30,
   },
   destinationRow: {
     flexDirection: 'row',
@@ -2456,30 +2641,45 @@ const passengerStyles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: Spacing.lg,
     marginTop: Spacing.sm,
+    position: 'relative',
+  },
+  destinationRowRaised: {
+    zIndex: 200,
   },
   dropdownWrapper: {
     position: 'relative',
+    gap: Spacing.xs,
+  },
+  dropdownLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.gray600,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
   },
   dropdownWrapperTop: {
-    zIndex: 30,
+    zIndex: 140,
   },
   dropdownWrapperBottom: {
-    zIndex: 20,
+    zIndex: 120,
   },
   dateSection: {
     minHeight: 70,
     width: '100%',
     justifyContent: 'center',
-    marginTop: -Spacing.xs,
+    marginTop: -Spacing.sm,
   },
   dateRow: {
     flexDirection: 'row',
     gap: Spacing.sm,
-    marginTop: Spacing.xs,
+    marginTop: 0,
     zIndex: 5,
+    position: 'relative',
   },
-  dateRowPlaceholder: {
-    height: 60,
+  dateError: {
+    marginTop: Spacing.xs,
+    color: Colors.danger,
+    fontWeight: '600',
   },
   inputWrapper: {
     flexDirection: 'row',
@@ -2532,36 +2732,16 @@ const passengerStyles = StyleSheet.create({
     color: Colors.ink,
     fontWeight: '600',
   },
+  dropdownTextPlaceholder: {
+    color: Colors.gray400,
+    fontWeight: '600',
+  },
   dropdownTextInput: {
     flex: 1,
     paddingVertical: 12,
     paddingHorizontal: Spacing.sm,
     fontSize: 16,
     color: Colors.ink,
-    fontWeight: '600',
-  },
-  locationHelperRow: {
-    paddingHorizontal: Spacing.sm,
-    marginTop: Spacing.xs,
-    alignItems: 'flex-start',
-    gap: Spacing.xs,
-  },
-  locationChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: R.pill,
-    backgroundColor: '#F1F5FF',
-    alignSelf: 'flex-start',
-  },
-  locationChipDisabled: {
-    opacity: 0.6,
-  },
-  locationChipText: {
-    color: Colors.gray700,
-    fontSize: 12,
     fontWeight: '600',
   },
   locationDetectedText: {
@@ -2585,11 +2765,16 @@ const passengerStyles = StyleSheet.create({
     justifyContent: 'center',
     gap: 2,
   },
+  searchButtonWrapper: {
+    position: 'relative',
+  },
+  searchButtonShield: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: R.pill,
+  },
   fullSearchButton: {
     marginTop: Spacing.md,
-  },
-  fullSearchButtonLowered: {
-    marginTop: Spacing.xxl * 2,
+    position: 'relative',
   },
   searchLoading: {
     marginTop: Spacing.sm,
@@ -2603,8 +2788,117 @@ const passengerStyles = StyleSheet.create({
   },
   pickerTrigger: {
     paddingRight: Spacing.md,
-    minHeight: 56,
+    minHeight: 48,
     justifyContent: 'center',
+  },
+  moreFiltersButton: {
+    marginTop: Spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: R.pill,
+    borderWidth: 0,
+    backgroundColor: Colors.white,
+  },
+  moreFiltersButtonActive: {
+    backgroundColor: Colors.white,
+  },
+  moreFiltersButtonText: {
+    fontWeight: '700',
+    color: Colors.gray700,
+  },
+  moreFiltersButtonTextActive: {
+    color: Colors.primaryDark,
+  },
+  moreFiltersPanel: {
+    marginTop: Spacing.xs,
+    padding: Spacing.md,
+    borderRadius: R.xl,
+    borderWidth: 1,
+    borderColor: Colors.gray150,
+    backgroundColor: Colors.gray50,
+    gap: Spacing.sm,
+  },
+  filterGroup: {
+    gap: Spacing.xs,
+  },
+  filterGroupLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.gray600,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  sliderLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  sliderValue: {
+    fontWeight: '800',
+    color: Colors.primaryDark,
+  },
+  sliderTrack: {
+    marginTop: Spacing.xs,
+    height: 28,
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  sliderTrackBackground: {
+    position: 'absolute',
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.gray200,
+    width: '100%',
+    left: 0,
+  },
+  sliderTrackFill: {
+    position: 'absolute',
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.primary,
+    left: 0,
+  },
+  sliderThumb: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.white,
+    borderWidth: 2,
+    borderColor: Colors.primary,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    transform: [{ translateX: -11 }],
+  },
+  sliderScale: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: Spacing.xs,
+  },
+  sliderScaleLabel: {
+    fontSize: 12,
+    color: Colors.gray500,
+  },
+  filterApplyButton: {
+    alignSelf: 'flex-end',
+    marginTop: Spacing.xs,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: R.lg,
+    backgroundColor: Colors.primary,
+  },
+  filterApplyButtonDisabled: {
+    backgroundColor: Colors.gray300,
+  },
+  filterApplyButtonText: {
+    color: Colors.white,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   dropdownList: {
     position: 'absolute',
@@ -2619,8 +2913,9 @@ const passengerStyles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
-    zIndex: 60,
-    elevation: 8,
+    zIndex: 1000,
+    elevation: 20,
+    pointerEvents: 'auto',
   },
   dropdownItem: {
     paddingVertical: Spacing.sm,
@@ -2737,12 +3032,44 @@ const passengerStyles = StyleSheet.create({
     borderColor: Colors.primary,
     backgroundColor: Colors.primaryLight,
   },
+  paymentMethodButtonDisabled: {
+    opacity: 0.55,
+  },
   paymentMethodText: {
     fontWeight: '600',
     color: Colors.gray600,
   },
   paymentMethodTextActive: {
     color: Colors.primaryDark,
+  },
+  paymentMethodTextDisabled: {
+    color: Colors.gray500,
+  },
+  paymentMethodCaption: {
+    fontSize: 11,
+    color: Colors.gray500,
+    marginTop: 2,
+  },
+  savedCardBox: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.gray150,
+    padding: Spacing.md,
+    backgroundColor: Colors.gray50,
+    gap: 4,
+  },
+  savedCardLabel: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  savedCardHint: {
+    color: Colors.gray600,
+    fontSize: 13,
+  },
+  paymentLink: {
+    color: Colors.primaryDark,
+    fontWeight: '700',
+    marginTop: 8,
   },
   paymentForm: {
     gap: Spacing.sm,
@@ -2839,38 +3166,19 @@ const passengerStyles = StyleSheet.create({
     fontSize: 16,
     letterSpacing: 0.4,
   },
-  googlePayButton: {
+  walletPayButton: {
     marginTop: Spacing.xs,
     borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#1A73E8',
+    backgroundColor: Colors.primaryDark,
     paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  googlePayButtonDisabled: {
-    opacity: 0.6,
+  walletPayButtonDisabled: {
+    opacity: 0.4,
   },
-  googlePayContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-  },
-  googlePayBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#1A73E8',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  googlePayBadgeText: {
+  walletPayText: {
     color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  googlePayText: {
-    color: '#1A73E8',
     fontWeight: '800',
     fontSize: 16,
   },
@@ -3013,94 +3321,6 @@ const passengerStyles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
-  filterButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 6,
-    borderRadius: 18,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(15,25,40,0.12)',
-    backgroundColor: 'rgba(255,255,255,0.85)',
-  },
-  filterButtonActive: {
-    borderColor: Colors.primary,
-    backgroundColor: 'rgba(255,123,84,0.15)',
-  },
-  filterButtonText: {
-    fontWeight: '700',
-    color: Colors.gray700,
-  },
-  filterPanel: {
-    marginTop: Spacing.md,
-    gap: Spacing.sm,
-  },
-  filterGroup: {
-    gap: Spacing.xs,
-  },
-  filterGroupLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: Colors.gray500,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  filterChipsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
-  },
-  filterChip: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 8,
-    borderRadius: 18,
-    backgroundColor: Colors.gray150,
-  },
-  filterChipActive: {
-    backgroundColor: Colors.primaryLight,
-    borderWidth: 1,
-    borderColor: Colors.primary,
-  },
-  filterChipLabel: {
-    fontWeight: '600',
-    color: Colors.gray600,
-    fontSize: 13,
-  },
-  filterChipLabelActive: {
-    color: Colors.primaryDark,
-  },
-  filterToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  filterToggleSwitch: {
-    width: 44,
-    height: 24,
-    borderRadius: 16,
-    padding: 3,
-    justifyContent: 'center',
-    backgroundColor: 'rgba(17,24,39,0.15)',
-  },
-  filterToggleSwitchActive: {
-    backgroundColor: 'rgba(255,123,84,0.4)',
-  },
-  filterToggleThumb: {
-    width: 18,
-    height: 18,
-    borderRadius: 12,
-    backgroundColor: Colors.gray400,
-    alignSelf: 'flex-start',
-  },
-  filterToggleThumbActive: {
-    backgroundColor: Colors.primary,
-    alignSelf: 'flex-end',
-  },
-  filterToggleLabel: {
-    fontWeight: '600',
-    color: Colors.gray600,
-  },
   resultsEmpty: {
     color: Colors.gray600,
     fontSize: 13,
@@ -3209,6 +3429,165 @@ const passengerStyles = StyleSheet.create({
     marginTop: Spacing.sm,
   },
 });
+
+function MyRideRow({
+  ride,
+  onEdit,
+  onRemove,
+  C,
+  S,
+}: {
+  ride: Ride;
+  onEdit: () => void;
+  onRemove: (ride: Ride) => void;
+  C: typeof DefaultColors;
+  S: typeof Shadows;
+}) {
+  const seatsLeft = ride.seats - ride.passengers.length;
+  const departed = hasRideDeparted(ride);
+  const dayLabel = (() => {
+    const departure = new Date(ride.departureAt);
+    const now = new Date();
+    if (departure.toDateString() === now.toDateString()) return 'Aujourd’hui';
+    const tomorrow = new Date(now);
+    tomorrow.setDate(now.getDate() + 1);
+    if (departure.toDateString() === tomorrow.toDateString()) return 'Demain';
+    return departure.toLocaleDateString('fr-BE', { weekday: 'short', day: 'numeric', month: 'short' });
+  })();
+
+  const statusLabel = departed ? 'Trajet terminé' : `${seatsLeft} place(s) restantes`;
+
+  const handleEdit = () => {
+    if (departed) {
+      Alert.alert('Trajet terminé', 'Tu ne peux plus modifier un trajet déjà parti.');
+      return;
+    }
+    onEdit();
+  };
+
+  const handleDelete = () => {
+    if (departed) {
+      Alert.alert('Trajet terminé', 'La suppression est désactivée après le départ.');
+      return;
+    }
+    Alert.alert(
+      'Supprimer le trajet',
+      `Confirme la suppression du trajet ${ride.depart} → ${ride.destination} ?`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: () => onRemove(ride),
+        },
+      ]
+    );
+  };
+
+  const style = styles(C, S);
+
+  const avatarUri = getAvatarUrl(ride.ownerEmail, 64);
+
+  return (
+    <View style={style.rideRow}>
+      <View style={style.rideRowAvatar}>
+        <Image source={{ uri: avatarUri }} style={style.rideRowAvatarImage} />
+      </View>
+      <View style={{ flex: 1, gap: 4 }}>
+        <Text style={style.rideRowTitle}>
+          {ride.depart} → {ride.destination}
+        </Text>
+        <View style={style.rideRowMetaRow}>
+          <IconSymbol name="clock.fill" size={16} color={C.gray600} />
+          <Text style={style.rideRowMeta}>
+            {ride.time} • {dayLabel} • {statusLabel}
+          </Text>
+        </View>
+        <View style={style.rideRowMetaRow}>
+          <IconSymbol name="eurosign.circle" size={16} color={C.gray600} />
+          <Text style={style.rideRowMeta}>
+            €{ride.price.toFixed(2)} / passager
+            {ride.pricingMode === 'double' ? ' • Aller + retour' : ''}
+          </Text>
+        </View>
+        <View style={style.rideRowMetaRow}>
+          <IconSymbol name="car.fill" size={16} color={C.gray600} />
+          <Text style={style.rideRowMeta}>Plaque : {maskPlate(ride.plate)}</Text>
+        </View>
+        <View style={style.rideRowMetaRow}>
+          <IconSymbol name="person.2.fill" size={16} color={C.gray600} />
+          <Text style={style.rideRowMeta}>
+            Réservations : {ride.passengers.length}/{ride.seats}
+          </Text>
+        </View>
+      </View>
+      <View style={style.rideRowActions}>
+        <GradientButton
+          title="Modifier"
+          size="sm"
+          variant="lavender"
+          fullWidth
+          style={style.rideRowButton}
+          onPress={handleEdit}
+          accessibilityRole="button"
+          disabled={departed}
+        />
+        <GradientButton
+          title="Supprimer"
+          size="sm"
+          variant="danger"
+          fullWidth
+          style={style.rideRowButton}
+          onPress={handleDelete}
+          accessibilityRole="button"
+          disabled={departed}
+        />
+      </View>
+    </View>
+  );
+}
+
+function Field({
+  label,
+  error,
+  C,
+  ...props
+}: {
+  label: string;
+  error?: string;
+  placeholder?: string;
+  value: string;
+  onChangeText: (s: string) => void;
+  inputMode?: 'text' | 'numeric' | 'email' | 'tel' | 'search' | 'url';
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  C: typeof DefaultColors;
+}) {
+  return (
+    <View style={{ marginBottom: 14 }}>
+      <Text style={{ fontSize: 13, fontWeight: '700', color: C.gray600, marginBottom: 6 }}>
+        {label}
+      </Text>
+      <TextInput
+        style={[
+          {
+            borderWidth: 1,
+            borderColor: C.gray300,
+            borderRadius: 12,
+            paddingVertical: 12,
+            paddingHorizontal: 14,
+            fontSize: 16,
+            color: C.ink,
+            backgroundColor: C.gray150,
+          },
+          !!error && { borderColor: C.danger },
+        ]}
+        placeholderTextColor={C.gray500}
+        {...props}
+      />
+      {!!error && <Text style={{ color: C.danger, fontSize: 12, marginTop: 6 }}>{error}</Text>}
+    </View>
+  );
+}
 
 const styles = (C: typeof DefaultColors, S: typeof Shadows) =>
   StyleSheet.create({
@@ -3572,7 +3951,7 @@ const styles = (C: typeof DefaultColors, S: typeof Shadows) =>
     priceLabel: { fontWeight: '700', color: C.ink, fontSize: 14 },
     priceModeRow: { flexDirection: 'row', gap: Spacing.sm },
     priceModeButton: { flex: 1 },
-    priceInputRow: {
+    priceStaticRow: {
       flexDirection: 'row',
       alignItems: 'center',
       borderWidth: 1,
@@ -3582,7 +3961,7 @@ const styles = (C: typeof DefaultColors, S: typeof Shadows) =>
       paddingHorizontal: Spacing.sm,
     },
     priceInputPrefix: { color: C.gray600, fontWeight: '700', marginRight: 4 },
-    priceInput: { flex: 1, fontSize: 16, color: C.ink, paddingVertical: 8 },
+    priceStaticValue: { flex: 1, fontSize: 16, color: C.ink, fontWeight: '700', paddingVertical: 8 },
     priceBandText: { color: C.gray600, fontSize: 12 },
 
     preview: {
@@ -3632,9 +4011,6 @@ const maskCardNumberDisplay = (digits: string) => {
 
 const EXPIRY_YEARS_SPAN = 12;
 
-const GOOGLE_MAPS_API_KEY =
-  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? 'AIzaSyCU9joaWe-_aSq4RMbqbLsrVi0pkC5iu8c';
-
 type HeroSegment = {
   id: string;
   start: { latitude: number; longitude: number };
@@ -3653,34 +4029,33 @@ const HERO_FALLBACK_SEGMENTS: HeroSegment[] = [
   },
 ];
 
-const loadGoogleMaps = () => {
-  if (typeof window === 'undefined') {
-    return Promise.reject(new Error('window unavailable'));
-  }
-  if (window.google && window.google.maps) {
-    return Promise.resolve(window.google);
-  }
-  if (window.__campusRideGoogleMapLoader) {
-    return window.__campusRideGoogleMapLoader;
-  }
-  window.__campusRideGoogleMapLoader = new Promise<any>((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}`;
-    script.async = true;
-    script.defer = true;
-    script.onload = () => resolve(window.google);
-    script.onerror = () => reject(new Error('Google Maps JS failed to load.'));
-    document.head.appendChild(script);
-  });
-  return window.__campusRideGoogleMapLoader;
-};
+type HeroLatLng = { lat: number; lng: number };
+type HeroPreviewMarker = { position: HeroLatLng; label: string; kind: 'origin' | 'destination' };
+
+const toHeroCoordinates = (point: HeroLatLng) => ({
+  latitude: point.lat,
+  longitude: point.lng,
+});
+
+const HERO_DESTINATION_PIN_SVG =
+  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="48" viewBox="0 0 32 48"><path fill="%23D93025" stroke="%23A52714" stroke-width="2" d="M16 1C8.82 1 3 6.82 3 14c0 9.5 13 24 13 24s13-14.5 13-24C29 6.82 23.18 1 16 1z"/><circle cx="16" cy="15" r="6" fill="%23FFFFFF"/></svg>';
+const HERO_DESTINATION_PIN_SIZE = { width: 24, height: 36 };
+
+const isValidHeroCoordinate = (coord: HeroSegment['start'] | null | undefined) =>
+  !!coord && Number.isFinite(coord.latitude) && Number.isFinite(coord.longitude);
+
+const sanitizeHeroSegments = (segments: HeroSegment[]): HeroSegment[] =>
+  segments.filter(
+    (segment) => isValidHeroCoordinate(segment.start) && isValidHeroCoordinate(segment.end)
+  );
 
 const computeHeroCamera = (segments: HeroSegment[]) => {
-  if (segments.length === 0) {
+  const validSegments = sanitizeHeroSegments(segments);
+  if (validSegments.length === 0) {
     return { center: { lat: 50.8503, lng: 4.3517 }, zoom: 11 };
   }
-  const lats = segments.flatMap((segment) => [segment.start.latitude, segment.end.latitude]);
-  const lngs = segments.flatMap((segment) => [segment.start.longitude, segment.end.longitude]);
+  const lats = validSegments.flatMap((segment) => [segment.start.latitude, segment.end.latitude]);
+  const lngs = validSegments.flatMap((segment) => [segment.start.longitude, segment.end.longitude]);
   const minLat = Math.min(...lats);
   const maxLat = Math.max(...lats);
   const minLng = Math.min(...lngs);
@@ -3693,32 +4068,35 @@ const computeHeroCamera = (segments: HeroSegment[]) => {
   return { center, zoom };
 };
 
-const computeCampusCamera = () => {
-  if (!CAMPUS_LOCATIONS.length) {
-    return { center: { lat: 50.8503, lng: 4.3517 }, zoom: 11 };
-  }
-  const lats = CAMPUS_LOCATIONS.map((campus) => campus.latitude);
-  const lngs = CAMPUS_LOCATIONS.map((campus) => campus.longitude);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-  const center = { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 };
-  const latitudeDelta = Math.max((maxLat - minLat) * 1.4, 0.02);
-  const longitudeDelta = Math.max((maxLng - minLng) * 1.4, 0.02);
-  const delta = Math.max(latitudeDelta, longitudeDelta);
-  const zoom = Math.max(5, Math.min(15, Math.log2(360 / delta)));
-  return { center, zoom };
-};
-
-const HeroWebMap = ({ rides }: { rides: Ride[] }) => {
+const HeroWebMap = ({
+  rides,
+  depart,
+  destination,
+}: {
+  rides: Ride[];
+  depart?: string | null;
+  destination?: string | null;
+}) => {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapInstance = useRef<any>(null);
-  const overlays = useRef<{ markers: any[]; polylines: any[] }>({ markers: [], polylines: [] });
+  const overlays = useRef<{ markers: any[]; polylines: any[]; infoWindows: google.maps.OverlayView[] }>({
+    markers: [],
+    polylines: [],
+    infoWindows: [],
+  });
+  const geocoderRef = useRef<any>(null);
+  const directionsRef = useRef<any>(null);
+  const lastDirectionsRequestId = useRef(0);
   const [error, setError] = useState<string | null>(null);
+  const [mapReady, setMapReady] = useState(false);
+  const [previewMarkers, setPreviewMarkers] = useState<{
+    start: HeroPreviewMarker | null;
+    end: HeroPreviewMarker | null;
+  }>({ start: null, end: null });
+  const [previewPath, setPreviewPath] = useState<HeroLatLng[] | null>(null);
 
   const segments = useMemo<HeroSegment[]>(() => {
-    if (!rides.length) return HERO_FALLBACK_SEGMENTS;
+    if (!rides.length) return [];
     return rides.slice(0, 3).map((ride) => ({
       id: ride.id,
       start: getCoordinates(ride.depart),
@@ -3728,13 +4106,52 @@ const HeroWebMap = ({ rides }: { rides: Ride[] }) => {
     }));
   }, [rides]);
 
+  const hasPreviewInput = Boolean(depart?.trim()) || Boolean(destination?.trim());
+  const usingFallback = segments.length === 0 && !hasPreviewInput;
+  const displaySegments = usingFallback ? HERO_FALLBACK_SEGMENTS : segments;
+  const safeDisplaySegments = useMemo(() => sanitizeHeroSegments(displaySegments), [displaySegments]);
+  const cameraSegments = useMemo(() => {
+    const list: HeroSegment[] = [...safeDisplaySegments];
+    if (previewMarkers.start && previewMarkers.end) {
+      list.push({
+        id: 'hero-preview-route',
+        start: toHeroCoordinates(previewMarkers.start.position),
+        end: toHeroCoordinates(previewMarkers.end.position),
+        startLabel: previewMarkers.start.label,
+        endLabel: previewMarkers.end.label,
+      });
+    } else if (previewMarkers.start) {
+      const start = toHeroCoordinates(previewMarkers.start.position);
+      list.push({
+        id: 'hero-preview-start',
+        start,
+        end: start,
+        startLabel: previewMarkers.start.label,
+        endLabel: previewMarkers.start.label,
+      });
+    } else if (previewMarkers.end) {
+      const end = toHeroCoordinates(previewMarkers.end.position);
+      list.push({
+        id: 'hero-preview-end',
+        start: end,
+        end,
+        startLabel: previewMarkers.end.label,
+        endLabel: previewMarkers.end.label,
+      });
+    }
+    return list.length ? list : HERO_FALLBACK_SEGMENTS;
+  }, [previewMarkers.end, previewMarkers.start, safeDisplaySegments]);
+
+  const selectedCampus = useMemo(() => findCampusLocation(destination), [destination]);
+  const selectedCampusKey = selectedCampus?.name.trim().toLowerCase() ?? null;
+
   useEffect(() => {
     if (Platform.OS !== 'web') return;
     let mounted = true;
-    loadGoogleMaps()
+    loadGoogleMapsApi()
       .then((google) => {
         if (!mounted || !mapNode.current) return;
-        const camera = computeHeroCamera(segments);
+        const camera = computeHeroCamera(cameraSegments);
         mapInstance.current = new google.maps.Map(mapNode.current, {
           center: camera.center,
           zoom: camera.zoom,
@@ -3743,6 +4160,7 @@ const HeroWebMap = ({ rides }: { rides: Ride[] }) => {
           mapTypeControl: false,
           streetViewControl: false,
         });
+        setMapReady(true);
       })
       .catch(() => {
         if (mounted) {
@@ -3758,25 +4176,141 @@ const HeroWebMap = ({ rides }: { rides: Ride[] }) => {
   useEffect(() => {
     if (Platform.OS !== 'web') return;
     const google = window.google;
+    if (!mapReady || !google) {
+      if (!hasPreviewInput) {
+        setPreviewMarkers({ start: null, end: null });
+      }
+      return;
+    }
+
+    const clean = (value?: string | null) => (value && value.trim().length ? value.trim() : null);
+    const originLabel = clean(depart);
+    const destinationLabel = clean(destination);
+    if (!originLabel && !destinationLabel) {
+      setPreviewMarkers({ start: null, end: null });
+      return;
+    }
+
+    let cancelled = false;
+
+    const geocodeAddress = (address: string): Promise<HeroLatLng> =>
+      new Promise((resolve) => {
+        try {
+          if (!geocoderRef.current) {
+            geocoderRef.current = new google.maps.Geocoder();
+          }
+          const geocoder = geocoderRef.current;
+          geocoder!.geocode({ address }, (results, status) => {
+            if (status === 'OK' && results && results[0] && results[0].geometry.location) {
+              const loc = results[0].geometry.location;
+              const lat = Number(loc.lat());
+              const lng = Number(loc.lng());
+              if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                resolve({ lat, lng });
+                return;
+              }
+            }
+            const fallback = getCoordinates(address);
+            resolve({ lat: fallback.latitude, lng: fallback.longitude });
+          });
+        } catch {
+          const fallback = getCoordinates(address);
+          resolve({ lat: fallback.latitude, lng: fallback.longitude });
+        }
+      });
+
+    (async () => {
+      const [startPosition, endPosition] = await Promise.all([
+        originLabel ? geocodeAddress(originLabel) : Promise.resolve<HeroLatLng | null>(null),
+        destinationLabel ? geocodeAddress(destinationLabel) : Promise.resolve<HeroLatLng | null>(null),
+      ]);
+      if (cancelled) return;
+      const safeStart =
+        startPosition && Number.isFinite(startPosition.lat) && Number.isFinite(startPosition.lng)
+          ? startPosition
+          : null;
+      const safeEnd =
+        endPosition && Number.isFinite(endPosition.lat) && Number.isFinite(endPosition.lng)
+          ? endPosition
+          : null;
+      setPreviewMarkers({
+        start: safeStart ? { position: safeStart, label: originLabel!, kind: 'origin' } : null,
+        end: safeEnd ? { position: safeEnd, label: destinationLabel!, kind: 'destination' } : null,
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [depart, destination, hasPreviewInput, mapReady]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const google = window.google;
     const map = mapInstance.current;
-    if (!google || !map) return;
+    const origin = previewMarkers.start?.position ?? null;
+    const end = previewMarkers.end?.position ?? null;
+    if (!mapReady || !google || !map || !origin || !end) {
+      setPreviewPath(null);
+      return;
+    }
+
+    if (!directionsRef.current) {
+      directionsRef.current = new google.maps.DirectionsService();
+    }
+    const requestId = ++lastDirectionsRequestId.current;
+    try {
+      directionsRef.current.route(
+        {
+          origin,
+          destination: end,
+          travelMode: google.maps.TravelMode.DRIVING,
+          provideRouteAlternatives: false,
+        },
+        (response, status) => {
+          if (requestId !== lastDirectionsRequestId.current) return;
+          if (status === 'OK' && response?.routes?.length) {
+            const overview = response.routes[0].overview_path ?? [];
+            if (overview.length > 0) {
+              const path = overview.map((point) => ({ lat: point.lat(), lng: point.lng() }));
+              setPreviewPath(path);
+              return;
+            }
+          }
+          setPreviewPath(null);
+        }
+      );
+    } catch (routeError) {
+      if (requestId === lastDirectionsRequestId.current) {
+        console.warn('Hero map directions failed', routeError);
+        setPreviewPath(null);
+      }
+    }
+  }, [mapReady, previewMarkers.end, previewMarkers.start]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const map = mapInstance.current;
+    const google = window.google;
+    if (!map || !google) return;
 
     overlays.current.markers.forEach((marker) => marker.setMap(null));
     overlays.current.polylines.forEach((polyline) => polyline.setMap(null));
-    overlays.current = { markers: [], polylines: [] };
+    overlays.current.infoWindows.forEach((info) => info.setMap(null));
+    overlays.current = { markers: [], polylines: [], infoWindows: [] };
 
-    const camera = computeHeroCamera(segments);
+    const camera = computeHeroCamera(cameraSegments);
     map.setCenter(camera.center);
     map.setZoom(camera.zoom);
 
-    segments.forEach((segment) => {
+    safeDisplaySegments.forEach((segment) => {
       const path = [
         { lat: segment.start.latitude, lng: segment.start.longitude },
         { lat: segment.end.latitude, lng: segment.end.longitude },
       ];
       const polyline = new google.maps.Polyline({
         path,
-        strokeColor: '#7A5FFF',
+        strokeColor: '#1A73E8',
         strokeOpacity: 0.9,
         strokeWeight: 4,
         geodesic: true,
@@ -3786,19 +4320,196 @@ const HeroWebMap = ({ rides }: { rides: Ride[] }) => {
       const start = new google.maps.Marker({
         position: path[0],
         title: segment.startLabel,
-        label: 'A',
+        icon: {
+          path: google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
+          fillColor: '#10B981',
+          fillOpacity: 0.95,
+          strokeColor: '#0F5132',
+          strokeOpacity: 0.9,
+          strokeWeight: 2,
+          scale: 4.6,
+        },
       });
-      const end = new google.maps.Marker({
+      const endMarker = new google.maps.Marker({
         position: path[1],
         title: segment.endLabel,
-        label: 'B',
+        icon: {
+          path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+          fillColor: '#F97316',
+          fillOpacity: 0.95,
+          strokeColor: '#C05621',
+          strokeOpacity: 0.9,
+          strokeWeight: 2,
+          scale: 4.6,
+        },
       });
       start.setMap(map);
-      end.setMap(map);
+      endMarker.setMap(map);
       overlays.current.polylines.push(polyline);
-      overlays.current.markers.push(start, end);
+      overlays.current.markers.push(start, endMarker);
     });
-  }, [segments]);
+
+    if (previewPath && previewPath.length > 0) {
+      const previewPolyline = new google.maps.Polyline({
+        path: previewPath,
+        strokeColor: '#1A73E8',
+        strokeOpacity: 0.95,
+        strokeWeight: 5,
+      });
+      previewPolyline.setMap(map);
+      overlays.current.polylines.push(previewPolyline);
+    } else if (previewMarkers.start && previewMarkers.end) {
+      const previewPolyline = new google.maps.Polyline({
+        path: [previewMarkers.start.position, previewMarkers.end.position],
+        strokeColor: '#1A73E8',
+        strokeOpacity: 0.85,
+        strokeWeight: 4,
+        geodesic: true,
+      });
+      previewPolyline.setMap(map);
+      overlays.current.polylines.push(previewPolyline);
+    }
+
+    const createOriginMarker = (marker: HeroPreviewMarker) =>
+      new google.maps.Marker({
+        position: marker.position,
+        title: marker.label,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          fillColor: '#1A73E8',
+          fillOpacity: 0.95,
+          strokeColor: '#FFFFFF',
+          strokeOpacity: 0.9,
+          strokeWeight: 2,
+          scale: 7,
+        },
+      });
+
+    const createDestinationMarker = (marker: HeroPreviewMarker) =>
+      new google.maps.Marker({
+        position: marker.position,
+        title: marker.label,
+        icon: {
+          url: HERO_DESTINATION_PIN_SVG,
+          scaledSize: new google.maps.Size(
+            HERO_DESTINATION_PIN_SIZE.width,
+            HERO_DESTINATION_PIN_SIZE.height
+          ),
+          anchor: new google.maps.Point(
+            HERO_DESTINATION_PIN_SIZE.width / 2,
+            HERO_DESTINATION_PIN_SIZE.height
+          ),
+        },
+        zIndex: 1000,
+      });
+
+    if (previewMarkers.start) {
+      const marker = createOriginMarker(previewMarkers.start);
+      marker.setMap(map);
+      overlays.current.markers.push(marker);
+    }
+    if (previewMarkers.end) {
+      const marker = createDestinationMarker(previewMarkers.end);
+      marker.setMap(map);
+      overlays.current.markers.push(marker);
+    }
+
+    if (previewMarkers.start && previewMarkers.end) {
+      const durationMinutes = getDurationMinutes(
+        previewMarkers.start.label,
+        previewMarkers.end.label
+      );
+      if (durationMinutes && Number.isFinite(durationMinutes)) {
+        const midpoint = (() => {
+          if (previewPath && previewPath.length > 0) {
+            const midIndex = Math.floor(previewPath.length / 2);
+            return previewPath[midIndex];
+          }
+          return {
+            lat: (previewMarkers.start.position.lat + previewMarkers.end.position.lat) / 2,
+            lng: (previewMarkers.start.position.lng + previewMarkers.end.position.lng) / 2,
+          };
+        })();
+        const bubbleContent =
+          `<div style="position:relative;display:inline-flex;align-items:center;font-size:13px;font-weight:700;color:#111;">` +
+          `<div style="width:0;height:0;border-top:7px solid transparent;border-bottom:7px solid transparent;` +
+          `border-right:9px solid #fff;box-shadow:1px 0 1px rgba(0,0,0,0.12);margin-right:-1px;"></div>` +
+          `<span style="background:#fff;border:2px solid #dcdcdc;border-radius:18px;padding:4px 12px;box-shadow:0 2px 6px rgba(0,0,0,0.15);">` +
+          `${durationMinutes} min</span>` +
+          `</div>`;
+        const infoWindowDiv = document.createElement('div');
+        infoWindowDiv.innerHTML = bubbleContent;
+        const overlay = new google.maps.OverlayView();
+        overlay.onAdd = function () {
+          const pane = this.getPanes()?.floatPane;
+          if (!pane) return;
+          pane.appendChild(infoWindowDiv);
+        };
+        overlay.draw = function () {
+          const projection = this.getProjection();
+          if (!projection) return;
+          const pos = projection.fromLatLngToDivPixel(new google.maps.LatLng(midpoint.lat, midpoint.lng));
+          if (pos) {
+            infoWindowDiv.style.position = 'absolute';
+            infoWindowDiv.style.transform = 'translate(10px, -50%)';
+            infoWindowDiv.style.left = `${pos.x}px`;
+            infoWindowDiv.style.top = `${pos.y}px`;
+          }
+        };
+        overlay.onRemove = function () {
+          if (infoWindowDiv.parentNode) {
+            infoWindowDiv.parentNode.removeChild(infoWindowDiv);
+          }
+        };
+        overlay.setMap(map);
+        overlays.current.infoWindows.push(overlay);
+      }
+    }
+
+    // Campus markers intentionally removed per request.
+  }, [
+    cameraSegments,
+    previewMarkers.end,
+    previewMarkers.start,
+    previewPath,
+    safeDisplaySegments,
+    selectedCampusKey,
+  ]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const map = mapInstance.current;
+    const google = window.google;
+    if (!map || !google) return;
+    const destinationLabel = previewMarkers.end?.label ?? selectedCampus?.name ?? null;
+    if (!destinationLabel) return;
+    const campus = findCampusLocation(destinationLabel);
+    const arrivalPosition = previewMarkers.end?.position;
+    if (!campus || !arrivalPosition) return;
+
+    const campusLatLng = new google.maps.LatLng(campus.latitude, campus.longitude);
+    const arrivalLatLng = new google.maps.LatLng(arrivalPosition.lat, arrivalPosition.lng);
+    const dottedLine = new google.maps.Polyline({
+      path: [arrivalLatLng, campusLatLng],
+      geodesic: true,
+      strokeColor: '#1A73E8',
+      strokeOpacity: 0.8,
+      strokeWeight: 3,
+      icons: [
+        {
+          icon: {
+            path: 'M 0,-1 0,1',
+            strokeOpacity: 1,
+            scale: 3,
+          },
+          offset: '0',
+          repeat: '12px',
+        },
+      ],
+    });
+    dottedLine.setMap(map);
+    overlays.current.polylines.push(dottedLine);
+  }, [previewMarkers.end, selectedCampus]);
 
   if (Platform.OS !== 'web') {
     return null;
@@ -3896,8 +4607,6 @@ const webMapSurfaceStyle: CSSProperties = {
 };
 
 declare global {
-  interface Window {
-    __campusRideGoogleMapLoader?: Promise<any>;
-    google?: any;
-  }
+  // Ensures module augmentation can extend Window elsewhere when needed.
+  interface Window {}
 }
