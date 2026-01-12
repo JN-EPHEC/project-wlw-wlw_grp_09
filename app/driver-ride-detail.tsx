@@ -200,12 +200,9 @@ export default function DriverRideDetailScreen() {
         <SafeAreaView style={styles.safe}>
           <View style={styles.header}>
             <Pressable style={styles.backButton} onPress={() => router.back()}>
-              <IconSymbol name="chevron.left" size={24} color="#fff" />
+              <IconSymbol name="chevron.left" size={20} color="#fff" />
             </Pressable>
-            <View>
-              <Text style={styles.heroTitle}>Informations du trajet</Text>
-              <Text style={styles.heroSubtitle}>Gérer les demandes et les passagers</Text>
-            </View>
+            <Text style={styles.heroTitle}>Informations du trajet</Text>
           </View>
         </SafeAreaView>
       </GradientBackground>
@@ -350,9 +347,8 @@ const styles = StyleSheet.create({
   backButton: {
     width: 44,
     height: 44,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.5)',
+    borderRadius: Radius.lg,
+    backgroundColor: 'rgba(0,0,0,0.15)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -360,10 +356,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 26,
     fontWeight: '800',
-  },
-  heroSubtitle: {
-    color: '#fff',
-    fontSize: 16,
   },
   content: {
     paddingTop: Spacing.xl,

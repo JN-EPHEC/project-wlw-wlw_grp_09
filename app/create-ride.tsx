@@ -218,9 +218,67 @@ export default function CreateRideScreen() {
                 style={styles.input}
               />
             </View>
-            <View style={[styles.fieldBox, styles.fieldSpacing]}>
-              <View style={styles.iconContainer}>
-                <IconSymbol name="mappin.and.ellipse" size={18} color="#9F6BFF" />
+            <View style={styles.swapButton}>
+              <IconSymbol name="arrow.up.arrow.down" size={20} color={Colors.gray600} />
+            </View>
+            <View style={styles.labelRow}>
+              <IconSymbol name="graduationcap.fill" size={16} color={Colors.accent} />
+              <Text style={styles.labelText}>Destination</Text>
+            </View>
+            <Pressable
+              style={styles.dropdown}
+              onPress={() => setCampusOpen((prev) => !prev)}
+            >
+              <Text
+                style={[
+                  styles.dropdownText,
+                  campus ? styles.dropdownTextActive : null,
+                ]}
+              >
+                {campus || 'Sélectionnez un campus'}
+              </Text>
+              <IconSymbol name="chevron.down" size={16} color={Colors.gray500} />
+            </Pressable>
+            {campusOpen && (
+              <View style={styles.dropdownList}>
+                {CAMPUS_OPTIONS.map((option) => (
+                  <Pressable
+                    key={option}
+                    style={[
+                      styles.dropdownItem,
+                      campus === option && styles.dropdownItemActive,
+                    ]}
+                    onPress={() => handleCampusSelect(option)}
+                  >
+                    <Text
+                      style={[
+                        styles.dropdownItemText,
+                        campus === option && styles.dropdownItemTextActive,
+                      ]}
+                    >
+                      {option}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Détails du trajet</Text>
+            <View style={styles.fieldRow}>
+              <View style={styles.fieldBubble}>
+                <Text style={styles.fieldLabel}>Point de départ</Text>
+                <View style={styles.fieldInputRow}>
+                  <IconSymbol name="location.fill" size={18} color="#A0A5B9" />
+                  <TextInput
+                    value={departure}
+                    onChangeText={setDeparture}
+                    placeholder="Adresse de départ"
+                    placeholderTextColor="#A0A5B9"
+                    style={styles.detailInput}
+                  />
+                </View>
               </View>
               <TextInput
                 value={campus}

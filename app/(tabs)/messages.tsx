@@ -14,7 +14,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import { AppBackground } from '@/components/ui/app-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -34,17 +34,14 @@ import {
   type ThreadSnapshot,
 } from '@/app/services/messages';
 import { createReport } from '@/app/services/reports';
-import {
-  blockUser,
-  unblockUser,
-} from '@/app/services/blocked-users';
-import { useBlockedUsers } from '@/hooks/use-blocked-users';
+import { subscribeDriverReviews, type Review } from '@/app/services/reviews';
 
 const C = Colors;
 
 export default function MessagesScreen() {
   const session = useAuthSession();
-  const params = useLocalSearchParams<{ thread?: string }>();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ thread?: string; origin?: string }>();
   const { width } = useWindowDimensions();
   const isSplitLayout = width >= 960;
   const bottomInset = useTabBarInset(Spacing.lg);
@@ -55,6 +52,8 @@ export default function MessagesScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
   const [optionsVisible, setOptionsVisible] = useState(false);
+  const [partnerReviews, setPartnerReviews] = useState<Review[]>([]);
+  const originRoute = typeof params.origin === 'string' && params.origin.length > 0 ? params.origin : null;
 
   useEffect(() => {
     ensureDemoThreads(threadOwnerEmail);
@@ -139,6 +138,15 @@ export default function MessagesScreen() {
     : null;
   const conversationPartnerName =
     conversationPartner?.name ?? conversationPartner?.email ?? 'Conversation';
+  const conversationPartnerEmail = conversationPartner?.email ?? null;
+  const partnerRatingSum = partnerReviews.reduce((acc, review) => acc + review.rating, 0);
+  const partnerRatingCount = partnerReviews.length;
+  const partnerRatingAverage = partnerRatingCount
+    ? Math.round((partnerRatingSum / partnerRatingCount) * 10) / 10
+    : 0;
+  const partnerRatingLabel = partnerRatingCount > 0 ? `${partnerRatingAverage.toFixed(1)}/5` : 'Nouveau';
+  const partnerReviewsLabel = partnerRatingCount > 0 ? `${partnerRatingCount} avis` : '0 avis';
+
   const conversationPartnerAvatar = useMemo(() => {
     if (conversationPartner?.email) {
       return getAvatarUrl(conversationPartner.email, 120);
@@ -157,8 +165,12 @@ export default function MessagesScreen() {
 
   const handleViewProfile = useCallback(() => {
     closeOptions();
-    Alert.alert('Profil utilisateur', `${conversationPartnerName} sera bientôt visible ici.`);
-  }, [closeOptions, conversationPartnerName]);
+    if (!conversationPartnerEmail) {
+      Alert.alert('Profil indisponible', 'Ce profil conducteur est introuvable.');
+      return;
+    }
+    router.push({ pathname: '/driver-profile/[email]', params: { email: conversationPartnerEmail } });
+  }, [closeOptions, conversationPartnerEmail, router]);
 
   const handleReportUser = useCallback(() => {
     closeOptions();
@@ -236,6 +248,15 @@ export default function MessagesScreen() {
     if (!activeThread) return;
     setOptionsVisible(true);
   }, [activeThread]);
+
+  useEffect(() => {
+    if (!conversationPartnerEmail) {
+      setPartnerReviews([]);
+      return;
+    }
+    const unsubscribe = subscribeDriverReviews(conversationPartnerEmail, setPartnerReviews);
+    return unsubscribe;
+  }, [conversationPartnerEmail]);
 
   const userRole: 'passenger' | 'driver' =
     session.isDriver && !session.isPassenger ? 'driver' : 'passenger';
@@ -437,18 +458,14 @@ export default function MessagesScreen() {
               ) : null}
               <Image source={{ uri: conversationPartnerAvatar }} style={styles.partnerAvatar} />
               <View style={styles.partnerMeta}>
-                <View style={styles.partnerNameRow}>
-                  <Text style={styles.partnerName}>{conversationPartnerName}</Text>
-                  {partnerBlocked ? (
-                    <View style={styles.partnerBlocked}>
-                      <IconSymbol name="slash.circle.fill" size={16} color={C.danger} />
-                      <Text style={styles.partnerBlockedLabel}>Bloqué</Text>
-                    </View>
-                  ) : null}
+                <Text style={styles.partnerName}>{conversationPartnerName}</Text>
+                <View style={styles.partnerStatusRow}>
+                  <View style={styles.partnerStatusBadge}>
+                    <Text style={styles.partnerStatusStar}>★</Text>
+                    <Text style={styles.partnerStatusScore}>{partnerRatingLabel}</Text>
+                  </View>
+                  <Text style={styles.partnerStatusReviews}>{partnerReviewsLabel}</Text>
                 </View>
-                <Text style={styles.partnerStatus}>
-                  En ligne • {activeThread.routeLabel ?? 'Trajet CampusRide'}
-                </Text>
               </View>
               <Pressable
                 accessibilityRole="button"
@@ -550,7 +567,7 @@ export default function MessagesScreen() {
 
   return (
     <AppBackground style={styles.screen}>
-      <SafeAreaView style={[styles.safe, { paddingBottom: bottomInset }]}> 
+      <SafeAreaView style={[styles.safe, { paddingBottom: bottomInset }]}>
         {isSplitLayout ? (
           <View style={styles.splitLayout}>
             {renderThreadList()}
@@ -571,39 +588,17 @@ export default function MessagesScreen() {
         >
           <View style={styles.optionsOverlay}>
             <Pressable style={styles.optionsBackdrop} onPress={closeOptions} />
-              <View style={styles.optionsMenu}>
-                <Text style={styles.optionsTitle}>Discussion</Text>
-                <Pressable style={styles.optionsItem} onPress={handleViewProfile}>
-                  <Text style={styles.optionsItemText}>Voir le profil</Text>
-                  <IconSymbol name="chevron.right" size={16} color={C.gray400} />
-                </Pressable>
-                <View style={styles.optionsDivider} />
-                <Pressable style={styles.optionsItem} onPress={handleReportUser}>
-                  <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
-                    Signaler cet utilisateur
-                  </Text>
-                </Pressable>
-                {partnerBlocked ? (
-                  <Pressable style={styles.optionsItem} onPress={handleUnblockUser}>
-                    <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
-                      Débloquer cet utilisateur
-                    </Text>
-                  </Pressable>
-                ) : (
-                  <Pressable style={styles.optionsItem} onPress={handleBlockUser}>
-                    <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
-                      Bloquer cet utilisateur
-                    </Text>
-                  </Pressable>
-                )}
-                <View style={styles.optionsDivider} />
-                <Pressable style={styles.optionsItem} onPress={handleDeleteConversation}>
-                  <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
-                    Supprimer la conversation
-                  </Text>
-                </Pressable>
-              </View>
+            <View style={styles.optionsMenu}>
+              <Pressable style={styles.optionsItem} onPress={handleViewProfile}>
+                <Text style={styles.optionsItemText}>Voir le profil</Text>
+              </Pressable>
+              <Pressable style={styles.optionsItem} onPress={handleReportUser}>
+                <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
+                  Signaler cet utilisateur
+                </Text>
+              </Pressable>
             </View>
+          </View>
         </Modal>
       ) : null}
     </AppBackground>
@@ -713,38 +708,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   partnerAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFFFFF' },
-  partnerMeta: {
-    flex: 1,
-  },
-  partnerNameRow: {
+  partnerMeta: { flex: 1 },
+  partnerName: { color: C.ink, fontSize: 18, fontWeight: '800' },
+  partnerStatusRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginTop: 2 },
+  partnerStatusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  partnerName: {
-    color: C.ink,
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  partnerBlocked: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs / 2,
-    borderWidth: 1,
-    borderColor: C.danger,
-    borderRadius: Radius.pill,
+    gap: 4,
     paddingHorizontal: Spacing.xs,
-    paddingVertical: Spacing.xs / 2,
+    paddingVertical: 2,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(248,155,104,0.15)',
   },
-  partnerBlockedLabel: {
-    color: C.danger,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  partnerStatus: {
-    color: C.gray500,
-    fontSize: 12,
-  },
+  partnerStatusStar: { color: C.primary, fontSize: 12, fontWeight: '700' },
+  partnerStatusScore: { color: C.gray500, fontSize: 12, fontWeight: '700' },
+  partnerStatusReviews: { color: C.gray500, fontSize: 12 },
   headerActionButton: {
     width: 36,
     height: 36,
@@ -864,13 +842,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 12 },
     elevation: 8,
   },
-  optionsTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: C.gray500,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
   optionsItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -881,10 +852,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: C.ink,
     fontWeight: '600',
-  },
-  optionsDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(10, 22, 50, 0.08)',
   },
   optionsDestructive: {
     color: C.danger,

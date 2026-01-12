@@ -44,7 +44,7 @@ function TabLayout() {
       <GradientBackground
         colors={
           focused
-            ? ['rgba(255, 255, 255, 0.92)', 'rgba(241, 182, 255, 0.85)', 'rgba(122, 95, 255, 0.55)']
+            ? ['#FF8347', '#FF9864', '#FFB686']
             : ['rgba(255, 255, 255, 0.16)', 'rgba(255, 255, 255, 0.08)', 'rgba(255, 255, 255, 0.04)']
         }
         blur={focused ? 0.35 : 0.2}

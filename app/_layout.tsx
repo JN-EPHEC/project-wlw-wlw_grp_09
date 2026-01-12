@@ -54,12 +54,22 @@ export default function RootLayout() {
             options={{ presentation: 'modal', title: 'Trajet CampusRide', headerShown: false }}
           />
           <Stack.Screen
+            name="ride/request-confirmation"
+            options={{ title: 'Demande envoyée', presentation: 'modal', headerShown: false }}
+          />
+          <Stack.Screen name="requests" options={{ headerShown: false }} />
+          <Stack.Screen name="trips" options={{ headerShown: false }} />
+          <Stack.Screen
             name="review/[rideId]"
             options={{ presentation: 'modal', title: 'Laisser un avis' }}
           />
           <Stack.Screen
             name="reviews/[email]"
             options={{ title: 'Avis du conducteur' }}
+          />
+          <Stack.Screen
+            name="notifications"
+            options={{ headerShown: false }}
           />
           <Stack.Screen
             name="wallet"

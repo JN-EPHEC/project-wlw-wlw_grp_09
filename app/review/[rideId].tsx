@@ -28,6 +28,7 @@ import {
   type Review,
 } from '@/app/services/reviews';
 import { Colors, Radius, Spacing, Typography } from '@/app/ui/theme';
+import { maskPlate } from '@/app/utils/plate';
 
 const C = Colors;
 
@@ -210,7 +211,7 @@ export default function ReviewRideScreen() {
               })}
             </Text>
             <Text style={styles.rideMeta}>Heure {ride.time}</Text>
-            <Text style={styles.rideMeta}>Plaque {ride.plate}</Text>
+            <Text style={styles.rideMeta}>Plaque {maskPlate(ride.plate)}</Text>
           </View>
 
           {existingReview ? (

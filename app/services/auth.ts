@@ -333,6 +333,7 @@ export const createUser = async (payload: CreateUserPayload): Promise<AuthSnapsh
     studentCardUrl: payload.studentCardUrl ?? undefined,
     selfieUrl: payload.avatarUrl ?? undefined,
     verified: false,
+    uid: user.uid,
   });
 
   await sendVerificationEmail(email);

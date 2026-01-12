@@ -28,9 +28,11 @@ const MAPPING = {
   'car.fill': 'directions-car',
   'shield.checkerboard': 'shield',
   'checkmark.seal.fill': 'verified',
+  'checkmark.circle.fill': 'check-circle',
   'star.fill': 'star',
   'exclamationmark.triangle': 'warning',
   'location.fill': 'location-on',
+  'mappin.and.ellipse': 'place',
   'calendar': 'calendar-today',
   'clock': 'access-time',
   'questionmark.circle': 'help-outline',
@@ -58,6 +60,7 @@ const MAPPING = {
   'arrow.up.left': 'north_west',
   'lock.shield.fill': 'admin-panel-settings',
   plus: 'add',
+  xmark: 'close',
 } as IconMapping;
 
 /**

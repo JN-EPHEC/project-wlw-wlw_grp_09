@@ -12,6 +12,14 @@ import {
 import { processPayment, type Payment, type PaymentMethod } from './payments';
 import { creditWallet, addPoints } from './wallet';
 import { recordCommission } from './platform';
+import {
+  markRideCancelledRecord,
+  persistRideRecord,
+} from '@/src/firestoreRides';
+import { recordPublishedRide, recordReservedRide } from '@/src/firestoreTrips';
+import { maskPlate } from '@/app/utils/plate';
+import { getDistanceKm } from './distance';
+import { buildPriceBand, roughKmFromText } from './pricing';
 export type Ride = {
   id: string;
   driver: string;
@@ -40,6 +48,18 @@ const clone = (data: Ride[]) =>
 
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
+
+const persistRideSnapshot = (ride: Ride) => {
+  void persistRideRecord(ride).catch((error) => {
+    console.warn('[rides][firestore] sync failed', error);
+  });
+};
+
+const cancelRideSnapshot = (ride: Ride, reason?: string) => {
+  void markRideCancelledRecord(ride, reason).catch((error) => {
+    console.warn('[rides][firestore] cancel failed', error);
+  });
+};
 
 export type RidePayload = {
   id: string;
@@ -76,11 +96,11 @@ const sanitiseTime = (value: string) => {
 };
 
 const sanitisePlate = (value: string) => {
-  const plate = value.trim().toUpperCase();
-  if (!/^[A-Z0-9-]{4,10}$/.test(plate)) {
-    throw new Error('Plaque invalide (ex. ABC-123)');
+  const clean = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (!/^[0-9][A-Z]{3}[0-9]{3}$/.test(clean)) {
+    throw new Error('Plaque invalide (ex. 2-EEE-222)');
   }
-  return plate;
+  return `${clean.slice(0, 1)}-${clean.slice(1, 4)}-${clean.slice(4, 7)}`;
 };
 
 const sanitiseSeats = (value: number) => {
@@ -88,13 +108,6 @@ const sanitiseSeats = (value: number) => {
     throw new Error('Places disponibles hors limites (1-3)');
   }
   return value;
-};
-
-const sanitisePrice = (value: number) => {
-  if (!Number.isFinite(value) || value < 1 || value > 40) {
-    throw new Error('Prix par passager invalide');
-  }
-  return Number(value.toFixed(2));
 };
 
 const computeDepartureAt = (time: string, reference = Date.now()) => {
@@ -106,6 +119,26 @@ const computeDepartureAt = (time: string, reference = Date.now()) => {
     departure.setDate(departure.getDate() + 1);
   }
   return departure.getTime();
+};
+
+const resolveDistanceKm = (depart: string, destination: string) => {
+  const distance = getDistanceKm(depart, destination);
+  if (!Number.isFinite(distance) || distance <= 0) {
+    return roughKmFromText(depart, destination);
+  }
+  return distance;
+};
+
+const computeRidePrice = (
+  depart: string,
+  destination: string,
+  seats: number,
+  mode: 'single' | 'double'
+) => {
+  const distanceKm = resolveDistanceKm(depart, destination);
+  const band = buildPriceBand(distanceKm, seats);
+  const raw = mode === 'double' ? band.double : band.suggested;
+  return Number(raw.toFixed(2));
 };
 
 export const hasRideDeparted = (ride: Ride, now = Date.now()) => now >= ride.departureAt;
@@ -162,9 +195,9 @@ const buildRide = (payload: RidePayload): Ride => {
   const plate = sanitisePlate(payload.plate);
   const time = sanitiseTime(payload.time);
   const seats = sanitiseSeats(payload.seats);
-  const price = sanitisePrice(payload.price);
   const ownerEmail = payload.ownerEmail.trim().toLowerCase();
   const pricingMode = payload.pricingMode ?? 'single';
+  const price = computeRidePrice(depart, destination, seats, pricingMode);
 
   const createdAt = Date.now();
   const departureAt = computeDepartureAt(time, createdAt);
@@ -217,64 +250,30 @@ const updateRideFromPatch = (ride: Ride, patch: Partial<RidePayload>): Ride => {
     next.seats = seats;
   }
 
-  if (patch.price !== undefined) next.price = sanitisePrice(patch.price);
   if (patch.pricingMode !== undefined) next.pricingMode = patch.pricingMode;
+
+  next.price = computeRidePrice(next.depart, next.destination, next.seats, next.pricingMode);
 
   next.updatedAt = Date.now();
   return next;
 };
 
 (() => {
-  // Jeu de données initial pour la démo (permet d'afficher une carte immédiatement)
-  const now = Date.now();
-  rides = [
-    {
-      id: 'seed-1',
-      driver: 'Lina Dupont',
-      plate: 'ULB-832',
-      depart: 'Etterbeek',
-      destination: 'EPHEC Louvain-la-Neuve',
-      time: '08:15',
-      seats: 3,
-      price: 4.5,
-      createdAt: now - 1000 * 60 * 45,
-      updatedAt: now - 1000 * 60 * 30,
-      ownerEmail: 'lina.dupont@students.ephec.be',
-      passengers: ['marc.durand@students.ephec.be'],
-      canceledPassengers: [],
-      departureAt: computeDepartureAt('08:15', now - 1000 * 60 * 45),
-      payoutProcessed: true,
-      pricingMode: 'single',
-    },
-    {
-      id: 'seed-2',
-      driver: 'Bilal Nasser',
-      plate: 'WOL-204',
-      depart: 'Ixelles',
-      destination: 'EPHEC Woluwé',
-      time: '09:00',
-      seats: 2,
-      price: 3.2,
-      createdAt: now - 1000 * 60 * 70,
-      updatedAt: now - 1000 * 60 * 70,
-      ownerEmail: 'bilal.nasser@students.ephec.be',
-      passengers: [],
-      canceledPassengers: [],
-      departureAt: computeDepartureAt('09:00', now - 1000 * 60 * 70),
-      payoutProcessed: true,
-      pricingMode: 'single',
-    },
-  ];
+  // Jeu de données initial désactivé : la carte reste vide tant qu'aucun trajet réel n'est saisi.
+  rides = [];
 })();
 
 const processRidePayouts = () => {
   const now = Date.now();
+  const updatedRides: Ride[] = [];
   rides = rides.map((ride) => {
     if (ride.payoutProcessed) return ride;
     if (!hasRideDeparted(ride, now)) return ride;
     const passengerCount = ride.passengers.length;
     if (passengerCount <= 0) {
-      return { ...ride, payoutProcessed: true, updatedAt: now };
+      const nextRide = { ...ride, payoutProcessed: true, updatedAt: now };
+      updatedRides.push(nextRide);
+      return nextRide;
     }
     const grossAmount = +(ride.price * passengerCount).toFixed(2);
     if (grossAmount > 0) {
@@ -312,8 +311,11 @@ const processRidePayouts = () => {
         },
       });
     }
-    return { ...ride, payoutProcessed: true, updatedAt: now };
+    const completedRide = { ...ride, payoutProcessed: true, updatedAt: now };
+    updatedRides.push(completedRide);
+    return completedRide;
   });
+  updatedRides.forEach((ride) => persistRideSnapshot(ride));
 };
 
 const notifyRides = () => {
@@ -335,7 +337,7 @@ export const addRide = (payload: RidePayload) => {
   if (area) {
     const recipients = getAreaSubscribers(area.id).filter((email) => email !== ride.ownerEmail);
     const title = `Nouveau trajet ${area.label}`;
-    const body = `${ride.driver} (${ride.plate}) part vers ${ride.destination} à ${ride.time}.`;
+    const body = `${ride.driver} (${maskPlate(ride.plate)}) part vers ${ride.destination} à ${ride.time}.`;
     recipients.forEach((to) =>
       pushNotification({
         to,
@@ -354,6 +356,8 @@ export const addRide = (payload: RidePayload) => {
       })
     );
   }
+  persistRideSnapshot(ride);
+  void recordPublishedRide(ride);
   notifyRides();
   return ride;
 };
@@ -372,6 +376,7 @@ export const updateRide = (id: string, patch: Partial<RidePayload>) => {
   }
   notifyRides();
   notifyRideStatusChange(previous, updated);
+  persistRideSnapshot(updated);
   return updated;
 };
 
@@ -397,6 +402,7 @@ export const removeRide = (id: string) => {
   });
   cancelRideReminder(target.id, target.ownerEmail, 'driver');
   rides = rides.filter((r) => r.id !== id);
+  cancelRideSnapshot(target, 'driver_cancelled');
   notifyRides();
 };
 
@@ -496,6 +502,8 @@ export const reserveSeat = (
       },
     });
     scheduleRideReminder(updated, passengerEmail, 'passenger');
+    persistRideSnapshot(updated);
+    void recordReservedRide(updated, passengerEmail);
     return { ok: true, ride: updated, payment };
   }
 
@@ -590,6 +598,7 @@ export const cancelReservation = (rideId: string, passengerEmail: string) => {
   });
   if (updated) {
     notifyRides();
+    persistRideSnapshot(updated);
     return updated;
   }
   return null;

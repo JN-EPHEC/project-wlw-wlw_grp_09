@@ -42,7 +42,7 @@ const createSampleRide = ({
 }): DisplayRide => ({
   id,
   driver: 'Eva AZOUZI',
-  plate: 'CR-2024',
+  plate: '2-CRD-204',
   depart,
   destination,
   time: formatRideTime(departureAt),
