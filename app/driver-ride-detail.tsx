@@ -16,7 +16,8 @@ import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Spacing, Shadows } from '@/app/ui/theme';
-import { getRides, subscribeRides, type Ride } from '@/app/services/rides';
+import { getRides, removeRide, subscribeRides, type Ride } from '@/app/services/rides';
+import { createThread } from '@/app/services/messages';
 import {
   ConfirmedPassenger,
   PendingRequest,
@@ -126,9 +127,72 @@ export default function DriverRideDetailScreen() {
     [rideId]
   );
 
+  const handleMessagePassenger = useCallback(
+    (passenger: ConfirmedPassenger) => {
+      if (!ride) {
+        Alert.alert('Conversation indisponible', 'Trajet introuvable.');
+        return;
+      }
+      if (!passenger.email) {
+        Alert.alert('Conversation indisponible', 'Coordonnées du passager manquantes.');
+        return;
+      }
+      const thread = createThread({
+        rideId: ride.id,
+        routeLabel: `${ride.depart} → ${ride.destination}`,
+        participants: [
+          {
+            email: ride.ownerEmail ?? 'demo@campusride.be',
+            name: ride.driver ?? 'Conducteur CampusRide',
+            role: 'driver',
+          },
+          {
+            email: passenger.email,
+            name: passenger.name,
+            role: 'passenger',
+          },
+        ],
+      });
+      router.push({
+        pathname: '/(tabs)/messages',
+        params: { thread: thread.id } as any,
+      });
+    },
+    [ride, router]
+  );
+
   const openMessages = useCallback(() => {
     router.push('/(tabs)/messages');
   }, [router]);
+
+  const handleRemoveRide = useCallback(() => {
+    if (!ride) {
+      Alert.alert('Trajet introuvable', 'Ce trajet ne peut pas être supprimé.');
+      return;
+    }
+    Alert.alert(
+      'Supprimer le trajet',
+      'Souhaitez-vous vraiment supprimer ce trajet ? Cette action est irréversible.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: () => {
+            try {
+              removeRide(ride.id);
+              Alert.alert('Trajet supprimé', 'Ce trajet a été retiré de la plateforme.');
+              router.replace('/(tabs)/index');
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : 'Impossible de supprimer ce trajet.';
+              Alert.alert('Erreur', message);
+            }
+          },
+        },
+      ]
+    );
+  }, [ride, router]);
 
   return (
     <AppBackground>
@@ -246,7 +310,7 @@ export default function DriverRideDetailScreen() {
                   <IconSymbol name="phone.fill" size={14} color={Colors.gray800} />
                   <Text style={styles.callText}>Appeler</Text>
                 </Pressable>
-                <Pressable style={styles.messageButton} onPress={openMessages}>
+                <Pressable style={styles.messageButton} onPress={() => handleMessagePassenger(passenger)}>
                   <IconSymbol name="bubble.left.and.bubble.right.fill" size={14} color="#fff" />
                   <Text style={styles.messageText}>Message</Text>
                 </Pressable>
@@ -256,6 +320,11 @@ export default function DriverRideDetailScreen() {
               </Pressable>
             </View>
           ))}
+        </View>
+        <View style={styles.deleteWrapper}>
+          <Pressable style={styles.deleteButton} onPress={handleRemoveRide}>
+            <Text style={styles.deleteButtonText}>Supprimer ce trajet</Text>
+          </Pressable>
         </View>
       </ScrollView>
     </AppBackground>
@@ -488,5 +557,20 @@ const styles = StyleSheet.create({
     color: Colors.danger,
     textAlign: 'right',
     marginTop: Spacing.xs,
+  },
+  deleteWrapper: {
+    marginTop: Spacing.lg,
+    paddingHorizontal: Spacing.lg,
+  },
+  deleteButton: {
+    borderWidth: 1,
+    borderColor: Colors.danger,
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  deleteButtonText: {
+    color: Colors.danger,
+    fontWeight: '700',
   },
 });

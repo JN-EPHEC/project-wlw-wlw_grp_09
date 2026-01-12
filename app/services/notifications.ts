@@ -280,3 +280,19 @@ export const getAreaSubscribers = (areaId: string) => {
   const bucket = ensureAreaBucket(areaId);
   return Array.from(bucket.values());
 };
+
+export const purgeNotificationsForEmail = (email: string) => {
+  if (!email) return;
+  const key = normalizeEmail(email);
+  clearNotifications(email);
+  delete store[key];
+  if (listeners[key]) {
+    listeners[key].length = 0;
+  }
+  delete preferenceStore[key];
+  if (preferenceListeners[key]) {
+    preferenceListeners[key].length = 0;
+  }
+  clearSchedulesForEmailInternal(email);
+  Object.values(areaSubscriptions).forEach((bucket) => bucket.delete(key));
+};

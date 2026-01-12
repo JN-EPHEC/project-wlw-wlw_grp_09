@@ -19,13 +19,14 @@ export function GradientBackground({ colors, style, children, blur = 0.55, ...re
   const [base, mid, highlight] = ensurePalette(colors);
 
   return (
-    <View {...rest} style={[styles.container, style]}>
+    <View {...rest} style={[styles.container, style]} pointerEvents="box-none">
       <LinearGradient
         colors={[base, mid, highlight]}
         locations={[0, 0.5, 1]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={StyleSheet.absoluteFill}
+        pointerEvents="none"
       />
       {children}
     </View>

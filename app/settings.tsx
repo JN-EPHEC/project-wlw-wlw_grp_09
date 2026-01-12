@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { ReactNode, useEffect, useMemo, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Pressable,
@@ -22,6 +22,7 @@ import {
   updateNotificationPreferences,
   type NotificationPreferences,
 } from '@/app/services/notifications';
+import { useBlockedUsers } from '@/hooks/use-blocked-users';
 
 const C = Colors;
 
@@ -59,6 +60,11 @@ export default function SettingsScreen() {
 
   const [locationSharing, setLocationSharing] = useSettingSwitch(true);
   const [privacyVisible, setPrivacyVisible] = useState(false);
+  const blockedUsers = useBlockedUsers(session.email);
+
+  const handleOpenBlockedUsers = useCallback(() => {
+    router.push('/blocked-users');
+  }, []);
 
   const aboutVersion = useMemo(() => '1.0.0', []);
 
@@ -117,6 +123,9 @@ export default function SettingsScreen() {
             <Text style={styles.headerTitle}>Paramètres</Text>
           </View>
 
+          {blockedUsers.length === 0 ? (
+            <Text style={styles.blockedStatus}>Tu n’as bloqué personne pour le moment.</Text>
+          ) : null}
           <View style={styles.card}>
             <SettingsSection
               title="Notifications"
@@ -174,6 +183,17 @@ export default function SettingsScreen() {
                 icon="shield.fill"
                 title="Politique de confidentialité"
                 onPress={openPrivacyPolicy}
+              />
+              <NavigationRow
+                icon="slash.circle"
+                iconColor={C.danger}
+                title="Utilisateurs bloqués"
+                value={
+                  blockedUsers.length
+                    ? `${blockedUsers.length} bloqué${blockedUsers.length > 1 ? 's' : ''}`
+                    : undefined
+                }
+                onPress={handleOpenBlockedUsers}
               />
             </SettingsSection>
 
@@ -262,18 +282,20 @@ const ToggleCard = ({
 
 const NavigationRow = ({
   icon,
+  iconColor,
   title,
   value,
   onPress,
 }: {
   icon?: Parameters<typeof IconSymbol>[0]['name'];
+  iconColor?: string;
   title: string;
   value?: string;
   onPress?: () => void;
 }) => (
   <Pressable style={styles.navRow} onPress={onPress}>
     {icon ? (
-      <IconSymbol name={icon} size={20} color={C.gray600} />
+      <IconSymbol name={icon} size={20} color={iconColor ?? C.gray600} />
     ) : (
       <View style={{ width: 20 }} />
     )}
@@ -322,6 +344,12 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     letterSpacing: Typography.heading.letterSpacing,
+  },
+  blockedStatus: {
+    color: '#fff',
+    fontSize: 13,
+    marginTop: Spacing.sm,
+    marginHorizontal: Spacing.xl,
   },
   card: {
     marginTop: Spacing.xxl,
@@ -403,5 +431,35 @@ const styles = StyleSheet.create({
   staticValue: {
     color: C.ink,
     fontWeight: '700',
+  },
+  blockedEmpty: {
+    color: C.gray500,
+    fontSize: 12,
+  },
+  blockedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ECEFFD',
+  },
+  blockedEmail: {
+    fontWeight: '600',
+    color: C.gray700,
+    flex: 1,
+  },
+  blockedAction: {
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: Spacing.xs / 2,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    borderColor: C.danger,
+  },
+  blockedActionText: {
+    color: C.danger,
+    fontWeight: '700',
+    fontSize: 12,
   },
 });

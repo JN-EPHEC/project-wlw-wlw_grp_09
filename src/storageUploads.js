@@ -1,5 +1,6 @@
 import { ref, uploadString, getDownloadURL } from "firebase/storage";
 import * as FileSystem from "expo-file-system";
+import Constants from "expo-constants";
 import { auth, storage } from "./firebase";
 
 const MIME_BY_EXTENSION = {
@@ -63,9 +64,10 @@ const toDataUrl = async (uri) => {
   };
 };
 
-const uploadDataUrl = async (dataUrl, path) => {
+const uploadDataUrl = async (dataUrl, path, mimeType) => {
   const storageRef = ref(storage, path);
-  await uploadString(storageRef, dataUrl, "data_url");
+  const encryptedDataUrl = buildEncryptedDataUrl(dataUrl, mimeType);
+  await uploadString(storageRef, encryptedDataUrl, "data_url");
   return getDownloadURL(storageRef);
 };
 
@@ -88,13 +90,56 @@ const buildPath = (uid, folder, label, extension) => {
   return `users/${uid}/${safeFolder}/${safeLabel}-${timestamp}.${extension}`;
 };
 
+const STORAGE_ENCRYPTION_SECRET =
+  Constants.expoConfig?.extra?.storageEncryptionKey ??
+  "campusride-storage-secret";
+
+const BASE64_CHARS =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+const base64EncodeBinary = (input) => {
+  let output = "";
+  let i = 0;
+  while (i < input.length) {
+    const byte1 = input.charCodeAt(i++) & 0xff;
+    const byte2 = i < input.length ? input.charCodeAt(i++) & 0xff : NaN;
+    const byte3 = i < input.length ? input.charCodeAt(i++) & 0xff : NaN;
+    const triple = (byte1 << 16) | (isNaN(byte2) ? 0 : byte2 << 8) | (isNaN(byte3) ? 0 : byte3);
+    output += BASE64_CHARS[(triple >> 18) & 0x3f];
+    output += BASE64_CHARS[(triple >> 12) & 0x3f];
+    output += isNaN(byte2) ? "=" : BASE64_CHARS[(triple >> 6) & 0x3f];
+    output += isNaN(byte3) ? "=" : BASE64_CHARS[triple & 0x3f];
+  }
+  return output;
+};
+
+const xorEncryptPayload = (payload, key) => {
+  let encrypted = "";
+  const secret = key || STORAGE_ENCRYPTION_SECRET;
+  for (let i = 0; i < payload.length; i += 1) {
+    const payloadCode = payload.charCodeAt(i);
+    const secretCode = secret.charCodeAt(i % secret.length);
+    encrypted += String.fromCharCode(payloadCode ^ secretCode);
+  }
+  return base64EncodeBinary(encrypted);
+};
+
+const buildEncryptedDataUrl = (dataUrl, mimeType) => {
+  const [, payload] = dataUrl.split(",");
+  if (!payload) {
+    throw new Error("Chargement de données invalide pour chiffrement.");
+  }
+  const cipher = xorEncryptPayload(payload, STORAGE_ENCRYPTION_SECRET);
+  return `data:${mimeType};base64,${cipher}`;
+};
+
 export const uploadUserDocument = async ({ email, folder, label, uri }) => {
   if (!uri) throw new Error("Fichier manquant.");
   const { uid } = requireCurrentUserContext(email);
   const { dataUrl, mimeType } = await toDataUrl(uri);
   const extension = EXTENSION_BY_MIME[mimeType] ?? "jpg";
   const path = buildPath(uid, folder, label, extension);
-  return uploadDataUrl(dataUrl, path);
+  return uploadDataUrl(dataUrl, path, mimeType);
 };
 
 export const uploadStudentCard = async ({ email, uri }) =>

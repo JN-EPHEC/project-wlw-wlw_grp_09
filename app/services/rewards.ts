@@ -215,3 +215,10 @@ export const resetRewards = () => {
   Object.keys(driverTiers).forEach((key) => delete driverTiers[key]);
   Object.keys(driverSnapshots).forEach((key) => delete driverSnapshots[key]);
 };
+
+export const clearRewardsForEmail = (email: string) => {
+  if (!email) return;
+  const key = normaliseEmail(email);
+  delete driverTiers[key];
+  delete driverSnapshots[key];
+};

@@ -189,3 +189,24 @@ export const subscribeDriverFeedback = (email: string, listener: Listener) => {
     if (index >= 0) bucket.splice(index, 1);
   };
 };
+
+export const purgeFeedbackForEmail = (email: string) => {
+  if (!email) return;
+  const normalized = normaliseEmail(email);
+  const affectedDrivers = new Set<string>();
+  const affectedPassengers = new Set<string>();
+  const previousLength = feedbackStore.length;
+  const filtered = feedbackStore.filter((entry) => {
+    const matches =
+      entry.driverEmail === normalized || entry.passengerEmail === normalized;
+    if (matches) {
+      affectedDrivers.add(entry.driverEmail);
+      affectedPassengers.add(entry.passengerEmail);
+    }
+    return !matches;
+  });
+  if (filtered.length === previousLength) return;
+  feedbackStore.splice(0, previousLength, ...filtered);
+  affectedDrivers.forEach((driver) => notifyDriver(driver));
+  affectedPassengers.forEach((passenger) => notifyPassenger(passenger));
+};

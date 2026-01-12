@@ -68,6 +68,8 @@ const decrypt = (cipher: string) => {
     .join('');
 };
 
+const normalizeEmail = (value: string) => value.trim().toLowerCase();
+
 const cloneMessage = (message: Message): Message => ({
   ...message,
   reports: message.reports.map((report) => ({ ...report })),
@@ -352,4 +354,32 @@ export const ensureDemoThreads = (email: string) => {
     thread.participants.forEach((participant) => notifyThreadListeners(participant.email));
     notifyMessageListeners(thread.id);
   });
+};
+
+export const removeThread = (threadId: string) => {
+  const thread = threads[threadId];
+  if (!thread) {
+    throw new Error('THREAD_NOT_FOUND');
+  }
+  const participants = thread.participants.map((participant) => participant.email);
+  delete threads[threadId];
+  delete messages[threadId];
+  delete messageListeners[threadId];
+  participants.forEach((email) => notifyThreadListeners(email));
+  return thread;
+};
+
+export const purgeMessagesForEmail = (email: string) => {
+  if (!email) return;
+  const key = normalizeEmail(email);
+  seenSeedFor.delete(key);
+  const threadIds = Object.values(threads)
+    .filter((thread) =>
+      thread.participants.some((participant) => normalizeEmail(participant.email) === key)
+    )
+    .map((thread) => thread.id);
+  threadIds.forEach((threadId) => removeThread(threadId));
+  if (threadListeners[key]) {
+    threadListeners[key].length = 0;
+  }
 };

@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActionSheetIOS,
   Alert,
@@ -16,8 +16,10 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import * as Auth from '@/app/services/auth';
+import { deleteAccountData } from '@/app/services/account';
 import { subscribePassengerFeedback, type PassengerFeedback } from '@/app/services/passenger-feedback';
 import { createReport } from '@/app/services/reports';
 import {
@@ -42,9 +44,10 @@ import {
 import {
   getNextSelfieLabel,
   needsFreshSelfie,
+  type DocumentReviewState,
 } from '@/app/services/security';
 import { getAvatarUrl } from '@/app/ui/avatar';
-import { Colors, Gradients, Radius, Spacing, Typography } from '@/app/ui/theme';
+import { Colors, Gradients, Radius, Spacing, Typography, Shadows } from '@/app/ui/theme';
 import { buildSmartReplies } from '@/app/utils/ai-reply';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
@@ -62,7 +65,7 @@ const C = Colors;
 const R = Radius;
 const isRemoteUri = (uri: string | null | undefined) =>
   typeof uri === 'string' && /^https?:\/\//.test(uri);
-
+const MISSING_DOCUMENT_STATES: DocumentReviewState[] = ['missing', 'rejected'];
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -168,28 +171,21 @@ export default function ProfileScreen() {
 
   const disableDriverMode = useCallback(() => {
     if (!session.isDriver) return;
-          Alert.alert(
-            'Passer en mode passager ?',
-            'Tu pourras réactiver le mode conducteur quand tu en as besoin.',
-            [
-              { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Confirmer',
-          style: 'destructive',
-          onPress: async () => {
-            const success = await updateRoles({ driver: false, passenger: true });
-            if (success) {
-              router.replace('/(tabs)/index?mode=passenger');
-            }
-          },
-        },
-            ]
-          );
+    (async () => {
+      const success = await updateRoles({ driver: false, passenger: true });
+      if (success) {
+        router.replace({
+          pathname: '/',
+          params: { mode: 'passenger' },
+        });
+      }
+    })();
   }, [session.isDriver, updateRoles, router]);
 
   const [previewAvatarUri, setPreviewAvatarUri] = useState<string | null>(null);
   const [cropSourceUri, setCropSourceUri] = useState<string | null>(null);
   const [isSavingAvatar, setIsSavingAvatar] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   const applyAvatar = useCallback(
     async (uri: string | null) => {
@@ -347,6 +343,52 @@ export default function ProfileScreen() {
     router.push('/help');
   }, [router]);
 
+  const handleViewInfo = useCallback(() => {
+    router.push('/profile-information');
+  }, [router]);
+
+  const handleOpenBusinessPartnership = useCallback(() => {
+    router.push('/business-partnership');
+  }, [router]);
+
+  const handleConfirmDeleteAccount = useCallback(async () => {
+    if (!session.email || isDeletingAccount) return;
+    const userEmail = session.email;
+    setIsDeletingAccount(true);
+    try {
+      deleteAccountData(userEmail);
+      await Auth.signOut();
+      router.replace('/welcome');
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Impossible de supprimer ton compte pour le moment.';
+      Alert.alert('Erreur', message);
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  }, [session.email, isDeletingAccount, router]);
+
+  const promptDeleteAccount = useCallback(() => {
+    if (!session.email || isDeletingAccount) return;
+    Alert.alert(
+      'Supprimer mon compte',
+      'Tous tes trajets, messages, avis, wallet et préférences seront effacés/de-anonymisés et ta visibilité publique supprimée. Cette action est irréversible.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: () => {
+            void handleConfirmDeleteAccount();
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  }, [session.email, isDeletingAccount, handleConfirmDeleteAccount]);
+
   const driverSecurityStatus = useMemo(() => {
     if (!driverSecurity) {
       return {
@@ -375,6 +417,17 @@ export default function ProfileScreen() {
       description: 'Tes documents sont validés et ton selfie est récent.',
     };
   }, [driverSecurity]);
+
+  const hasMissingDriverDocuments = useMemo(() => {
+    if (!driverSecurity) return false;
+    const { license, vehicle } = driverSecurity.documents;
+    return (
+      MISSING_DOCUMENT_STATES.includes(license) ||
+      MISSING_DOCUMENT_STATES.includes(vehicle)
+    );
+  }, [driverSecurity]);
+
+  const showActionRequiredBanner = session.isDriver && hasMissingDriverDocuments;
 
   const securityHighlights = useMemo(
     () => [
@@ -782,9 +835,9 @@ export default function ProfileScreen() {
         >
         <GradientBackground colors={Gradients.ocean} style={profileHeroStyle}>
           <View style={styles.profileHeroCard}>
-            <View style={styles.profileAvatarSection}>
-              <Pressable
-                style={styles.profileAvatarPressable}
+          <View style={styles.profileAvatarSection}>
+            <Pressable
+              style={styles.profileAvatarPressable}
                 onPress={changeAvatar}
                 onLongPress={session.avatarUrl ? onRemoveAvatar : undefined}
                 accessibilityRole="button"
@@ -842,22 +895,24 @@ export default function ProfileScreen() {
                   </Text>
                 </Pressable>
               </View>
-              <View style={styles.profileMetaList}>
-                <View style={styles.profileMetaRow}>
-                  <IconSymbol name="graduationcap.fill" size={16} color={C.accent} />
-                  <Text style={styles.profileMetaValue}>{campusLabel}</Text>
-                </View>
-                <View style={styles.profileMetaRow}>
-                  <IconSymbol name="envelope.fill" size={16} color={C.gray600} />
-                  <Text style={styles.profileMetaValue}>{emailLabel}</Text>
-                </View>
-                <View style={styles.profileMetaRow}>
-                  <IconSymbol name="car.fill" size={16} color={C.primary} />
-                  <Text style={styles.profileMetaValue}>
-                    {session.isDriver ? 'Conducteur actif' : 'Passager actif'}
-                  </Text>
-                </View>
-              </View>
+            {showActionRequiredBanner ? (
+              <Pressable
+                style={[
+                    styles.actionBanner,
+                    { borderColor: driverSecurityStatus.color },
+                  ]}
+                  onPress={handleOpenDocuments}
+                  accessibilityRole="button"
+                >
+                  <View style={styles.actionBannerContent}>
+                    <Text style={styles.actionBannerTitle}>Action requise</Text>
+                    <Text style={styles.actionBannerDescription}>
+                      {driverSecurityStatus.description}
+                    </Text>
+                  </View>
+                  <IconSymbol name="chevron.right" size={18} color={driverSecurityStatus.color} />
+                </Pressable>
+              ) : null}
               <View
                 style={[
                   styles.documentsBadge,
@@ -873,23 +928,56 @@ export default function ProfileScreen() {
               </View>
             </View>
             <View style={styles.profileActionsList}>
-              {profileActions.map((action) => (
-                <Pressable
-                  key={action.key}
-                  style={styles.profileActionRow}
-                  onPress={action.onPress}
-                  accessibilityRole="button"
-                >
-                  <View style={[styles.profileActionIcon, { backgroundColor: action.tint }]}>
-                    {action.image ? (
-                      <Image source={action.image} style={styles.profileActionImage} />
-                    ) : (
-                      <IconSymbol name={action.icon} size={18} color={action.iconColor} />
-                    )}
-                  </View>
-                  <Text style={styles.profileActionLabel}>{action.label}</Text>
-                </Pressable>
+              {profileActions.map((action, index) => (
+                <Fragment key={action.key}>
+                  <Pressable
+                    style={styles.profileActionRow}
+                    onPress={action.onPress}
+                    accessibilityRole="button"
+                  >
+                    <View style={[styles.profileActionIcon, { backgroundColor: action.tint }]}>
+                      {action.image ? (
+                        <Image source={action.image} style={styles.profileActionImage} />
+                      ) : (
+                        <IconSymbol name={action.icon} size={18} color={action.iconColor} />
+                      )}
+                    </View>
+                    <Text style={styles.profileActionLabel}>{action.label}</Text>
+                  </Pressable>
+                  {index === 0 ? (
+                    <Pressable
+                      style={[styles.profileActionRow, styles.infoRow]}
+                      onPress={handleViewInfo}
+                      accessibilityRole="button"
+                      android_ripple={{ color: Colors.gray200 }}
+                    >
+                    <View style={[styles.profileActionIcon, styles.infoIconCircle]}>
+                      <Image
+                        source={require('@/assets/images/Personne.png')}
+                        style={styles.infoIcon}
+                      />
+                    </View>
+                      <Text style={styles.profileActionLabel}>Mes informations</Text>
+                    </Pressable>
+                  ) : null}
+                </Fragment>
               ))}
+            </View>
+            <View style={styles.enterpriseBlock}>
+              <Pressable
+                style={styles.enterpriseButton}
+                onPress={handleOpenBusinessPartnership}
+                accessibilityRole="button"
+              >
+                <View style={styles.enterpriseBadge}>
+                  <IconSymbol name="sparkles" size={18} color={C.secondaryDark} />
+                </View>
+                <View style={styles.enterpriseText}>
+                  <Text style={styles.enterpriseTitle}>Entreprise ?</Text>
+                  <Text style={styles.enterpriseSubtitle}>Annoncez sur CampusRide</Text>
+                </View>
+                <IconSymbol name="chevron.right" size={20} color={C.secondaryDark} />
+              </Pressable>
             </View>
             <Pressable
               style={[
@@ -923,28 +1011,37 @@ export default function ProfileScreen() {
               </View>
             </Pressable>
             <Pressable
-              style={[styles.photoDeleteLink, styles.logoutInline]}
+              style={styles.logoutPill}
               onPress={onSignOut}
               accessibilityRole="button"
               hitSlop={12}
             >
-              <IconSymbol name="arrow.right.to.line.alt" size={14} color={C.danger} />
-              <Text style={styles.logoutInlineText}>Se déconnecter</Text>
+              <Text style={styles.logoutPillText}>Se déconnecter</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.photoDeleteLink, styles.deleteAccountLink]}
+              onPress={promptDeleteAccount}
+              disabled={isDeletingAccount}
+              accessibilityRole="button"
+              hitSlop={12}
+            >
+              {isDeletingAccount ? (
+                <ActivityIndicator color={C.danger} size="small" />
+              ) : (
+                <IconSymbol name="trash" size={14} color={C.danger} />
+              )}
+              <Text
+                style={[
+                  styles.photoDeleteText,
+                  styles.deleteAccountText,
+                  isDeletingAccount && styles.deleteAccountTextDisabled,
+                ]}
+              >
+                {isDeletingAccount ? 'Suppression en cours…' : 'Supprimer mon compte'}
+              </Text>
             </Pressable>
           </View>
         </GradientBackground>
-        <View style={styles.identityCard}>
-          <Text style={styles.identityCardTitle}>Mes données personnelles</Text>
-          <View style={styles.identityList}>
-            {personalInfo.map((item) => (
-              <View key={item.key} style={styles.identityRow}>
-                <Text style={styles.identityLabel}>{item.label}</Text>
-                <Text style={styles.identityValue}>{item.value}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
         </ScrollView>
 
       <AvatarCropperModal
@@ -1181,24 +1278,61 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: C.danger,
   },
+  deleteAccountLink: {
+    marginTop: Spacing.xs,
+  },
+  deleteAccountText: {
+    fontWeight: '700',
+    color: C.danger,
+  },
+  deleteAccountTextDisabled: {
+    color: C.gray400,
+  },
   photoDeleteTextDisabled: {
     color: C.gray400,
   },
-  profileMetaList: {
-    width: '100%',
+  actionBanner: {
     marginTop: Spacing.md,
-    gap: Spacing.xs,
-  },
-  profileMetaRow: {
+    borderWidth: 1,
+    borderRadius: Radius.xl,
+    borderColor: Colors.danger,
+    backgroundColor: Colors.dangerLight,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    justifyContent: 'space-between',
   },
-  profileMetaValue: {
+  actionBannerContent: {
     flex: 1,
-    color: C.gray700,
-    fontWeight: '600',
+    marginRight: Spacing.sm,
+  },
+  actionBannerTitle: {
     fontSize: 14,
+    fontWeight: '700',
+    color: Colors.danger,
+  },
+  actionBannerDescription: {
+    fontSize: 12,
+    color: Colors.gray700,
+    marginTop: 2,
+  },
+  infoRow: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8EAF4',
+  },
+  infoIconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFEDEC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoIcon: {
+    width: 22,
+    height: 22,
+    resizeMode: 'contain',
   },
   documentsBadge: {
     flexDirection: 'row',
@@ -1249,14 +1383,55 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: C.ink,
   },
-  logoutInline: {
-    marginTop: Spacing.xs,
-    alignSelf: 'center',
+  enterpriseBlock: {
+    marginTop: Spacing.sm,
+    borderRadius: Radius.xl,
+    overflow: 'hidden',
   },
-  logoutInlineText: {
+  enterpriseButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    padding: Spacing.sm,
+    borderRadius: Radius.xl,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    borderWidth: 1,
+    borderColor: 'rgba(122,95,255,0.35)',
+  },
+  enterpriseBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(122,95,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  enterpriseText: {
+    flex: 1,
+  },
+  enterpriseTitle: {
+    fontSize: 15,
     fontWeight: '700',
-    color: C.danger,
-    fontSize: 13,
+    color: C.secondaryDark,
+  },
+  enterpriseSubtitle: {
+    fontSize: 12,
+    color: C.secondary,
+    marginTop: 2,
+  },
+  logoutPill: {
+    marginTop: Spacing.sm,
+    borderRadius: Radius.pill,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.08)',
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+  },
+  logoutPillText: {
+    fontWeight: '700',
+    fontSize: 15,
+    color: C.gray700,
   },
   driverModeButton: {
     flexDirection: 'row',
@@ -1295,44 +1470,6 @@ const styles = StyleSheet.create({
   },
   driverModeIconInactive: {
     backgroundColor: 'rgba(255,255,255,0.25)',
-  },
-  identityCard: {
-    width: '100%',
-    backgroundColor: '#fff',
-    borderRadius: 28,
-    padding: Spacing.xl,
-    gap: Spacing.md,
-    shadowColor: '#2F1755',
-    shadowOpacity: 0.06,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 12,
-    elevation: 3,
-  },
-  identityCardTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: C.ink,
-  },
-  identityList: {
-    gap: Spacing.md,
-  },
-  identityRow: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#ECEFFD',
-    paddingBottom: Spacing.sm,
-  },
-  identityLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    color: C.gray500,
-    letterSpacing: 0.4,
-  },
-  identityValue: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: C.ink,
-    marginTop: 4,
   },
   driverModeIconActive: {
     backgroundColor: '#FFFFFF',

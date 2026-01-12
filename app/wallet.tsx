@@ -29,8 +29,10 @@ import {
 import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
-import { useAuthSession } from '@/hooks/use-auth-session';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useAuthSession } from '@/hooks/use-auth-session';
+import * as Auth from '@/app/services/auth';
+import { deleteAccountData } from '@/app/services/account';
 
 const C = Colors;
 
@@ -59,6 +61,7 @@ export default function WalletScreen() {
   const session = useAuthSession();
   const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
   const [view, setView] = useState<WalletView>('home');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [addAmount, setAddAmount] = useState('20');
   const [withdrawValue, setWithdrawValue] = useState('0');
   const [processing, setProcessing] = useState(false);
@@ -115,56 +118,69 @@ export default function WalletScreen() {
     setView('home');
   }, [router, view]);
 
-  const nativePayOption = useMemo(() => {
-    if (Platform.OS === 'ios') return { label: 'Apple Pay', type: 'apple-pay' as const };
-    if (Platform.OS === 'android') return { label: 'Google Pay', type: 'google-pay' as const };
-    return null;
-  }, []);
+type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
 
-  const handleRegisterNativePay = useCallback(() => {
-    if (!session.email || !nativePayOption) return;
-    registerNativePayMethod(session.email, nativePayOption);
-    Alert.alert(
-      `${nativePayOption.label} activé`,
-      `${nativePayOption.label} est prêt pour tes paiements CampusRide.`
-    );
-    setMethodPickerVisible(false);
-    setCardModalVisible(false);
-  }, [nativePayOption, session.email]);
-
-  const handleUseNativePay = useCallback(() => {
-    if (!session.email || !nativePayOption) return;
-    const existing = paymentMethods.find((method) => method.type === nativePayOption.type);
-    if (existing) {
-      selectPaymentMethod(session.email, existing.id);
-      Alert.alert(
-        `${nativePayOption.label} sélectionné`,
-        `${nativePayOption.label} est défini pour cette recharge.`
-      );
-      return;
+  const nativePayOptions = useMemo<NativePayOption[]>(() => {
+    const options: NativePayOption[] = [];
+    if (Platform.OS === 'ios') {
+      options.push({ label: 'Apple Pay', type: 'apple-pay' });
     }
-    registerNativePayMethod(session.email, nativePayOption);
-    Alert.alert(
-      `${nativePayOption.label} activé`,
-      `${nativePayOption.label} est prêt pour tes paiements CampusRide.`
-    );
-  }, [nativePayOption, paymentMethods, session.email]);
+    options.push({ label: 'Google Pay', type: 'google-pay' });
+    return options;
+  }, []);
+  const primaryNativePayOption = nativePayOptions[0] ?? null;
+  const secondaryNativePayOption = nativePayOptions[1] ?? null;
+
+  const handleRegisterNativePay = useCallback(
+    (option: NativePayOption) => {
+      if (!session.email) return;
+      registerNativePayMethod(session.email, option);
+      Alert.alert(
+        `${option.label} activé`,
+        `${option.label} est prêt pour tes paiements CampusRide.`
+      );
+      setMethodPickerVisible(false);
+      setCardModalVisible(false);
+    },
+    [session.email]
+  );
+
+  const handleUseNativePay = useCallback(
+    (option: NativePayOption) => {
+      if (!session.email) return;
+      const existing = paymentMethods.find((method) => method.type === option.type);
+      if (existing) {
+        selectPaymentMethod(session.email, existing.id);
+        Alert.alert(
+          `${option.label} sélectionné`,
+          `${option.label} est défini pour cette recharge.`
+        );
+        return;
+      }
+      registerNativePayMethod(session.email, option);
+      Alert.alert(
+        `${option.label} activé`,
+        `${option.label} est prêt pour tes paiements CampusRide.`
+      );
+    },
+    [paymentMethods, session.email]
+  );
 
   const promptAddPaymentMethod = useCallback(() => {
     if (!session.email) {
       Alert.alert('Connexion requise', 'Connecte-toi pour gérer tes cartes.');
       return;
     }
-    if (nativePayOption) {
+    if (nativePayOptions.length) {
       Alert.alert(
         'Ajouter un moyen de paiement',
         'Choisis comment tu souhaites payer sur CampusRide.',
         [
           { text: 'Annuler', style: 'cancel' },
-          {
-            text: nativePayOption.label,
-            onPress: () => handleRegisterNativePay(),
-          },
+          ...nativePayOptions.map((option) => ({
+            text: option.label,
+            onPress: () => handleRegisterNativePay(option),
+          })),
           { text: 'Ajouter une carte', onPress: () => setCardModalVisible(true) },
         ],
         { cancelable: true }
@@ -172,7 +188,7 @@ export default function WalletScreen() {
       return;
     }
     setCardModalVisible(true);
-  }, [handleRegisterNativePay, nativePayOption, session.email]);
+  }, [handleRegisterNativePay, nativePayOptions, session.email]);
 
   const openPaymentMethodPicker = useCallback(() => {
     if (!session.email) {
@@ -269,10 +285,10 @@ export default function WalletScreen() {
         [
           { text: 'Annuler', style: 'cancel' },
           {
-            text: nativePayOption?.label ?? 'Ajouter une carte',
+            text: primaryNativePayOption?.label ?? 'Ajouter une carte',
             onPress: () => {
-              if (nativePayOption) {
-                handleRegisterNativePay();
+              if (primaryNativePayOption) {
+                handleRegisterNativePay(primaryNativePayOption);
               } else {
                 setCardModalVisible(true);
               }
@@ -296,7 +312,7 @@ export default function WalletScreen() {
     } finally {
       setProcessing(false);
     }
-  }, [addAmount, handleRegisterNativePay, nativePayOption, payoutMethod, session.email]);
+  }, [addAmount, handleRegisterNativePay, primaryNativePayOption, payoutMethod, session.email]);
 
   const onWithdrawFunds = useCallback(() => {
     if (!session.email) return;
@@ -412,11 +428,14 @@ export default function WalletScreen() {
               <Text style={styles.paymentAction}>Modifier</Text>
             </Pressable>
           </View>
-          {nativePayOption && payoutMethod.type !== nativePayOption.type ? (
-            <Pressable style={styles.nativePayButton} onPress={handleRegisterNativePay}>
+          {primaryNativePayOption && payoutMethod.type !== primaryNativePayOption.type ? (
+            <Pressable
+              style={styles.nativePayButton}
+              onPress={() => handleRegisterNativePay(primaryNativePayOption)}
+            >
               <IconSymbol name="wave.3.forward" size={18} color="#fff" />
               <Text style={styles.nativePayButtonText}>
-                Activer {nativePayOption.label}
+                Activer {primaryNativePayOption.label}
               </Text>
             </Pressable>
           ) : null}
@@ -427,11 +446,14 @@ export default function WalletScreen() {
             <View style={styles.paymentSelectorIcon} />
             <Text style={styles.paymentSelectorText}>{actionLabel}</Text>
           </Pressable>
-          {nativePayOption ? (
-            <Pressable style={styles.nativePayButton} onPress={handleRegisterNativePay}>
+          {primaryNativePayOption ? (
+            <Pressable
+              style={styles.nativePayButton}
+              onPress={() => handleRegisterNativePay(primaryNativePayOption)}
+            >
               <IconSymbol name="wave.3.forward" size={18} color="#fff" />
               <Text style={styles.nativePayButtonText}>
-                Activer {nativePayOption.label}
+                Activer {primaryNativePayOption.label}
               </Text>
             </Pressable>
           ) : null}
@@ -497,6 +519,72 @@ export default function WalletScreen() {
           );
         })
       )}
+    </View>
+  );
+
+  const roleLabel = useMemo(() => {
+    if (!session.email) return 'membre Campus Ride';
+    if (session.isDriver && session.isPassenger) return 'conducteur et passager';
+    if (session.isDriver) return 'conducteur';
+    if (session.isPassenger) return 'passager';
+    return 'membre Campus Ride';
+  }, [session.email, session.isDriver, session.isPassenger]);
+
+  const handleConfirmDeleteAccount = useCallback(async () => {
+    if (!session.email || isDeletingAccount) return;
+    setIsDeletingAccount(true);
+    try {
+      deleteAccountData(session.email);
+      await Auth.signOut();
+      router.replace('/welcome');
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Impossible de supprimer ton compte pour le moment.';
+      Alert.alert('Erreur', message);
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  }, [isDeletingAccount, router, session.email]);
+
+  const promptDeleteAccount = useCallback(() => {
+    if (!session.email || isDeletingAccount) return;
+    Alert.alert(
+      'Supprimer mon compte',
+      'Tous tes trajets, messages, avis, wallet et préférences seront effacés. Cette action est irréversible.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: () => {
+            void handleConfirmDeleteAccount();
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  }, [handleConfirmDeleteAccount, isDeletingAccount, session.email]);
+
+  const renderDeleteAccountSection = () => (
+    <View style={styles.deleteSection}>
+      <Text style={styles.deleteTitle}>Supprimer mon compte {roleLabel}</Text>
+      <Text style={styles.deleteDescription}>
+        Toutes tes données de {roleLabel} (trajets, messages, avis, wallet) seront retirées de CampusRide.
+      </Text>
+      <Pressable
+        style={[
+          styles.deleteButton,
+          (!session.email || isDeletingAccount) && styles.deleteButtonDisabled,
+        ]}
+        onPress={promptDeleteAccount}
+        disabled={!session.email || isDeletingAccount}
+      >
+        <Text style={styles.deleteButtonText}>
+          {isDeletingAccount ? 'Suppression en cours…' : 'Supprimer mon compte'}
+        </Text>
+      </Pressable>
     </View>
   );
 
@@ -576,24 +664,26 @@ export default function WalletScreen() {
             accessibilityRole="button"
           >
             <Text style={styles.methodEmptyText}>
-              {nativePayOption ? `Activer ${nativePayOption.label}` : 'Ajouter une carte'}
+              {primaryNativePayOption ? `Activer ${primaryNativePayOption.label}` : 'Ajouter une carte'}
             </Text>
           </Pressable>
         )}
-        {nativePayOption && !paymentMethods.some((m) => m.type === nativePayOption.type) ? (
+        {primaryNativePayOption &&
+        !paymentMethods.some((m) => m.type === primaryNativePayOption.type) ? (
           <Pressable
             style={[styles.nativePayButton, styles.nativePayButtonOutline]}
-            onPress={handleRegisterNativePay}
+            onPress={() => handleRegisterNativePay(primaryNativePayOption)}
           >
             <IconSymbol name="wave.3.forward" size={18} color={C.primary} />
             <Text style={[styles.nativePayButtonText, { color: C.primary }]}>
-              Activer {nativePayOption.label}
+              Activer {primaryNativePayOption.label}
             </Text>
           </Pressable>
         ) : null}
       </View>
 
       {renderTransactions()}
+      {renderDeleteAccountSection()}
     </>
   );
 
@@ -610,13 +700,31 @@ export default function WalletScreen() {
       </GradientBackground>
       {renderAmountInput('Montant à ajouter', addAmount, setAddAmount, ADD_PRESETS)}
       {renderPaymentMethodCard(
-        nativePayOption ? `Activer ${nativePayOption.label}` : 'Sélectionner une méthode de paiement'
+        primaryNativePayOption
+          ? `Activer ${primaryNativePayOption.label}`
+          : 'Sélectionner une méthode de paiement'
       )}
-      {nativePayOption ? (
-        <Pressable style={styles.nativePayCTA} onPress={handleUseNativePay}>
+      {primaryNativePayOption ? (
+        <Pressable
+          style={styles.nativePayCTA}
+          onPress={() => handleUseNativePay(primaryNativePayOption)}
+        >
           <IconSymbol name="wave.3.forward" size={20} color="#fff" />
           <Text style={styles.nativePayCTAPlay}>
-            Utiliser {nativePayOption.label} pour cette recharge
+            Utiliser {primaryNativePayOption.label} pour cette recharge
+          </Text>
+        </Pressable>
+      ) : null}
+      {secondaryNativePayOption ? (
+        <Pressable
+          style={[styles.nativePayCTA, styles.nativePaySecondaryCTA]}
+          onPress={() => handleUseNativePay(secondaryNativePayOption)}
+        >
+          <View style={styles.nativePaySecondaryLogo}>
+            <Text style={styles.nativePaySecondaryLogoText}>G</Text>
+          </View>
+          <Text style={[styles.nativePayCTAPlay, styles.nativePaySecondaryCTAPlay]}>
+            Utiliser {secondaryNativePayOption.label} pour cette recharge
           </Text>
         </Pressable>
       ) : null}
@@ -739,13 +847,13 @@ export default function WalletScreen() {
             ))
           )}
           <View style={styles.modalActionsColumn}>
-            {nativePayOption ? (
+            {primaryNativePayOption ? (
               <Pressable
                 style={styles.modalSecondaryButton}
-                onPress={handleRegisterNativePay}
+                onPress={() => handleRegisterNativePay(primaryNativePayOption)}
               >
                 <Text style={styles.modalSecondaryButtonText}>
-                  Activer {nativePayOption.label}
+                  Activer {primaryNativePayOption.label}
                 </Text>
               </Pressable>
             ) : null}
@@ -1096,6 +1204,37 @@ const styles = StyleSheet.create({
   amountCredit: { color: '#1F9D55' },
   amountDebit: { color: '#D33F3F' },
   emptyTransactions: { textAlign: 'center', color: C.gray500 },
+  deleteSection: {
+    borderRadius: 28,
+    backgroundColor: '#FFF3F2',
+    padding: Spacing.lg,
+    gap: Spacing.xs,
+  },
+  deleteTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.danger,
+  },
+  deleteDescription: {
+    color: Colors.gray600,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  deleteButton: {
+    marginTop: Spacing.sm,
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.danger,
+    alignItems: 'center',
+  },
+  deleteButtonDisabled: {
+    opacity: 0.7,
+  },
+  deleteButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
   flowHero: {
     borderRadius: 32,
     padding: Spacing.lg,
@@ -1310,4 +1449,22 @@ const styles = StyleSheet.create({
     marginVertical: Spacing.sm,
   },
   nativePayCTAPlay: { color: '#fff', fontWeight: '700' },
+  nativePaySecondaryCTA: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.2)',
+  },
+  nativePaySecondaryCTAPlay: { color: '#1F1F1F' },
+  nativePaySecondaryLogo: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#1A73E8',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nativePaySecondaryLogoText: {
+    color: '#fff',
+    fontWeight: '800',
+  },
 });

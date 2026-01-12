@@ -1,3 +1,4 @@
+import { confirmReservationWithoutPayment } from '@/app/services/rides';
 import { ImageSourcePropType } from 'react-native';
 
 import type { Ride } from '@/app/services/rides';
@@ -98,6 +99,7 @@ export const FALLBACK_COMPLETED: DisplayRide[] = [
 export type PendingRequest = {
   id: string;
   name: string;
+  email: string;
   rating: number;
   trips: number;
   requestedAt: string;
@@ -107,6 +109,7 @@ export type PendingRequest = {
 export type ConfirmedPassenger = {
   id: string;
   name: string;
+  email: string;
   rating: number;
   trips: number;
   avatar: ImageSourcePropType;
@@ -116,6 +119,7 @@ export const SAMPLE_PENDING_REQUESTS: PendingRequest[] = [
   {
     id: 'pending-1',
     name: 'Emma Petit',
+    email: 'emma.petit@campusrides.be',
     rating: 4.8,
     trips: 31,
     requestedAt: 'Demandé le 29 nov. à 09:15',
@@ -124,6 +128,7 @@ export const SAMPLE_PENDING_REQUESTS: PendingRequest[] = [
   {
     id: 'pending-2',
     name: 'Thomas Dubois',
+    email: 'thomas.dubois@campusrides.be',
     rating: 4.6,
     trips: 12,
     requestedAt: 'Demandé le 29 nov. à 10:30',
@@ -132,6 +137,7 @@ export const SAMPLE_PENDING_REQUESTS: PendingRequest[] = [
   {
     id: 'pending-3',
     name: 'Marie Leroy',
+    email: 'marie.leroy@campusrides.be',
     rating: 5,
     trips: 45,
     requestedAt: 'Demandé le 29 nov. à 11:00',
@@ -143,6 +149,7 @@ export const SAMPLE_CONFIRMED_PASSENGERS: ConfirmedPassenger[] = [
   {
     id: 'confirmed-1',
     name: 'Sophie Martin',
+    email: 'sophie.martin@campusrides.be',
     rating: 4.9,
     trips: 24,
     avatar: { uri: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?auto=format&fit=crop&w=200&q=80' },
@@ -150,6 +157,7 @@ export const SAMPLE_CONFIRMED_PASSENGERS: ConfirmedPassenger[] = [
   {
     id: 'confirmed-2',
     name: 'Lucas Bernard',
+    email: 'lucas.bernard@campusrides.be',
     rating: 4.7,
     trips: 18,
     avatar: { uri: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=200&q=80' },
@@ -180,9 +188,26 @@ const ensureRideDetail = (rideId: string | undefined) => {
   return SAMPLE_RIDE_DETAILS[key];
 };
 
+type RideDetailListener = () => void;
+const detailListeners: RideDetailListener[] = [];
+const notifyDetailListeners = () => {
+  detailListeners.forEach((listener) => listener());
+};
+
+export const subscribeRideDetailChanges = (listener: RideDetailListener) => {
+  detailListeners.push(listener);
+  return () => {
+    const index = detailListeners.indexOf(listener);
+    if (index >= 0) {
+      detailListeners.splice(index, 1);
+    }
+  };
+};
+
 const mapRequestToConfirmedPassenger = (request: PendingRequest): ConfirmedPassenger => ({
   id: request.id,
   name: request.name,
+  email: request.email,
   rating: request.rating,
   trips: request.trips,
   avatar: request.avatar,
@@ -194,6 +219,10 @@ export const SAMPLE_RIDE_DETAILS: Record<string, RideDetail> = {
 };
 
 export const getSampleRideDetail = (rideId: string): RideDetail => ensureRideDetail(rideId);
+
+export const getPendingRequestCount = (rideId: string) => ensureRideDetail(rideId).pendingRequests.length;
+export const getConfirmedPassengerCount = (rideId: string) =>
+  ensureRideDetail(rideId).confirmedPassengers.length;
 
 export const acceptPendingRequest = (
   rideId: string,
@@ -207,6 +236,8 @@ export const acceptPendingRequest = (
   detail.pendingRequests = detail.pendingRequests.filter((item) => item.id !== requestId);
   const confirmed = mapRequestToConfirmedPassenger(pendingRequest);
   detail.confirmedPassengers = [...detail.confirmedPassengers, confirmed];
+  confirmReservationWithoutPayment(rideId, pendingRequest.email);
+  notifyDetailListeners();
   return confirmed;
 };
 
@@ -214,5 +245,8 @@ export const refusePendingRequest = (rideId: string, requestId: string): boolean
   const detail = ensureRideDetail(rideId);
   const originalLength = detail.pendingRequests.length;
   detail.pendingRequests = detail.pendingRequests.filter((item) => item.id !== requestId);
+  if (detail.pendingRequests.length < originalLength) {
+    notifyDetailListeners();
+  }
   return detail.pendingRequests.length < originalLength;
 };
