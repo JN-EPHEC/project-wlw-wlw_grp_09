@@ -15,6 +15,7 @@ const C = Colors;
 export default function RequestsScreen() {
   const router = useRouter();
   const session = useAuthSession();
+  const isDriver = session.isDriver;
   const { pending, accepted } = usePassengerRequests(session.email);
   const [activeTab, setActiveTab] = useState<'pending' | 'accepted'>('pending');
 
@@ -32,6 +33,7 @@ export default function RequestsScreen() {
       ? 'Tu n’as envoyé aucune demande pour l’instant.'
       : 'Pas encore de demande acceptée. Réserve un trajet pour commencer.';
 
+  const highlightColor = isDriver ? Colors.accent : Colors.primary;
   const openRideDetails = useCallback(
     (rideId: string) => {
       router.push(`/ride/${rideId}`);
@@ -87,7 +89,7 @@ export default function RequestsScreen() {
   );
 
   return (
-    <AppBackground colors={Gradients.background}>
+    <AppBackground colors={isDriver ? Gradients.driver : Gradients.background}>
       <SafeAreaView style={styles.safe}>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <View style={styles.headerTop}>
@@ -97,17 +99,32 @@ export default function RequestsScreen() {
             <Text style={styles.title}>Mes demandes</Text>
           </View>
           <View style={styles.tabButtons}>
-            {sections.map((section) => (
-              <Pressable
-                key={section.key}
-                style={[styles.tabButton, activeTab === section.key && styles.tabButtonActive]}
-                onPress={() => setActiveTab(section.key as typeof activeTab)}
-              >
-                <Text style={[styles.tabButtonText, activeTab === section.key && styles.tabButtonTextActive]}>
-                  {section.label} ({section.count})
-                </Text>
-              </Pressable>
-            ))}
+            {sections.map((section) => {
+              const isActive = activeTab === section.key;
+              return (
+                <Pressable
+                  key={section.key}
+                  style={[
+                    styles.tabButton,
+                    styles.tabButtonActive,
+                    isActive && {
+                      backgroundColor: highlightColor,
+                      borderColor: highlightColor,
+                    },
+                  ]}
+                  onPress={() => setActiveTab(section.key as typeof activeTab)}
+                >
+                  <Text
+                    style={[
+                      styles.tabButtonText,
+                      isActive && styles.tabButtonTextActive,
+                    ]}
+                  >
+                    {section.label} ({section.count})
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
 
           {currentList.length === 0 ? (
@@ -142,7 +159,7 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: Radius.lg,
-    backgroundColor: 'rgba(0,0,0,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.18)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -159,20 +176,23 @@ const styles = StyleSheet.create({
   tabButton: {
     flex: 1,
     borderRadius: Radius.pill,
-    backgroundColor: C.white,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.5)',
+    backgroundColor: 'rgba(255,255,255,0.2)',
     paddingVertical: Spacing.md,
     alignItems: 'center',
     ...Shadows.card,
   },
   tabButtonActive: {
-    backgroundColor: C.primaryLight,
+    backgroundColor: 'transparent',
+    borderColor: 'transparent',
   },
   tabButtonText: {
-    color: C.gray600,
+    color: C.white,
     fontWeight: '700',
   },
   tabButtonTextActive: {
-    color: C.primaryDark,
+    color: C.white,
   },
   card: {
     backgroundColor: C.white,
@@ -214,7 +234,7 @@ const styles = StyleSheet.create({
   },
   payButton: {
     marginTop: Spacing.md,
-    backgroundColor: C.primary,
+    backgroundColor: C.accent,
     paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.lg,
     borderRadius: Radius.pill,

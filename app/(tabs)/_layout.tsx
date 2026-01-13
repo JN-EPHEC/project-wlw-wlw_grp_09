@@ -1,14 +1,16 @@
 import { Redirect, Tabs } from 'expo-router';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
-import { Shadows } from '@/app/ui/theme';
+import { Colors as ThemeColors } from '@/constants/theme';
+import { Colors as DesignColors, Shadows } from '@/app/ui/theme';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useBreakpoints } from '@/hooks/use-breakpoints';
+
+const DRIVER_ICON_GRADIENT = ['#7A5FFF', '#A685FF', '#DFA0F2'] as const;
 
 function TabLayout() {
   const colorScheme = useColorScheme();
@@ -30,6 +32,7 @@ function TabLayout() {
     backgroundColor: '#FFFFFF',
     ...S.card,
   };
+  const isDriverTheme = session.isDriver;
   const tabBarLabelStyle = {
     fontSize: isDesktop ? 13 : 12,
     fontWeight: '600',
@@ -39,23 +42,51 @@ function TabLayout() {
     paddingVertical: isDesktop ? 6 : 4,
   };
 
+  const tabBarActiveTintColor = isDriverTheme
+    ? DesignColors.primary
+    : ThemeColors[colorScheme ?? 'light'].tabIconSelected;
+  const tabBarInactiveTintColor = isDriverTheme
+    ? DesignColors.primary
+    : ThemeColors[colorScheme ?? 'light'].tabIconDefault;
+
   const buildTabIcon = (symbol: Parameters<typeof IconSymbol>[0]['name']) => {
-    const TabIcon = ({ color, focused }: { color: string; focused: boolean }) => (
-      <GradientBackground
-        colors={
-          focused
-            ? ['#FF8347', '#FF9864', '#FFB686']
-            : ['rgba(255, 255, 255, 0.16)', 'rgba(255, 255, 255, 0.08)', 'rgba(255, 255, 255, 0.04)']
-        }
-        blur={focused ? 0.35 : 0.2}
-        style={[
+    const TabIcon = ({ color, focused }: { color: string; focused: boolean }) => {
+      if (isDriverTheme) {
+        const iconColor = focused ? DesignColors.white : DesignColors.primary;
+        const wrapperStyle = [
           tabStyles.iconWrapper,
-          focused ? tabStyles.iconWrapperFocused : tabStyles.iconWrapperUnfocused,
-        ]}
-      >
-        <IconSymbol size={24} name={symbol} color={color} />
-      </GradientBackground>
-    );
+          focused ? tabStyles.iconWrapperFocusedDriver : tabStyles.iconWrapperUnfocusedDriver,
+        ];
+        if (focused) {
+          return (
+            <GradientBackground colors={DRIVER_ICON_GRADIENT} blur={0.35} style={wrapperStyle}>
+              <IconSymbol size={24} name={symbol} color={iconColor} />
+            </GradientBackground>
+          );
+        }
+        return (
+          <View style={wrapperStyle}>
+            <IconSymbol size={24} name={symbol} color={iconColor} />
+          </View>
+        );
+      }
+      const gradientColors = focused
+        ? ['#FF8347', '#FF9864', '#FFB686']
+        : ['rgba(255, 255, 255, 0.16)', 'rgba(255, 255, 255, 0.08)', 'rgba(255, 255, 255, 0.04)'];
+      const wrapperStyle = [
+        tabStyles.iconWrapper,
+        focused ? tabStyles.iconWrapperFocused : tabStyles.iconWrapperUnfocused,
+      ];
+      return (
+        <GradientBackground
+          colors={gradientColors}
+          blur={focused ? 0.35 : 0.2}
+          style={wrapperStyle}
+        >
+          <IconSymbol size={24} name={symbol} color={color} />
+        </GradientBackground>
+      );
+    };
     TabIcon.displayName = `TabIcon:${symbol}`;
     return TabIcon;
   };
@@ -71,8 +102,8 @@ function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tabIconSelected,
-        tabBarInactiveTintColor: Colors[colorScheme ?? 'light'].tabIconDefault,
+        tabBarActiveTintColor: tabBarActiveTintColor,
+        tabBarInactiveTintColor: tabBarInactiveTintColor,
         headerShown: false,
         tabBarStyle,
         tabBarLabelStyle,
@@ -142,6 +173,14 @@ const tabStyles = StyleSheet.create({
   iconWrapperUnfocused: {
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  iconWrapperFocusedDriver: {
+    borderWidth: 1,
+    borderColor: DesignColors.accent,
+  },
+  iconWrapperUnfocusedDriver: {
+    borderWidth: 0,
+    borderColor: 'transparent',
   },
 });
 

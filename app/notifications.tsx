@@ -234,6 +234,7 @@ export default function NotificationsScreen() {
 
   const unread = useMemo(() => notifications.filter((notif) => !notif.read), [notifications]);
   const older = useMemo(() => notifications.filter((notif) => notif.read), [notifications]);
+  const isDriver = session.isDriver;
 
   const handleMarkAsRead = useCallback(
     (notif: Notification) => {
@@ -249,11 +250,11 @@ export default function NotificationsScreen() {
   }, [session.email, unread]);
 
   return (
-    <AppBackground colors={Gradients.background}>
+    <AppBackground colors={isDriver ? Gradients.driver : Gradients.background}>
       <SafeAreaView style={styles.safe}>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-          <View style={styles.pageHeader}>
-            <Pressable style={styles.backButton} onPress={() => router.back()}>
+          <View style={[styles.pageHeader, isDriver && styles.pageHeaderDriver]}>
+            <Pressable style={[styles.backButton, isDriver && styles.backButtonDriver]} onPress={() => router.back()}>
               <IconSymbol name="chevron.left" size={20} color={C.white} />
             </Pressable>
             <View style={{ flex: 1 }}>
@@ -270,7 +271,9 @@ export default function NotificationsScreen() {
               </Text>
               {unread.length > 0 ? (
                 <Pressable onPress={markAllAsRead} style={styles.sectionActionButton}>
-                  <Text style={styles.sectionAction}>Tout marquer comme lu</Text>
+                  <Text style={[styles.sectionAction, isDriver && styles.sectionActionDriver]}>
+                    Tout marquer comme lu
+                  </Text>
                 </Pressable>
               ) : null}
             </View>
@@ -323,6 +326,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  pageHeaderDriver: {
+    backgroundColor: 'transparent',
+  },
+  backButtonDriver: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
   heroTitle: {
     color: C.white,
     fontSize: 20,
@@ -354,6 +363,9 @@ const styles = StyleSheet.create({
   },
   sectionActionButton: {
     alignSelf: 'flex-start',
+  },
+  sectionActionDriver: {
+    color: Colors.accent,
   },
   cardRow: {
     flexDirection: 'row',

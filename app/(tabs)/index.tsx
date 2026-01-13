@@ -1,7 +1,6 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Image,
   LayoutChangeEvent,
@@ -12,6 +11,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -19,7 +19,6 @@ import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
-import { DisplayRide, FALLBACK_UPCOMING } from '@/app/data/driver-samples';
 import type { AuthSession } from '@/app/services/auth';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { getAvatarUrl } from '@/app/ui/avatar';
@@ -54,15 +53,6 @@ const sponsorOffer = {
   url: 'https://www.spotify.com/be-fr/student/',
 };
 
-const driverSponsor = {
-  brand: 'Adobe Creative Cloud',
-  tagline: '60 % de réduction étudiants',
-  badge: 'Sponsorisé',
-  url: 'https://www.adobe.com/fr/creativecloud/buy/students.html',
-  colors: ['#A7001F', '#E62216'],
-  logo: require('@/assets/images/adobe.jpg'),
-};
-
 const sponsorSecondary = {
   brand: 'Netflix Student',
   tagline: '1er mois offert',
@@ -70,6 +60,16 @@ const sponsorSecondary = {
   colors: ['#F44336', '#D32F2F'],
   url: 'https://www.netflix.com/be-en/',
   logo: require('@/assets/images/Netflix.jpg'),
+  description: 'Tes séries et films préférés pendant les trajets CampusRide.',
+};
+
+const quickSponsor = {
+  brand: 'Quick Étudiant',
+  tagline: 'Menus étudiants & bons plans',
+  badge: 'SPONSORISÉ',
+  colors: ['#E30A14', '#F03A3D', '#FF6F6F'],
+  url: 'https://www.quick.be/fr/deals',
+  logo: require('@/assets/images/Quick.png'),
 };
 
 const formatDate = (timestamp: number) =>
@@ -397,27 +397,23 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
     [passengerRequestCount, tripBuckets, tripTab, router]
   );
 
-  const itinerary = useMemo(() => {
-    if (!featuredRide) return [];
-    const segments = [
-      {
-        label: featuredRide.depart,
-        time: formatTime(featuredRide.departureAt),
-        color: '#7ED957',
-      },
-      {
-        label: 'Point intermédiaire',
-        time: formatTime(featuredRide.departureAt + 5 * 60 * 1000),
-        color: '#B1B5C8',
-      },
-      {
-        label: featuredRide.destination,
-        time: formatTime(featuredRide.departureAt + 12 * 60 * 1000),
-        color: Colors.primary,
-      },
-    ];
-    return segments;
-  }, [featuredRide]);
+  const sponsorSlides = useMemo(() => [sponsorSecondary, sponsorOffer], []);
+  const sponsorScrollRef = useRef<ScrollView>(null);
+  const sponsorIndexRef = useRef(0);
+  const { width: windowWidth } = useWindowDimensions();
+  const sliderWidth = Math.max(windowWidth - Spacing.lg * 2, 300);
+  const sponsorCardHeight = 170;
+
+  useEffect(() => {
+    if (!sliderWidth) return;
+    const interval = setInterval(() => {
+      const nextIndex = (sponsorIndexRef.current + 1) % sponsorSlides.length;
+      sponsorIndexRef.current = nextIndex;
+      sponsorScrollRef.current?.scrollTo({ x: nextIndex * sliderWidth, animated: true });
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [sliderWidth, sponsorSlides.length]);
+
 
   const departureSuggestions = useMemo(() => {
     const query = departureInput.trim().toLowerCase();
@@ -583,321 +579,77 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
             </View>
           </View>
 
-          <GradientBackground colors={sponsorSecondary.colors} style={[styles.inlineSponsor, styles.inlineSponsorStandalone]}>
-            <View style={styles.inlineSponsorLogo}>
-              <Image
-                source={sponsorSecondary.logo}
-                style={styles.inlineSponsorLogoImage}
-                resizeMode="contain"
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              {sponsorSecondary.badge ? (
-                <View style={styles.inlineBadge}>
-                  <Text style={styles.inlineBadgeText}>{sponsorSecondary.badge}</Text>
-                </View>
-              ) : null}
-              <Text style={styles.inlineSponsorLabel}>{sponsorSecondary.brand}</Text>
-              <Text style={styles.inlineSponsorTagline}>{sponsorSecondary.tagline}</Text>
-            </View>
-            <Pressable onPress={() => openSponsor(sponsorSecondary.url)}>
-              <IconSymbol name="arrow.up.right.square" size={24} color={Colors.white} />
-            </Pressable>
-          </GradientBackground>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Trajets qui pourraient vous intéresser</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recommendedList}>
-              {recommendedRides.map((ride) => (
-                <Pressable
-                  key={ride.id}
-                  style={styles.rideCard}
-                  onPress={() => openRide(ride)}
-                  accessibilityRole="button"
-                >
-                  <View style={styles.rideHeader}>
-                    <Image source={{ uri: getAvatarUrl(ride.ownerEmail, 96) }} style={styles.avatar} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.rideDriver}>{ride.driver}</Text>
-                      <Text style={styles.rideMeta}>
-                        ⭐ {getRandomRating(ride)} · {getRandomTripsCount(ride)} trajets
-                      </Text>
-                    </View>
-                    <View style={styles.priceBadge}>
-                      <Text style={styles.priceBadgeText}>{ride.price.toFixed(2)} €</Text>
-                      <Text style={styles.priceBadgeSub}>
-                        {ride.seats - ride.passengers.length} place(s)
-                      </Text>
-                    </View>
-                  </View>
-                  <View style={styles.rideRoute}>
-                    <View style={styles.routeDot} />
-                    <Text style={styles.routeLabel}>{ride.depart}</Text>
-                  </View>
-                  <View style={styles.rideRoute}>
-                    <View style={[styles.routeDot, { backgroundColor: Colors.primary }]} />
-                    <Text style={styles.routeLabel}>{ride.destination}</Text>
-                  </View>
-                  <View style={styles.rideFooter}>
-                    <Text style={styles.rideFooterLabel}>
-                      {formatTime(ride.departureAt)} · {ride.seats} place(s)
-                    </Text>
-                    <Pressable style={styles.secondaryButton} onPress={() => openRide(ride)}>
-                      <Text style={styles.secondaryButtonText}>Voir les détails</Text>
-                    </Pressable>
-                  </View>
-                </Pressable>
-              ))}
-            </ScrollView>
-          </View>
-
-          <View style={styles.section} onLayout={registerSection('requests')}>
-            <Text style={styles.sectionTitle}>Mes demandes</Text>
-            <Text style={styles.sectionSubtitle}>Suivez vos demandes de covoiturage</Text>
-            <View style={styles.requestCard}>
-              <View style={styles.requestHeader}>
-                <View style={styles.statusBadge}>
-                  <IconSymbol name="checkmark.seal.fill" size={16} color={Colors.success} />
-                  <Text style={styles.statusText}>Acceptée</Text>
-                </View>
-                <Text style={styles.requestBadgeText}>
-                  {pendingRequests.length} acceptée(s)
-                </Text>
-              </View>
-              {pendingRequests[0] ? (
-                <>
-                  <View style={styles.requestBody}>
-                    <Image
-                      source={{ uri: getAvatarUrl(pendingRequests[0].ownerEmail, 96) }}
-                      style={styles.requestAvatar}
-                    />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.requestDriver}>{pendingRequests[0].driver}</Text>
-                      <Text style={styles.requestMeta}>
-                        ⭐ {getRandomRating(pendingRequests[0])} · {getRandomTripsCount(pendingRequests[0])} trajets
-                      </Text>
-                      <Text style={styles.requestRoute}>
-                        {pendingRequests[0].depart} → {pendingRequests[0].destination}
-                      </Text>
-                    </View>
-                    <View style={styles.requestPrice}>
-                      <Text style={styles.requestPriceValue}>
-                        {pendingRequests[0].price.toFixed(2)} €
-                      </Text>
-                      <Text style={styles.requestPriceLabel}>{pendingRequests[0].seats} place(s)</Text>
-                    </View>
-                  </View>
-                  <Pressable
-                    style={styles.primaryButton}
-                    onPress={() => openRide(pendingRequests[0])}
+          <View style={[styles.section, styles.sponsorSection]}>
+            <View style={[styles.sponsorCarouselWrapper, { height: sponsorCardHeight + Spacing.sm }]}>
+              <ScrollView
+                ref={sponsorScrollRef}
+                horizontal
+                pagingEnabled
+                showsHorizontalScrollIndicator={false}
+                snapToInterval={sliderWidth}
+                decelerationRate="fast"
+                contentContainerStyle={styles.sponsorCarousel}
+                onMomentumScrollEnd={(event) => {
+                  const index = Math.max(
+                    0,
+                    Math.min(
+                      sponsorSlides.length - 1,
+                      Math.round(event.nativeEvent.contentOffset.x / sliderWidth)
+                    )
+                  );
+                  sponsorIndexRef.current = index;
+                }}
+              >
+                {sponsorSlides.map((slide) => (
+                  <GradientBackground
+                    key={slide.brand}
+                    colors={slide.colors}
+                    style={[styles.sponsorCard, { width: sliderWidth, height: sponsorCardHeight }]}
                   >
-                    <Text style={styles.primaryButtonText}>Procéder au paiement</Text>
-                  </Pressable>
-                </>
-              ) : (
-                <Text style={styles.emptyText}>
-                  Tu n’as pas encore de demande acceptée. Réserve un trajet dès maintenant !
-                </Text>
-              )}
-            </View>
-          </View>
-
-          <View style={styles.section} onLayout={registerSection('trips')}>
-            <Text style={styles.sectionTitle}>Mes trajets</Text>
-            <Text style={styles.sectionSubtitle}>Gérez vos réservations</Text>
-            <View style={styles.tabs}>
-              {(['current', 'reserved', 'history'] as const).map((tab) => (
-                <Pressable
-                  key={tab}
-                  style={[styles.tabButton, tripTab === tab && styles.tabButtonActive]}
-                  onPress={() => setTripTab(tab)}
-                >
-                  <Text
-                    style={[
-                      styles.tabLabel,
-                      tripTab === tab && styles.tabLabelActive,
-                    ]}
-                  >
-                    {tab === 'current' ? 'En cours' : tab === 'reserved' ? 'Réservés' : 'Historique'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            {activeTrip ? (
-              <View style={styles.tripCard}>
-                <View style={styles.tripHeader}>
-                  <View style={styles.tripStatus}>
-                    <IconSymbol name="sparkles" size={16} color="#4F8EF7" />
-                    <Text style={styles.tripStatusText}>
-                      {hasRideDeparted(activeTrip) ? 'Terminé' : 'En cours'}
-                    </Text>
-                  </View>
-                  <Text style={styles.tripHeaderMeta}>
-                    {formatDate(activeTrip.departureAt)} · {formatTime(activeTrip.departureAt)}
-                  </Text>
-                </View>
-                <View style={styles.requestBody}>
-                  <Image
-                    source={{ uri: getAvatarUrl(activeTrip.ownerEmail, 96) }}
-                    style={styles.requestAvatar}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.requestDriver}>{activeTrip.driver}</Text>
-                    <Text style={styles.requestMeta}>
-                      ⭐ {getRandomRating(activeTrip)} · {getRandomTripsCount(activeTrip)} trajets
-                    </Text>
-                    <Text style={styles.requestRoute}>
-                      {activeTrip.depart} → {activeTrip.destination}
-                    </Text>
-                  </View>
-                  <View style={styles.requestPrice}>
-                    <Text style={styles.requestPriceValue}>{activeTrip.price.toFixed(2)} €</Text>
-                    <Text style={styles.requestPriceLabel}>5.2 km · 15 min</Text>
-                  </View>
-                </View>
-                <Pressable style={styles.primaryButton} onPress={() => openRide(activeTrip)}>
-                  <IconSymbol name="paperplane.fill" size={18} color={Colors.white} />
-                  <Text style={styles.primaryButtonText}>Voir +</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <Text style={[styles.emptyText, styles.emptyTextLight]}>
-                Aucun trajet pour cette catégorie.
-              </Text>
-            )}
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Annulés</Text>
-            <Text style={styles.sectionSubtitle}>Les trajets que vous avez annulés</Text>
-            {canceledTrips.length ? (
-              canceledTrips.map((ride) => (
-                <View key={ride.id} style={styles.cancelledCard}>
-                  <View style={styles.requestBody}>
-                    <Image
-                      source={{ uri: getAvatarUrl(ride.ownerEmail, 96) }}
-                      style={styles.requestAvatar}
-                    />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.requestDriver}>{ride.driver}</Text>
-                      <Text style={styles.requestMeta}>
-                        {formatTime(ride.departureAt)} · {ride.depart} → {ride.destination}
-                      </Text>
-                      <Text style={styles.requestSubtitle}>Réservation annulée</Text>
+                    <View style={styles.sponsorHeader}>
+                      <View style={styles.sponsorBadge}>
+                        <Text style={styles.sponsorBadgeText}>{slide.badge}</Text>
+                      </View>
+                      <Pressable onPress={() => openSponsor(slide.url)}>
+                        <IconSymbol name="arrow.up.right.square" size={22} color={Colors.white} />
+                      </Pressable>
                     </View>
-                    <View style={styles.requestPrice}>
-                      <Text style={styles.requestPriceValue}>{ride.price.toFixed(2)} €</Text>
-                      <Text style={styles.requestPriceLabel}>{ride.seats} place(s)</Text>
-                    </View>
-                  </View>
-                  <Pressable style={styles.secondaryButton} onPress={() => openRide(ride)}>
-                    <Text style={styles.secondaryButtonText}>Voir les détails</Text>
-                  </Pressable>
-                </View>
-              ))
-            ) : (
-              <Text style={[styles.emptyText, styles.emptyTextLight]}>
-                Aucune annulation pour le moment.
-              </Text>
-            )}
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Itinéraire</Text>
-            <View style={styles.infoCard}>
-              {itinerary.map((item, index) => (
-                <View key={item.label} style={styles.itineraryRow}>
-                  <View style={[styles.itineraryDot, { backgroundColor: item.color }]} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.itineraryLabel}>{item.label}</Text>
-                    <Text style={styles.itineraryTime}>{item.time}</Text>
-                  </View>
-                  {index < itinerary.length - 1 ? (
-                    <View style={styles.itineraryBridge} />
-                  ) : null}
-                </View>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Informations</Text>
-            <View style={styles.infoCard}>
-              <View style={styles.infoRow}>
-                <IconSymbol name="calendar" size={20} color={Colors.gray500} />
-                <Text style={styles.infoLabel}>Date</Text>
-                <Text style={styles.infoValue}>
-                  {featuredRide ? formatDate(featuredRide.departureAt) : '—'}
-                </Text>
-              </View>
-              <View style={styles.infoRow}>
-                <IconSymbol name="clock" size={20} color={Colors.gray500} />
-                <Text style={styles.infoLabel}>Heure de départ</Text>
-                <Text style={styles.infoValue}>
-                  {featuredRide ? formatTime(featuredRide.departureAt) : '—'}
-                </Text>
-              </View>
-              <View style={styles.infoRow}>
-                <IconSymbol name="person.fill" size={20} color={Colors.gray500} />
-                <Text style={styles.infoLabel}>Places réservées</Text>
-                <Text style={styles.infoValue}>
-                  {featuredRide ? featuredRide.passengers.length : 0} place(s)
-                </Text>
-              </View>
-              <View style={styles.infoRow}>
-                <IconSymbol name="creditcard.fill" size={20} color={Colors.gray500} />
-                <Text style={styles.infoLabel}>Prix total</Text>
-                <Text style={styles.infoValueHighlight}>
-                  {featuredRide ? `${featuredRide.price.toFixed(2)} €` : '—'}
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Offres sponsorisées</Text>
-            <GradientBackground colors={sponsorOffer.colors} style={styles.sponsorCard}>
-              <View style={styles.sponsorHeader}>
-                <View style={styles.sponsorBadge}>
-                  <Text style={styles.sponsorBadgeText}>{sponsorOffer.badge}</Text>
-                </View>
-                <Pressable onPress={() => openSponsor(sponsorOffer.url)}>
-                  <IconSymbol name="arrow.up.right.square" size={22} color={Colors.white} />
-                </Pressable>
-              </View>
               <View style={styles.sponsorBrandRow}>
-                <Image source={sponsorOffer.logo} style={styles.sponsorLogo} resizeMode="contain" />
+                <Image source={slide.logo} style={styles.sponsorLogo} resizeMode="contain" />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.sponsorBrand}>{sponsorOffer.brand}</Text>
-                  <Text style={styles.sponsorTagline}>{sponsorOffer.tagline}</Text>
+                  <Text style={styles.sponsorBrand}>{slide.brand}</Text>
+                  <Text style={styles.sponsorTagline}>{slide.tagline}</Text>
                 </View>
               </View>
-              <Text style={styles.sponsorDescription}>{sponsorOffer.description}</Text>
-              <Pressable style={styles.sponsorButton} onPress={() => openSponsor(sponsorOffer.url)}>
-                <Text style={styles.sponsorButtonText}>Profiter de l’offre</Text>
-              </Pressable>
-            </GradientBackground>
+                    {slide.description ? (
+                      <>
+                        <Text style={styles.sponsorDescription}>{slide.description}</Text>
+                        <Pressable style={styles.sponsorButton} onPress={() => openSponsor(slide.url)}>
+                          <Text style={styles.sponsorButtonText}>Profiter de l’offre</Text>
+                        </Pressable>
+                      </>
+                    ) : null}
+                  </GradientBackground>
+                ))}
+              </ScrollView>
+            </View>
 
           </View>
 
-          <View style={styles.section}>
-            <GradientBackground colors={Gradients.cta} style={styles.driverCTA}>
-              <View style={styles.driverLogoWrapper}>
-                <Image
-                  source={require('@/assets/images/logo.png')}
-                  style={styles.driverLogo}
-                  resizeMode="contain"
-                />
-              </View>
-              <Text style={styles.driverTitle}>Devenez conducteur et gagnez de l’argent</Text>
+          <View style={styles.driverPromoSection}>
+            <GradientBackground colors={Gradients.cta} style={styles.driverPromoCard}>
+              <Text style={styles.driverHeader}>Gagnez de l’argent</Text>
               <Text style={styles.driverSubtitle}>
-                Publie ton premier trajet en moins de 2 minutes et fixe ton prix librement.
+                Publie ton premier trajet en moins de 2 minutes.
               </Text>
               <Pressable
-                style={styles.primaryButton}
+                style={styles.driverPromoAction}
                 onPress={() => router.push('/driver-verification')}
               >
-                <Text style={styles.primaryButtonText}>Devenir conducteur</Text>
+                <View style={styles.driverPromoActionContent}>
+                  <IconSymbol name="car.fill" size={16} color={Colors.primaryDark} />
+                  <Text style={styles.driverPromoActionText}>Devenir conducteur</Text>
+                </View>
               </Pressable>
             </GradientBackground>
           </View>
@@ -915,6 +667,9 @@ function DriverDashboard({ session }: DriverDashboardProps) {
   const ownerEmail = (session.email ?? '').toLowerCase();
   const [rides, setRides] = useState<Ride[]>(() => getRides());
   const [loadingRides, setLoadingRides] = useState(() => getRides().length === 0);
+  const [meetingPoint, setMeetingPoint] = useState('');
+  const [destination, setDestination] = useState('');
+  const [notifications, setNotifications] = useState<Notification[]>([]);
 
   useEffect(() => {
     const unsubscribe = subscribeRides((items) => {
@@ -924,42 +679,44 @@ function DriverDashboard({ session }: DriverDashboardProps) {
     return unsubscribe;
   }, []);
 
-  const publishedRides = useMemo(() => {
-    if (!ownerEmail) return [];
-    return rides
-      .filter((ride) => ride.ownerEmail === ownerEmail)
-      .sort((a, b) => a.departureAt - b.departureAt);
-  }, [rides, ownerEmail]);
-
-  const upcomingRides = useMemo(
-    () => publishedRides.filter((ride) => !hasRideDeparted(ride)),
-    [publishedRides]
-  );
-
-  const greetingName = getFirstName(session.name) ?? 'Conducteur';
-  const displayFullName = session.name?.trim()?.length ? session.name : greetingName;
+  useEffect(() => {
+    if (!session.email) {
+      setNotifications([]);
+      return;
+    }
+    const unsubscribe = subscribeNotifications(session.email, setNotifications);
+    return unsubscribe;
+  }, [session.email]);
 
   const handleCreateRide = useCallback(() => {
     router.push('/create-ride');
   }, []);
 
-  const handleEditRide = useCallback((rideId: string) => {
-    router.push({ pathname: '/explore', params: { edit: rideId } } as any);
+  const openQuickSponsor = useCallback(() => {
+    Linking.openURL(quickSponsor.url).catch(() => undefined);
   }, []);
 
-  const handleOpenSponsor = useCallback(() => {
-    Linking.openURL(driverSponsor.url).catch(() => undefined);
-  }, []);
-
-  const handleViewPublished = useCallback(() => {
-    router.push('/driver-published');
-  }, []);
-
-  const upcomingRidesDisplay = useMemo<DisplayRide[]>(
-    () => (upcomingRides.length ? (upcomingRides as DisplayRide[]) : FALLBACK_UPCOMING),
-    [upcomingRides]
+  const unreadNotifications = useMemo(
+    () => notifications.filter((notif) => !notif.read).length,
+    [notifications]
   );
-  const quickPreviewRides = useMemo(() => upcomingRidesDisplay.slice(0, 2), [upcomingRidesDisplay]);
+  const driverQuickActions = useMemo(
+    () => [
+      {
+        key: 'requests',
+        label: 'Mes demandes',
+        icon: 'doc.text' as const,
+        onPress: () => router.push('/requests'),
+      },
+      {
+        key: 'trips',
+        label: 'Mes trajets',
+        icon: 'car.fill' as const,
+        onPress: () => router.push('/driver-published'),
+      },
+    ],
+    [router]
+  );
 
   return (
     <AppBackground style={driverStyles.screen}>
@@ -969,80 +726,78 @@ function DriverDashboard({ session }: DriverDashboardProps) {
           showsVerticalScrollIndicator={false}
           contentInsetAdjustmentBehavior="automatic"
         >
-          <GradientBackground colors={Gradients.driver} style={driverStyles.heroGradient}>
-            <View style={driverStyles.heroTop}>
+          <GradientBackground colors={Gradients.driver} style={driverStyles.hero}>
+            <View style={styles.heroHeader}>
               <View>
-                <Text style={driverStyles.heroGreeting}>Bonjour {greetingName}</Text>
-                <Text style={driverStyles.heroSubtitle}>Gérez vos trajets</Text>
+                <Text style={styles.heroLabel}>Bonjour Eya</Text>
+                <Text style={styles.heroSubtitle}>Publie ton prochain trajet</Text>
               </View>
-              <Pressable style={driverStyles.heroBell} onPress={() => router.push('/(tabs)/messages')}>
-                <IconSymbol name="bell.fill" size={18} color="#fff" />
+              <Pressable
+                style={styles.notificationIcon}
+                onPress={() => router.push('/notifications')}
+                accessibilityRole="button"
+              >
+                <IconSymbol name="bell.fill" size={22} color={Colors.white} />
+                {unreadNotifications > 0 ? (
+                  <View style={styles.notificationBadge}>
+                    <Text style={styles.notificationBadgeText}>{unreadNotifications}</Text>
+                  </View>
+                ) : null}
               </Pressable>
             </View>
-            <Pressable style={driverStyles.sponsorWrapper} onPress={handleOpenSponsor}>
-              <GradientBackground colors={driverSponsor.colors} style={driverStyles.sponsorCard}>
-                <Image source={driverSponsor.logo} style={driverStyles.sponsorLogo} resizeMode="contain" />
-                <View style={{ flex: 1, marginLeft: Spacing.md }}>
-                  <Text style={driverStyles.sponsorBadge}>{driverSponsor.badge}</Text>
-                  <Text style={driverStyles.sponsorTitle}>{driverSponsor.brand}</Text>
-                  <Text style={driverStyles.sponsorSubtitle}>{driverSponsor.tagline}</Text>
-                </View>
-                <IconSymbol name="arrow.up.right.square" size={18} color="#FFFFFF" />
-              </GradientBackground>
-            </Pressable>
+            <View style={styles.quickActionsRow}>
+              {driverQuickActions.map((action) => (
+                <Pressable
+                  key={action.key}
+                  style={styles.quickAction}
+                  onPress={action.onPress}
+                  accessibilityRole="button"
+                >
+                  <View style={styles.quickIconWrapper}>
+                    <View style={[styles.quickIcon, driverStyles.quickIcon]}>
+                      <IconSymbol name={action.icon} size={24} color={Colors.accent} />
+                    </View>
+                  </View>
+                  <Text style={styles.quickLabel}>{action.label}</Text>
+                </Pressable>
+              ))}
+            </View>
           </GradientBackground>
 
-          <View style={driverStyles.heroCardOverlay}>
-            <Text style={driverStyles.heroOverlayTitle}>Bonjour {displayFullName}</Text>
-            <Text style={driverStyles.heroOverlaySubtitle}>Gérez vos trajets</Text>
-            <Pressable style={driverStyles.heroPrimaryButton} onPress={handleViewPublished}>
-              <IconSymbol name="list.bullet.rectangle" size={16} color="#fff" />
-              <Text style={driverStyles.heroPrimaryButtonText}>Voir mes trajets publiés</Text>
-            </Pressable>
-            <View style={driverStyles.quickPreviewWrapper}>
-              <Text style={driverStyles.quickPreviewTitle}>Aperçu rapide</Text>
-              {loadingRides ? (
-                <View style={driverStyles.quickPreviewEmpty}>
-                  <ActivityIndicator color={Colors.primary} />
-                </View>
-              ) : quickPreviewRides.length === 0 ? (
-                <Text style={driverStyles.quickPreviewEmptyText}>
-                  Publie un trajet pour voir un aperçu rapide.
-                </Text>
-              ) : (
-                quickPreviewRides.map((ride) => {
-                  const pending = ride.requests ?? ride.passengers.length;
-                  return (
-                    <View key={ride.id} style={driverStyles.quickPreviewItem}>
-                      <View style={driverStyles.quickPreviewRow}>
-                        <Text style={driverStyles.quickPreviewRoute}>
-                          {ride.depart} → {ride.destination}
-                        </Text>
-                        {pending ? (
-                          <View style={driverStyles.quickPreviewBadge}>
-                            <Text style={driverStyles.quickPreviewBadgeText}>
-                              {pending} demande{pending > 1 ? 's' : ''}
-                            </Text>
-                          </View>
-                        ) : null}
-                      </View>
-                      <Text style={driverStyles.quickPreviewMeta}>{formatRideMoment(ride.departureAt)}</Text>
-                      <View style={driverStyles.quickPreviewInfo}>
-                        <View style={driverStyles.previewInfo}>
-                          <IconSymbol name="person.2.fill" size={14} color={Colors.gray500} />
-                          <Text style={driverStyles.previewInfoText}>
-                            {ride.passengers.length} passager{ride.passengers.length > 1 ? 's' : ''}
-                          </Text>
-                        </View>
-                        <Text style={driverStyles.previewPrice}>Prix: {ride.price.toFixed(2)}€</Text>
-                      </View>
-                    </View>
-                  );
-                })
-              )}
-              <Pressable style={driverStyles.previewAddButton} onPress={handleCreateRide}>
-                <IconSymbol name="plus" size={16} color={Colors.accent} />
-                <Text style={driverStyles.previewAddText}>Ajouter un nouveau trajet</Text>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Publier mon trajet</Text>
+            <View style={styles.formCard}>
+              <Text style={styles.inputLabel}>Point de rencontre</Text>
+              <View style={[styles.inputWrapper, styles.inputWrapperSoft]}>
+                <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+                <TextInput
+                  value={meetingPoint}
+                  onChangeText={setMeetingPoint}
+                  placeholder="Saisir le point de rencontre"
+                  placeholderTextColor={Colors.gray400}
+                  style={styles.input}
+                  autoCapitalize="words"
+                />
+              </View>
+              <Text style={styles.inputLabel}>Destination</Text>
+              <View style={styles.selector}>
+                <IconSymbol name="map.fill" size={18} color={Colors.gray500} />
+                <TextInput
+                  value={destination}
+                  onChangeText={setDestination}
+                  placeholder="Sélectionnez une destination"
+                  placeholderTextColor={Colors.gray400}
+                  style={[styles.selectorText, !destination && styles.selectorPlaceholder]}
+                />
+                <IconSymbol name="chevron.down" size={18} color={Colors.gray400} />
+              </View>
+              <Pressable
+                style={[styles.primaryButton, driverStyles.publishButton]}
+                onPress={() => {}}
+                accessibilityRole="button"
+              >
+                <IconSymbol name="magnifyingglass" size={18} color={Colors.white} />
+                <Text style={styles.primaryButtonText}>Publier</Text>
               </Pressable>
             </View>
           </View>
@@ -1146,7 +901,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: Colors.primaryLight,
+    backgroundColor: Colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Spacing.sm,
@@ -1168,6 +923,10 @@ const styles = StyleSheet.create({
     borderRadius: Radius['2xl'],
     backgroundColor: 'rgba(255,255,255,0.1)',
     position: 'relative',
+  },
+  sponsorSection: {
+    paddingHorizontal: 0,
+    paddingBottom: Spacing.md,
   },
   sectionRaised: {
     zIndex: 60,
@@ -1494,58 +1253,27 @@ const styles = StyleSheet.create({
     color: Colors.gray500,
     fontSize: 12,
   },
-  infoCard: {
-    backgroundColor: Colors.card,
-    borderRadius: Radius['2xl'],
-    padding: Spacing.lg,
-    gap: Spacing.md,
-    ...Shadows.card,
-  },
-  itineraryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  itineraryDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-  },
-  itineraryLabel: {
-    fontWeight: '700',
-    color: Colors.ink,
-  },
-  itineraryTime: {
-    color: Colors.gray500,
-    fontSize: 12,
-  },
-  itineraryBridge: {
-    width: 40,
-    height: 1,
-    backgroundColor: Colors.gray200,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  infoLabel: {
-    color: Colors.gray600,
-    flex: 1,
-  },
-  infoValue: {
-    color: Colors.ink,
-    fontWeight: '600',
-  },
-  infoValueHighlight: {
-    color: Colors.primary,
-    fontWeight: '800',
-  },
   sponsorCard: {
     borderRadius: Radius['2xl'],
-    padding: Spacing.lg,
-    gap: Spacing.md,
+    paddingVertical: Spacing.xs * 2,
+    paddingHorizontal: Spacing.sm * 2,
+    gap: Spacing.xs,
     marginBottom: Spacing.lg,
+    borderWidth: 0,
+    overflow: 'hidden',
+    justifyContent: 'space-between',
+    paddingBottom: Spacing.xs,
+  },
+  sponsorCarouselWrapper: {
+    marginTop: Spacing.md,
+    overflow: 'hidden',
+    paddingHorizontal: Spacing.sm,
+    width: '100%',
+  },
+  sponsorCarousel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.sm,
   },
   sponsorHeader: {
     flexDirection: 'row',
@@ -1575,103 +1303,75 @@ const styles = StyleSheet.create({
   },
   sponsorBrand: {
     color: Colors.white,
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
   },
   sponsorTagline: {
     color: Colors.white,
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
   },
   sponsorDescription: {
     color: Colors.white,
     opacity: 0.9,
+    fontSize: 13,
+    lineHeight: 18,
   },
   sponsorButton: {
     backgroundColor: Colors.white,
     borderRadius: Radius.pill,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm,
     alignItems: 'center',
   },
   sponsorButtonText: {
     color: Colors.primary,
     fontWeight: '700',
   },
-  driverCTA: {
-    borderRadius: Radius['2xl'],
-    padding: Spacing.lg,
-    gap: Spacing.sm,
-  },
-  driverLogoWrapper: {
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.lg,
-    alignSelf: 'flex-start',
-  },
-  driverLogo: {
-    width: 96,
-    height: 32,
+  driverHeader: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: Colors.white,
+    marginBottom: Spacing.xs,
+    textAlign: 'center',
   },
   driverTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: '700',
     color: Colors.white,
+    textAlign: 'center',
   },
   driverSubtitle: {
     color: Colors.white,
     opacity: 0.9,
+    textAlign: 'center',
   },
-  inlineSponsor: {
+  driverPromoSection: {
+    marginTop: Spacing.sm,
+    width: '100%',
+    marginBottom: Spacing.xl * 2,
+  },
+  driverPromoCard: {
     borderRadius: Radius['2xl'],
-    paddingVertical: Spacing.md,
+    padding: Spacing.lg,
+    gap: Spacing.xs,
+    alignItems: 'center',
+  },
+  driverPromoAction: {
+    marginTop: Spacing.md,
+    backgroundColor: Colors.white,
+    paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.lg,
+    borderRadius: Radius['2xl'],
+    alignSelf: 'center',
+  },
+  driverPromoActionText: {
+    color: Colors.primaryDark,
+    fontWeight: '700',
+  },
+  driverPromoActionContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.md,
-    position: 'relative',
-    zIndex: 10,
-  },
-  inlineSponsorStandalone: {
-    marginHorizontal: 0,
-    marginTop: 0,
-    marginBottom: Spacing.md,
-  },
-  inlineSponsorLogo: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  inlineSponsorLogoImage: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 26,
-  },
-  inlineBadge: {
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    borderRadius: Radius.pill,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs / 1.5,
-    marginBottom: Spacing.xs,
-  },
-  inlineBadgeText: {
-    color: Colors.white,
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-  inlineSponsorLabel: {
-    color: Colors.white,
-    fontWeight: '800',
-    fontSize: 16,
-  },
-  inlineSponsorTagline: {
-    color: Colors.white,
-    opacity: 0.9,
+    gap: Spacing.xs,
   },
   searchHint: {
     color: Colors.gray500,
@@ -1695,67 +1395,85 @@ const driverStyles = StyleSheet.create({
     paddingTop: Spacing.xl,
     gap: Spacing.lg,
   },
+  hero: {
+    borderRadius: Radius['2xl'],
+    padding: Spacing.xl,
+    gap: Spacing.md,
+  },
   heroGradient: {
     borderRadius: 36,
     padding: Spacing.xl,
     gap: Spacing.md,
-  },
-  heroTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
   },
   heroGreeting: {
     color: '#FFFFFF',
     fontSize: 26,
     fontWeight: '800',
   },
+  metricRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    marginTop: Spacing.md,
+  },
+  metricCard: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    borderRadius: Radius['2xl'],
+    padding: Spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metricLabel: {
+    color: Colors.white,
+    fontWeight: '700',
+  },
+  quickAction: {},
+  quickIcon: {
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: Colors.accent,
+  },
+  publishCard: {
+    marginTop: Spacing.md,
+    padding: Spacing.lg,
+    borderRadius: Radius['2xl'],
+    backgroundColor: '#FFFFFF',
+    gap: Spacing.sm,
+    ...Shadows.card,
+  },
+  publishTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: Colors.ink,
+  },
+  publishField: {
+    gap: Spacing.xs,
+  },
+  publishLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.gray600,
+  },
+  publishInput: {
+    borderWidth: 1,
+    borderColor: '#E5E7F2',
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    backgroundColor: Colors.white,
+    color: Colors.ink,
+    fontSize: 15,
+    minHeight: 48,
+  },
+  publishButton: {
+    backgroundColor: Colors.accent,
+  },
   heroSubtitle: {
     color: 'rgba(255,255,255,0.9)',
     fontSize: 16,
   },
-  heroBell: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sponsorWrapper: {
-    borderRadius: Radius['2xl'],
-    overflow: 'hidden',
-  },
-  sponsorCard: {
-    borderRadius: Radius['2xl'],
-    padding: Spacing.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  sponsorLogo: {
-    width: 68,
-    height: 68,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-  },
-  sponsorBadge: {
-    color: '#FFECD8',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  sponsorTitle: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '800',
-    marginTop: Spacing.xs,
-  },
-  sponsorSubtitle: {
-    color: '#FFFFFF',
-    opacity: 0.9,
-  },
   heroCardOverlay: {
-    marginTop: -Spacing.xl,
+    marginTop: Spacing.lg,
     backgroundColor: '#FFFFFF',
     borderRadius: 28,
     padding: Spacing.lg,
@@ -1777,12 +1495,224 @@ const driverStyles = StyleSheet.create({
   heroOverlaySubtitle: {
     color: Colors.gray600,
   },
+  tripTabs: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  tripTab: {
+    flex: 1,
+    borderRadius: Radius['2xl'],
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.08)',
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  tripTabActive: {
+    backgroundColor: Colors.white,
+    borderColor: 'transparent',
+  },
+  tripTabLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.gray600,
+  },
+  tripTabLabelActive: {
+    color: Colors.primary,
+  },
+  addTripButton: {
+    marginTop: Spacing.md,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius['2xl'],
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  addTripButtonText: {
+    color: Colors.white,
+    fontWeight: '700',
+  },
+  loaderWrapper: {
+    paddingVertical: Spacing.lg,
+    alignItems: 'center',
+  },
+  emptyState: {
+    marginTop: Spacing.lg,
+    borderRadius: Radius['2xl'],
+    backgroundColor: Colors.white,
+    padding: Spacing.lg,
+    alignItems: 'center',
+    gap: Spacing.xs,
+    ...Shadows.card,
+  },
+  emptyStateTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: Colors.ink,
+  },
+  emptyStateSubtitle: {
+    color: Colors.gray500,
+    textAlign: 'center',
+  },
+  tripList: {
+    marginTop: Spacing.md,
+    gap: Spacing.md,
+  },
+  tripCard: {
+    backgroundColor: Colors.white,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+    ...Shadows.card,
+  },
+  tripCardHeading: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  tripCardTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: Colors.ink,
+  },
+  tripCardMeta: {
+    color: Colors.gray500,
+    marginTop: Spacing.xs,
+  },
+  tripStatusBadge: {
+    paddingHorizontal: Spacing.md / 2,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+    backgroundColor: '#FFF5EB',
+  },
+  tripStatusLabel: {
+    color: Colors.primary,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  pendingSection: {
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  sectionSubtitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.gray600,
+  },
+  pendingRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    alignItems: 'center',
+  },
+  pendingAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.gray100,
+  },
+  pendingInfo: {
+    flex: 1,
+  },
+  pendingName: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  pendingMeta: {
+    color: Colors.gray500,
+    fontSize: 12,
+  },
+  pendingActions: {
+    flexDirection: 'row',
+    gap: Spacing.xs,
+  },
+  actionButton: {
+    backgroundColor: Colors.accent,
+    borderRadius: Radius['2xl'],
+    paddingHorizontal: Spacing.sm * 1.5,
+    paddingVertical: Spacing.xs,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  actionButtonText: {
+    color: Colors.white,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  outlineButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: Colors.danger,
+    paddingHorizontal: Spacing.sm * 1.5,
+  },
+  outlineButtonText: {
+    color: Colors.danger,
+  },
+  callButton: {
+    backgroundColor: '#F9F9FF',
+    borderRadius: Radius['2xl'],
+    paddingHorizontal: Spacing.sm * 1.5,
+    paddingVertical: Spacing.xs,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  callButtonText: {
+    color: Colors.ink,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  confirmedSection: {
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  confirmedRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    alignItems: 'center',
+  },
+  confirmedActions: {
+    flexDirection: 'column',
+    gap: Spacing.xs,
+    alignItems: 'flex-end',
+  },
+  cancelLink: {
+    marginTop: Spacing.xs,
+  },
+  cancelLinkText: {
+    color: Colors.danger,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  historySection: {
+    marginTop: Spacing.md,
+  },
+  infoGrid: {
+    marginTop: Spacing.md,
+    gap: Spacing.sm,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  infoLabel: {
+    fontSize: 12,
+    color: Colors.gray500,
+  },
+  infoValue: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  detailEmptyText: {
+    color: Colors.gray500,
+    fontStyle: 'italic',
+  },
   heroPrimaryButton: {
     marginTop: Spacing.md,
     backgroundColor: Colors.accent,
     borderRadius: Radius['2xl'],
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.xs * 2,
+    paddingHorizontal: Spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
