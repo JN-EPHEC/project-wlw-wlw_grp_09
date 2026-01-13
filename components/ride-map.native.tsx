@@ -1,6 +1,6 @@
 import { Fragment, memo, useEffect, useMemo, useState } from 'react';
 import MapView, { Marker, Polyline, Region, PROVIDER_GOOGLE } from 'react-native-maps';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import type { Ride } from '@/app/services/rides';
 import { getCoordinates } from '@/app/services/distance';
@@ -12,6 +12,8 @@ type Props = {
   selectedCampus?: string | null;
   previewDepart?: string | null;
   previewDestination?: string | null;
+  variant?: 'card' | 'bare';
+  style?: StyleProp<ViewStyle>;
 };
 
 type RideMapData = {
@@ -88,6 +90,8 @@ const RideMapComponent = ({
   selectedCampus,
   previewDepart,
   previewDestination,
+  variant = 'card',
+  style,
 }: Props) => {
   const mapped = useMemo<RideMapData[]>(() => {
     return rides.map((ride) => ({
@@ -147,26 +151,25 @@ const RideMapComponent = ({
     }));
   }, [selectedCampus]);
 
-  return (
-    <View style={styles.card}>
-      <View style={styles.mapContainer}>
-        <MapView
-          style={styles.map}
-          provider={PROVIDER_GOOGLE}
-          initialRegion={region}
-          region={region}
-          onRegionChangeComplete={setRegion}
-          pitchEnabled={false}
-          showsPointsOfInterest={false}
-          showsBuildings={false}
-          showsCompass={false}
-          showsTraffic={false}
-          showsScale={false}
-          toolbarEnabled={false}
-        >
+  const mapView = (
+    <View style={[styles.mapContainer, variant === 'bare' && styles.mapContainerBare, variant === 'bare' && style]}>
+      <MapView
+        style={[styles.map, variant === 'bare' && styles.mapBare, variant === 'bare' && style]}
+        provider={PROVIDER_GOOGLE}
+        initialRegion={region}
+        region={region}
+        onRegionChangeComplete={setRegion}
+        pitchEnabled={false}
+        showsPointsOfInterest={false}
+        showsBuildings={false}
+        showsCompass={false}
+        showsTraffic={false}
+        showsScale={false}
+        toolbarEnabled={false}
+      >
         {mapped.map(({ ride, origin, destination }) => (
-            <Fragment key={ride.id}>
-              <Polyline
+          <Fragment key={ride.id}>
+            <Polyline
                 coordinates={[
                   { latitude: origin.latitude, longitude: origin.longitude },
                   { latitude: destination.latitude, longitude: destination.longitude },
@@ -258,7 +261,16 @@ const RideMapComponent = ({
           );
         })}
       </MapView>
-      </View>
+    </View>
+  );
+
+  if (variant === 'bare') {
+    return mapView;
+  }
+
+  return (
+    <View style={[styles.card, style]}>
+      {mapView}
       <View style={styles.caption}>
         <Text style={styles.captionTitle}>Carte interactive</Text>
         <Text style={styles.captionText}>
@@ -284,9 +296,15 @@ const styles = StyleSheet.create({
   mapContainer: {
     position: 'relative',
   },
+  mapContainerBare: {
+    height: 320,
+  },
   map: {
     height: 240,
     width: '100%',
+  },
+  mapBare: {
+    height: '100%',
   },
   caption: {
     paddingHorizontal: Spacing.lg,
