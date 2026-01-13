@@ -1,8 +1,8 @@
 import { CSSProperties, memo, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import type { Ride } from '@/app/services/rides';
-import { getCoordinates, getDurationMinutes } from '@/app/services/distance';
+import { getCoordinates, getDistanceKm, getDurationMinutes } from '@/app/services/distance';
 import { loadGoogleMapsApi } from '@/app/services/google-maps-loader';
 import { Colors, Radius, Spacing } from '@/app/ui/theme';
 
@@ -11,6 +11,8 @@ type Props = {
   selectedCampus?: string | null;
   previewDepart?: string | null;
   previewDestination?: string | null;
+  variant?: 'card' | 'bare';
+  style?: StyleProp<ViewStyle>;
 };
 
 type LatLng = {
@@ -51,7 +53,14 @@ const computeCameraFromPoints = (points: LatLng[]) => {
   return { center, zoom };
 };
 
-const RideMapWeb = ({ rides: _rides, selectedCampus: _selectedCampus, previewDepart, previewDestination }: Props) => {
+const RideMapWeb = ({
+  rides: _rides,
+  selectedCampus: _selectedCampus,
+  previewDepart,
+  previewDestination,
+  variant = 'card',
+  style,
+}: Props) => {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapInstance = useRef<google.maps.Map | null>(null);
   const overlays = useRef<{
@@ -312,6 +321,12 @@ const RideMapWeb = ({ rides: _rides, selectedCampus: _selectedCampus, previewDep
         previewMarkers.end.label
       );
       if (durationMinutes && Number.isFinite(durationMinutes)) {
+        const distanceKm = getDistanceKm(
+          previewMarkers.start.label,
+          previewMarkers.end.label
+        );
+        const distanceLabel =
+          Number.isFinite(distanceKm) && distanceKm > 0 ? `${distanceKm.toFixed(1)} km` : null;
         const midpoint = (() => {
           if (previewPath && previewPath.length > 0) {
             const midIndex = Math.floor(previewPath.length / 2);
@@ -326,8 +341,13 @@ const RideMapWeb = ({ rides: _rides, selectedCampus: _selectedCampus, previewDep
           `<div style="position:relative;display:inline-flex;align-items:center;font-size:13px;font-weight:700;color:#111;">` +
           `<div style="width:0;height:0;border-top:7px solid transparent;border-bottom:7px solid transparent;` +
           `border-right:9px solid #fff;box-shadow:1px 0 1px rgba(0,0,0,0.12);margin-right:-1px;"></div>` +
-          `<span style="background:#fff;border:2px solid #dcdcdc;border-radius:18px;padding:4px 12px;box-shadow:0 2px 6px rgba(0,0,0,0.15);">` +
-          `${durationMinutes} min</span>` +
+          `<span style="background:#fff;border:2px solid #dcdcdc;border-radius:18px;padding:6px 12px;` +
+          `box-shadow:0 2px 6px rgba(0,0,0,0.15);display:flex;flex-direction:column;align-items:center;gap:2px;line-height:1.1;">` +
+          `<span style="font-weight:700;">${durationMinutes} min</span>` +
+          (distanceLabel
+            ? `<span style="font-size:11px;font-weight:600;color:#4B5563;">${distanceLabel}</span>`
+            : '') +
+          `</span>` +
           `</div>`;
         const infoWindowDiv = document.createElement('div');
         infoWindowDiv.innerHTML = bubbleContent;
@@ -367,17 +387,25 @@ const RideMapWeb = ({ rides: _rides, selectedCampus: _selectedCampus, previewDep
     previewPath,
   ]);
 
+  const mapView = (
+    <View style={[styles.map, variant === 'bare' && styles.mapBare, variant === 'bare' && style]}>
+      <div ref={mapNode} style={mapSurfaceStyle} />
+      {error ? (
+        <View style={styles.overlay}>
+          <Text style={styles.title}>Carte indisponible</Text>
+          <Text style={styles.subtitle}>{error}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+
+  if (variant === 'bare') {
+    return mapView;
+  }
+
   return (
-    <View style={styles.card}>
-      <View style={styles.map}>
-        <div ref={mapNode} style={mapSurfaceStyle} />
-        {error ? (
-          <View style={styles.overlay}>
-            <Text style={styles.title}>Carte indisponible</Text>
-            <Text style={styles.subtitle}>{error}</Text>
-          </View>
-        ) : null}
-      </View>
+    <View style={[styles.card, style]}>
+      {mapView}
       <View style={styles.caption}>
         <Text style={styles.captionTitle}>Carte Google Maps</Text>
         <Text style={styles.captionText}>
@@ -407,6 +435,9 @@ const styles = StyleSheet.create({
     height: 240,
     width: '100%',
     position: 'relative',
+  },
+  mapBare: {
+    height: 320,
   },
   overlay: {
     position: 'absolute',
