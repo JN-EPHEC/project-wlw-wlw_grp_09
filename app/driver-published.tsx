@@ -1,38 +1,40 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
 import { useRouter } from 'expo-router';
 
+import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { AppBackground } from '@/components/ui/app-background';
-import { Colors, Gradients, Radius, Spacing, Shadows } from '@/app/ui/theme';
+import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
 import { useAuthSession } from '@/hooks/use-auth-session';
-import { getRides, subscribeRides, hasRideDeparted, type Ride } from '@/app/services/rides';
-import {
-  DisplayRide,
-  FALLBACK_COMPLETED,
-  FALLBACK_UPCOMING,
-} from '@/app/data/driver-samples';
-import { CAMPUS_LOCATIONS } from '@/app/data/campus-locations';
+import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
 
-const formatRideBadgeDate = (timestamp: number) =>
-  new Date(timestamp).toLocaleDateString('fr-BE', {
-    day: 'numeric',
-    month: 'short',
-  });
+const TAB_CONFIG = {
+  published: {
+    label: 'Publiés',
+    emptyTitle: 'Aucun trajet publié',
+    emptySubtitle: 'Publiez un trajet pour le voir ici.',
+  },
+  upcoming: {
+    label: 'À venir',
+    emptyTitle: 'Aucun trajet à venir',
+    emptySubtitle: 'Planifiez un trajet pour l’afficher ici.',
+  },
+  history: {
+    label: 'Historique',
+    emptyTitle: 'Aucun trajet dans l’historique',
+    emptySubtitle: 'Vos trajets passés apparaîtront ici.',
+  },
+} as const;
 
-const formatRideTime = (timestamp: number) =>
-  new Date(timestamp).toLocaleTimeString('fr-BE', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+type TabKey = keyof typeof TAB_CONFIG;
 
 export default function DriverPublishedScreen() {
-  const session = useAuthSession();
   const router = useRouter();
+  const session = useAuthSession();
   const [rides, setRides] = useState<Ride[]>(() => getRides());
-  const [highlightedCampus, setHighlightedCampus] = useState(CAMPUS_LOCATIONS[0]);
+  const [activeTab, setActiveTab] = useState<TabKey>('published');
 
   useEffect(() => {
     const unsubscribe = subscribeRides(setRides);
@@ -55,232 +57,86 @@ export default function DriverPublishedScreen() {
     () => publishedRides.filter((ride) => hasRideDeparted(ride)),
     [publishedRides]
   );
-  const upcomingRidesDisplay = useMemo<DisplayRide[]>(
-    () => (upcomingRides.length ? (upcomingRides as DisplayRide[]) : FALLBACK_UPCOMING),
-    [upcomingRides]
-  );
-  const completedRidesDisplay = useMemo<DisplayRide[]>(
-    () => (completedRides.length ? (completedRides as DisplayRide[]) : FALLBACK_COMPLETED),
-    [completedRides]
-  );
 
-  const stats = useMemo(
-    () => ({
-      upcoming: upcomingRidesDisplay.length,
-      reservations: upcomingRidesDisplay.reduce((sum, ride) => {
-        const reserved = ride.reservedSeats ?? ride.passengers.length;
-        return sum + (reserved ?? 0);
-      }, 0),
-      completed: completedRidesDisplay.length,
-    }),
-    [upcomingRidesDisplay, completedRidesDisplay]
-  );
+  const activeRides = useMemo(() => {
+    if (activeTab === 'upcoming') return upcomingRides;
+    if (activeTab === 'history') return completedRides;
+    return publishedRides;
+  }, [activeTab, publishedRides, upcomingRides, completedRides]);
 
-  const pendingRequestsCount = useMemo(
-    () =>
-      upcomingRidesDisplay.reduce((sum, ride) => {
-        const requests = ride.requests ?? 0;
-        return sum + requests;
-      }, 0),
-    [upcomingRidesDisplay]
-  );
-
-  const handleViewRide = useCallback(
-    (rideId: string) => {
-      router.push({ pathname: '/driver-ride-detail', params: { rideId } } as any);
-    },
-    [router]
-  );
-
-  const handleHighlightCampus = useCallback((campusName: string) => {
-    const campus = CAMPUS_LOCATIONS.find((item) => item.name === campusName);
-    if (campus) {
-      setHighlightedCampus(campus);
-    }
-  }, []);
+  const currentTabConfig = TAB_CONFIG[activeTab];
 
   return (
     <AppBackground>
-      <GradientBackground colors={Gradients.driver} style={styles.hero}>
+      <GradientBackground colors={Gradients.driver} style={styles.background}>
         <SafeAreaView style={styles.safe}>
           <View style={styles.header}>
-            <Pressable onPress={() => router.back()} style={styles.backButton}>
-              <IconSymbol name="chevron.left" size={24} color="#fff" />
+            <Pressable style={styles.backButton} onPress={() => router.back()} accessibilityRole="button">
+              <IconSymbol name="chevron.left" size={24} color={Colors.white} />
             </Pressable>
             <View>
-              <Text style={styles.heroTitle}>Mes trajets publiés</Text>
-              <Text style={styles.heroSubtitle}>Gérez vos trajets et les réservations</Text>
+              <Text style={styles.headerTitle}>Mes trajets</Text>
             </View>
           </View>
-        </SafeAreaView>
-      </GradientBackground>
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.alertCard}>
-          <View style={styles.alertBadge}>
-            <IconSymbol name="exclamationmark.circle" size={18} color={Colors.warning} />
-          </View>
-          <View style={styles.alertText}>
-            <Text style={styles.alertTitle}>
-              {pendingRequestsCount} nouvelles {pendingRequestsCount > 1 ? 'demandes' : 'demande'} en attente
-            </Text>
-            <Text style={styles.alertSubtitle}>Acceptez ou refusez les demandes de réservation</Text>
-          </View>
-        </View>
-
-        <View style={styles.mapCard}>
-          <Text style={styles.mapTitle}>Campus partenaires</Text>
-          <View style={styles.mapFrame}>
-            <View style={styles.mapGrid}>
-              {[20, 40, 60, 80].map((value) => (
-                <View
-                  key={`v-${value}`}
-                  style={[styles.mapLine, { left: `${value}%`, height: '100%' }]}
-                />
-              ))}
-              {[20, 40, 60, 80].map((value) => (
-                <View
-                  key={`h-${value}`}
-                  style={[styles.mapLine, { top: `${value}%`, width: '100%' }]}
-                />
-              ))}
-            </View>
-            {CAMPUS_LOCATIONS.map((node) => {
-              const active = node.name === highlightedCampus.name;
+          <View style={styles.tabRow}>
+            {(Object.keys(TAB_CONFIG) as TabKey[]).map((tab) => {
+              const tabProps = TAB_CONFIG[tab];
+              const isActive = tab === activeTab;
               return (
                 <Pressable
-                  key={node.name}
-                  style={[
-                    styles.mapNode,
-                    { backgroundColor: node.color, left: node.left, top: node.top },
-                    active && styles.mapNodeActive,
-                  ]}
-                  onPress={() => handleHighlightCampus(node.name)}
+                  key={tab}
+                  style={[styles.tabItem, isActive && styles.tabItemActive]}
+                  onPress={() => setActiveTab(tab)}
+                  accessibilityRole="button"
                 >
-                  <IconSymbol name={node.icon} size={20} color="#fff" />
-                  <Text style={styles.mapNodeLabel}>{node.name}</Text>
+                  <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>{tabProps.label}</Text>
                 </Pressable>
               );
             })}
           </View>
-          <View style={styles.mapDetail}>
-            <Text style={styles.mapDetailTitle}>{highlightedCampus.name}</Text>
-            <Text style={styles.mapDetailText}>{highlightedCampus.description}</Text>
-          </View>
-        </View>
-
-        <View style={styles.statsCard}>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{stats.upcoming}</Text>
-            <Text style={styles.statLabel}>À venir</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{stats.reservations}</Text>
-            <Text style={styles.statLabel}>Réservations</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{stats.completed}</Text>
-            <Text style={styles.statLabel}>Terminés</Text>
-          </View>
-        </View>
-
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Trajets à venir</Text>
-          {upcomingRidesDisplay.length === 0 ? (
-            <Text style={styles.emptyText}>Aucun trajet publié pour le moment.</Text>
-          ) : (
-            upcomingRidesDisplay.map((ride) => {
-              const pending = ride.requests ?? ride.passengers.length;
-              const reserved = ride.reservedSeats ?? ride.passengers.length;
-              return (
-                <View key={ride.id} style={styles.rideCard}>
-                  <View style={styles.rideBadge}>
-                    <IconSymbol name="exclamationmark.triangle" size={14} color={Colors.warning} />
-                    <Text style={styles.rideBadgeText}>
-                      {pending} demande{pending > 1 ? 's' : ''} en attente
-                    </Text>
-                  </View>
-                  <Text style={styles.rideRoute}>
+        </SafeAreaView>
+        <View style={styles.content}>
+          <View style={styles.card}>
+            {activeRides.length === 0 ? (
+              <>
+                <View style={styles.iconWrapper}>
+                  <IconSymbol name="car.fill" size={30} color={Colors.accent} />
+                </View>
+                <Text style={styles.cardTitle}>{currentTabConfig.emptyTitle}</Text>
+                <Text style={styles.cardSubtitle}>{currentTabConfig.emptySubtitle}</Text>
+              </>
+            ) : (
+              activeRides.map((ride) => (
+                <View key={ride.id} style={styles.rideRow}>
+                  <Text style={styles.rideRowTitle}>
                     {ride.depart} → {ride.destination}
                   </Text>
-                  <Text style={styles.rideRouteSub}>
-                    <IconSymbol name="mappin.and.ellipse" size={14} color={Colors.gray500} />
-                    {' '}
-                    {ride.depart}
+                  <Text style={styles.rideRowTime}>
+                    {new Date(ride.departureAt).toLocaleString('fr-BE', {
+                      weekday: 'short',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
                   </Text>
-                  <Text style={styles.rideRouteSub}>
-                    <IconSymbol name="mappin.and.ellipse" size={14} color={Colors.gray500} />
-                    {' '}
-                    {ride.destination}
-                  </Text>
-                  <View style={styles.metaRow}>
-                    <View style={styles.metaGroup}>
-                      <IconSymbol name="calendar" size={14} color={Colors.gray500} />
-                      <Text style={styles.metaText}>{formatRideBadgeDate(ride.departureAt)}</Text>
-                    </View>
-                    <View style={styles.metaGroup}>
-                      <IconSymbol name="clock" size={14} color={Colors.gray500} />
-                      <Text style={styles.metaText}>{formatRideTime(ride.departureAt)}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.infoRow}>
-                    <View style={styles.infoGroup}>
-                      <IconSymbol name="person.2.fill" size={14} color={Colors.gray500} />
-                      <Text style={styles.infoText}>
-                        {reserved}/{ride.seats} places
-                      </Text>
-                    </View>
-                    <Text style={styles.infoText}>Prix : {ride.price.toFixed(2)}€</Text>
-                    <Pressable style={styles.viewButton} onPress={() => handleViewRide(ride.id)}>
-                      <Text style={styles.viewButtonText}>Voir</Text>
-                    </Pressable>
-                  </View>
                 </View>
-              );
-            })
-          )}
+              ))
+            )}
+          </View>
         </View>
-
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Trajets terminés</Text>
-          {completedRidesDisplay.length === 0 ? (
-            <Text style={styles.emptyText}>Aucun trajet terminé.</Text>
-          ) : (
-            completedRidesDisplay.slice(-1).map((ride) => (
-              <View key={ride.id} style={styles.completedCard}>
-                <View style={styles.completedHeader}>
-                  <IconSymbol name="checkmark.circle.fill" size={16} color={Colors.success} />
-                  <Text style={styles.completedStatus}>Terminé</Text>
-                </View>
-                <Text style={styles.completedRoute}>{ride.depart} → {ride.destination}</Text>
-                <View style={styles.metaRow}>
-                  <Text style={styles.metaText}>{formatRideBadgeDate(ride.departureAt)}</Text>
-                  <Text style={styles.metaText}>
-                    {ride.passengers.length} passager{ride.passengers.length > 1 ? 's' : ''}
-                  </Text>
-                  <Text style={styles.metaText}>{ride.price.toFixed(2)}€</Text>
-                </View>
-              </View>
-            ))
-          )}
-        </View>
-      </ScrollView>
+      </GradientBackground>
     </AppBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  hero: {
-    paddingTop: Spacing.xl,
-    paddingBottom: Spacing.md,
-    paddingHorizontal: Spacing.lg,
-    borderBottomLeftRadius: Radius['2xl'],
-    borderBottomRightRadius: Radius['2xl'],
+  background: {
+    flex: 1,
+    paddingBottom: Spacing.xl,
   },
   safe: {
-    flex: 1,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.xl,
+    gap: Spacing.md,
   },
   header: {
     flexDirection: 'row',
@@ -291,246 +147,84 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.5)',
+    backgroundColor: 'rgba(255,255,255,0.18)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  heroTitle: {
-    color: '#fff',
-    fontSize: 26,
-    fontWeight: '800',
-  },
-  heroSubtitle: {
-    color: '#fff',
-    fontSize: 16,
-  },
-  content: {
-    paddingTop: Spacing.xl,
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.xxl,
-    gap: Spacing.lg,
-  },
-  alertCard: {
-    backgroundColor: '#fff',
-    borderRadius: 30,
-    padding: Spacing.lg,
-    flexDirection: 'row',
-    gap: Spacing.md,
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    ...Shadows.card,
-  },
-  alertBadge: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#FFF3D6',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  alertText: {
-    flex: 1,
-  },
-  alertTitle: {
-    fontWeight: '700',
-    color: Colors.warning,
-    fontSize: 16,
-    flexWrap: 'wrap',
-  },
-  alertSubtitle: {
-    color: Colors.gray600,
-  },
-  statsCard: {
-    backgroundColor: '#fff',
-    borderRadius: 30,
-    padding: Spacing.lg,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    ...Shadows.card,
-  },
-  statItem: {
-    alignItems: 'center',
-    paddingHorizontal: Spacing.sm,
-  },
-  statValue: {
+  headerTitle: {
+    color: Colors.white,
     fontSize: 24,
     fontWeight: '800',
-    color: Colors.accent,
   },
-  statLabel: {
-    color: Colors.gray500,
-  },
-  sectionCard: {
-    backgroundColor: '#fff',
-    borderRadius: 30,
-    padding: Spacing.lg,
-    gap: Spacing.sm,
-    ...Shadows.card,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: Colors.ink,
-  },
-  rideCard: {
-    borderRadius: 26,
-    backgroundColor: '#F9F2FF',
-    padding: Spacing.lg,
-    gap: Spacing.sm,
-    marginTop: Spacing.sm,
-  },
-  rideBadge: {
+  tabRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    alignSelf: 'flex-start',
-    backgroundColor: '#FFF3D6',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  tabItem: {
+    flex: 1,
     borderRadius: Radius['2xl'],
-  },
-  rideBadgeText: {
-    color: Colors.warning,
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  rideRoute: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Colors.ink,
-  },
-  rideRouteSub: {
-    color: Colors.gray600,
-    fontSize: 14,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-  },
-  metaGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  metaText: {
-    color: Colors.gray600,
-    fontSize: 13,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginTop: Spacing.sm,
-  },
-  infoGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  infoText: {
-    color: Colors.gray600,
-    fontSize: 13,
-  },
-  viewButton: {
-    marginLeft: 'auto',
-    backgroundColor: Colors.accent,
-    borderRadius: Radius.pill,
-    paddingHorizontal: Spacing.sm * 2,
-    paddingVertical: Spacing.xs,
-  },
-  viewButtonText: {
-    color: '#fff',
-    fontWeight: '700',
-  },
-  emptyText: {
-    color: Colors.gray500,
-    fontStyle: 'italic',
-  },
-  completedCard: {
-    backgroundColor: '#F6F7FB',
-    borderRadius: 24,
-    padding: Spacing.md,
-    gap: Spacing.xs,
-  },
-  completedHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  completedStatus: {
-    color: Colors.success,
-    fontWeight: '700',
-  },
-  completedRoute: {
-    fontWeight: '600',
-    color: Colors.ink,
-  },
-  mapCard: {
-    backgroundColor: '#fff',
-    borderRadius: 28,
-    padding: Spacing.lg,
-    gap: Spacing.md,
-    ...Shadows.card,
-  },
-  mapTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: Colors.ink,
-  },
-  mapFrame: {
-    height: 220,
-    borderRadius: 20,
-    backgroundColor: '#F5F6FA',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  mapGrid: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  mapLine: {
-    position: 'absolute',
-    borderColor: '#E1E7F5',
     borderWidth: 1,
-    opacity: 0.5,
+    borderColor: 'rgba(255,255,255,0.4)',
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
-  mapNode: {
-    position: 'absolute',
-    width: 130,
-    padding: Spacing.xs,
-    borderRadius: 16,
+  tabItemActive: {
+    backgroundColor: Colors.accent,
+    borderColor: Colors.accent,
+  },
+  tabLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.9)',
+  },
+  tabLabelActive: {
+    color: Colors.white,
+  },
+  content: {
+    marginTop: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+  },
+  card: {
+    borderRadius: Radius['2xl'],
+    backgroundColor: Colors.white,
+    padding: Spacing.lg,
+    alignItems: 'center',
+    gap: Spacing.sm,
+    ...Shadows.card,
+    minHeight: 200,
+  },
+  iconWrapper: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255,193,203,0.2)',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: Spacing.xs,
   },
-  mapNodeActive: {
-    borderWidth: 2,
-    borderColor: '#fff',
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
-  },
-  mapNodeLabel: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 12,
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: Colors.ink,
     textAlign: 'center',
   },
-  mapDetail: {
-    backgroundColor: '#F2F4FF',
-    borderRadius: 20,
-    padding: Spacing.md,
+  cardSubtitle: {
+    color: Colors.gray600,
+    textAlign: 'center',
   },
-  mapDetailTitle: {
+  rideRow: {
+    width: '100%',
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F3FF',
+  },
+  rideRowTitle: {
     fontWeight: '700',
     color: Colors.ink,
-    fontSize: 16,
   },
-  mapDetailText: {
-    color: Colors.gray600,
-    fontSize: 13,
+  rideRowTime: {
+    color: Colors.gray500,
     marginTop: Spacing.xs,
   },
 });
