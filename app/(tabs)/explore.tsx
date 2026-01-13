@@ -25,12 +25,14 @@ import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
+import { useDriverSecurity } from '@/hooks/use-driver-security';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import type { AuthSnapshot } from '@/app/services/auth';
 import {
   hasRideDeparted,
   reserveSeat,
   subscribeRides,
+  addRide,
   type Ride,
 } from '../services/rides';
 import type { PaymentMethod } from '../services/payments';
@@ -185,18 +187,839 @@ export default function ExplorePublish() {
 }
 
 function DriverPublishScreen() {
+  const session = useAuthSession();
+  const pinchScale = useRef(new Animated.Value(1)).current;
+  const baseScale = useRef(new Animated.Value(1)).current;
+  const lastScale = useRef(1);
+  const mapScale = Animated.multiply(baseScale, pinchScale);
+  const MIN_MAP_SCALE = 1;
+  const MAX_MAP_SCALE = 2.4;
+  const defaultTomorrow = useMemo(() => {
+    const next = new Date();
+    next.setDate(next.getDate() + 1);
+    next.setHours(0, 0, 0, 0);
+    return next;
+  }, []);
+
+  const pinchGestureHandler = useMemo(
+    () =>
+      Animated.event([{ nativeEvent: { scale: pinchScale } }], {
+        useNativeDriver: true,
+      }),
+    [pinchScale]
+  );
+
+  const handlePinchStateChange = useCallback(
+    (event: { nativeEvent: { state: number; scale: number } }) => {
+      if (
+        event.nativeEvent.state === State.END ||
+        event.nativeEvent.state === State.CANCELLED
+      ) {
+        lastScale.current *= event.nativeEvent.scale;
+        if (lastScale.current > MAX_MAP_SCALE) lastScale.current = MAX_MAP_SCALE;
+        if (lastScale.current < MIN_MAP_SCALE) lastScale.current = MIN_MAP_SCALE;
+        baseScale.setValue(lastScale.current);
+        pinchScale.setValue(1);
+      }
+      if (event.nativeEvent.state === State.BEGAN) {
+        pinchScale.setValue(1);
+      }
+    },
+    [baseScale, pinchScale]
+  );
+
+  const router = useRouter();
+  const tabBarInset = useTabBarInset(Spacing.xl);
+  const security = useDriverSecurity(session.email);
+  const registeredPlate = security?.vehicle?.plate?.trim() ?? '';
+  const [isPublishingRide, setIsPublishingRide] = useState(false);
+  const scrollContentStyle = useMemo(
+    () => [passengerStyles.scrollContent, { paddingBottom: tabBarInset + Spacing.xxl }],
+    [tabBarInset]
+  );
+
+  const [meetingPoint, setMeetingPoint] = useState('');
+  const [destination, setDestination] = useState('');
+  const [places, setPlaces] = useState(1);
+  const [selectedDate, setSelectedDate] = useState(defaultTomorrow);
+  const [travelTime, setTravelTime] = useState('09:00');
+  const [hasConfirmedDate, setHasConfirmedDate] = useState(false);
+  const [hasConfirmedTime, setHasConfirmedTime] = useState(false);
+  const [showMeetingList, setShowMeetingList] = useState(false);
+  const [showDestinationList, setShowDestinationList] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(defaultTomorrow.getMonth());
+  const [calendarYear, setCalendarYear] = useState(defaultTomorrow.getFullYear());
+  const [detectedMeetingCommune, setDetectedMeetingCommune] = useState<string | null>(null);
+  const [validationTouched, setValidationTouched] = useState(false);
+  const meetingBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const timeOptions = useMemo(() => {
+    const slots: string[] = [];
+    for (let hour = 6; hour <= 22; hour++) {
+      slots.push(`${hour.toString().padStart(2, '0')}:00`);
+      slots.push(`${hour.toString().padStart(2, '0')}:30`);
+    }
+    return slots;
+  }, []);
+
+  const isSameDay = useCallback((a: Date, b: Date) => {
+    return (
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate()
+    );
+  }, []);
+
+  const campusOptions = ['EPHEC Woluwe', 'EPHEC Delta', 'EPHEC Louvain-la-Neuve', 'EPHEC Schaerbeek'];
+
+  const availableTimeOptions = useMemo(() => {
+    const now = new Date();
+    if (!isSameDay(selectedDate, now)) {
+      return timeOptions;
+    }
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const filtered = timeOptions.filter((slot) => {
+      const [hours, minutes] = slot.split(':').map((value) => parseInt(value, 10));
+      return hours * 60 + minutes >= nowMinutes;
+    });
+    return filtered.length ? filtered : timeOptions;
+  }, [isSameDay, selectedDate, timeOptions]);
+
+  const calendarDays = useMemo(() => {
+    const days: { key: string; date: Date | null; label: string }[] = [];
+    const firstDay = new Date(calendarYear, calendarMonth, 1);
+    const daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+    const offset = (firstDay.getDay() + 6) % 7;
+    for (let i = 0; i < offset; i++) {
+      days.push({
+        key: `empty-${calendarMonth}-${calendarYear}-${i}`,
+        date: null,
+        label: '',
+      });
+    }
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateObj = new Date(calendarYear, calendarMonth, day);
+      days.push({
+        key: dateObj.toISOString(),
+        date: dateObj,
+        label: day.toString(),
+      });
+    }
+    while (days.length % 7 !== 0) {
+      const idx = days.length;
+      days.push({
+        key: `pad-${calendarMonth}-${calendarYear}-${idx}`,
+        date: null,
+        label: '',
+      });
+    }
+    return days;
+  }, [calendarMonth, calendarYear]);
+
+  const calendarTitle = useMemo(
+    () =>
+      new Date(calendarYear, calendarMonth, 1).toLocaleDateString('fr-BE', {
+        month: 'long',
+        year: 'numeric',
+      }),
+    [calendarMonth, calendarYear]
+  );
+
+  const animateDropdown = useCallback(() => {
+    LayoutAnimation.configureNext(
+      LayoutAnimation.create(160, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity)
+    );
+  }, []);
+
+  const communeSuggestions = useMemo(() => {
+    const query = meetingPoint.trim().toLowerCase();
+    const base =
+      query.length === 0
+        ? BRUSSELS_COMMUNES.slice(0, 6)
+        : BRUSSELS_COMMUNES.filter((commune) =>
+            commune.toLowerCase().includes(query)
+          ).slice(0, 10);
+    const unique = Array.from(new Set(base));
+    return ['Utiliser ma position', ...unique];
+  }, [meetingPoint]);
+
+  const closeDropdowns = useCallback(() => {
+    animateDropdown();
+    setShowMeetingList(false);
+    setShowDestinationList(false);
+  }, [animateDropdown]);
+
+  const handleMeetingFocus = useCallback(() => {
+    if (meetingBlurTimeout.current) {
+      clearTimeout(meetingBlurTimeout.current);
+      meetingBlurTimeout.current = null;
+    }
+    animateDropdown();
+    setShowMeetingList(true);
+    setShowDestinationList(false);
+  }, [animateDropdown]);
+
+  const handleMeetingBlur = useCallback(() => {
+    meetingBlurTimeout.current = setTimeout(() => {
+      setShowMeetingList(false);
+    }, 120);
+  }, []);
+
+  const handleUseMeetingLocation = useCallback(async () => {
+    try {
+      const { commune } = await getCurrentCommune();
+      setMeetingPoint(commune);
+      setDetectedMeetingCommune(commune);
+      setShowMeetingList(false);
+    } catch (error) {
+      if (error instanceof LocationPermissionError) {
+        Alert.alert('Localisation désactivée', 'Active la localisation pour remplir automatiquement votre position.');
+      } else {
+        Alert.alert(
+          'Position indisponible',
+          'Impossible de récupérer votre position. Réessaie dans un instant.'
+        );
+      }
+    }
+  }, []);
+
+  const selectMeetingPoint = useCallback(
+    (commune: string) => {
+      if (commune === 'Utiliser ma position') {
+        handleUseMeetingLocation();
+        return;
+      }
+      setMeetingPoint(commune);
+      setDetectedMeetingCommune(null);
+      animateDropdown();
+      setShowMeetingList(false);
+    },
+    [animateDropdown, handleUseMeetingLocation]
+  );
+
+  const selectDestinationCampus = useCallback(
+    (campus: string) => {
+      setDestination(campus);
+      animateDropdown();
+      setShowDestinationList(false);
+    },
+    [animateDropdown]
+  );
+
+  const toggleDestinationList = useCallback(() => {
+    animateDropdown();
+    setShowDestinationList((prev) => {
+      const next = !prev;
+      if (next) {
+        setShowMeetingList(false);
+      }
+      return next;
+    });
+  }, [animateDropdown]);
+
+  const goToPrevMonth = useCallback(() => {
+    setCalendarMonth((prev) => {
+      if (prev === 0) {
+        setCalendarYear((year) => year - 1);
+        return 11;
+      }
+      return prev - 1;
+    });
+  }, []);
+
+  const goToNextMonth = useCallback(() => {
+    setCalendarMonth((prev) => {
+      if (prev === 11) {
+        setCalendarYear((year) => year + 1);
+        return 0;
+      }
+      return prev + 1;
+    });
+  }, []);
+
+  const openDatePicker = useCallback(() => {
+    setCalendarMonth(selectedDate.getMonth());
+    setCalendarYear(selectedDate.getFullYear());
+    setShowDatePicker(true);
+  }, [selectedDate]);
+
+  const handleSelectDate = useCallback(
+    (date: Date | null) => {
+      if (!date) return;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (date < today) return;
+      setSelectedDate(date);
+      setHasConfirmedDate(true);
+      setShowDatePicker(false);
+    },
+    []
+  );
+
+  const handleSelectTime = useCallback(
+    (slot: string) => {
+      const [hours, minutes] = slot.split(':').map((value) => parseInt(value, 10));
+      const now = new Date();
+      const selection = new Date(selectedDate);
+      selection.setHours(hours, minutes, 0, 0);
+      if (selection.getTime() < now.getTime()) {
+        return;
+      }
+      setTravelTime(slot);
+      setHasConfirmedTime(true);
+      setShowTimePicker(false);
+    },
+    [selectedDate]
+  );
+
+  const travelDateLabel = useMemo(
+    () =>
+      selectedDate.toLocaleDateString('fr-BE', {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+      }),
+    [selectedDate]
+  );
+
+  const dropdownOpen = showMeetingList || showDestinationList;
+
+  const destinationLabel = destination && destination.trim() ? destination : 'Sélectionnez un campus';
+
+  const estimatedMinutes = useMemo(() => {
+    if (!meetingPoint.trim() || !destination.trim()) return null;
+    const minutes = getDurationMinutes(meetingPoint, destination);
+    if (!Number.isFinite(minutes)) return null;
+    return minutes;
+  }, [meetingPoint, destination]);
+
+  const heroDepartLabel = meetingPoint.trim().length ? meetingPoint : 'Commune au choix';
+  const heroArrivalLabel = destination.trim().length ? destination : 'Destination EPHEC';
+  const heroDurationLabel = estimatedMinutes ? `${estimatedMinutes} min estimées` : 'Temps estimé';
+
+  const routeVisual = useMemo(() => {
+    if (!destination) return defaultRouteVisual;
+    const key = destination.toLowerCase();
+    const match = ROUTE_VISUALS.find((item) => key.includes(item.key));
+    return match ?? defaultRouteVisual;
+  }, [destination]);
+
+  const validationMessage = useMemo(() => {
+    if (!validationTouched) return null;
+    if (!meetingPoint.trim() || !destination.trim()) {
+      return 'Complétez les points de trajet.';
+    }
+    if (!hasConfirmedDate) {
+      return 'Choisissez une date future.';
+    }
+    if (!hasConfirmedTime) {
+      return 'Choisissez une heure valide.';
+    }
+    if (places <= 0) {
+      return 'Indiquez le nombre de places disponibles.';
+    }
+    return null;
+  }, [
+    validationTouched,
+    meetingPoint,
+    destination,
+    hasConfirmedDate,
+    hasConfirmedTime,
+    places,
+  ]);
+
+  const canPublish =
+    !!meetingPoint.trim() &&
+    !!destination.trim() &&
+    hasConfirmedDate &&
+    hasConfirmedTime &&
+    places > 0;
+
+  const handlePublish = useCallback(() => {
+    if (isPublishingRide) return;
+    setValidationTouched(true);
+    if (!session.email) {
+      Alert.alert('Connexion requise', 'Connecte-toi pour publier un trajet.');
+      return;
+    }
+    if (!session.isDriver) {
+      Alert.alert('Mode conducteur requis', 'Active ton rôle conducteur pour publier un trajet.');
+      return;
+    }
+    if (!registeredPlate) {
+      Alert.alert('Plaque manquante', 'Enregistre ton véhicule dans la vérification conducteur.');
+      return;
+    }
+    if (!canPublish) {
+      return;
+    }
+
+    setIsPublishingRide(true);
+    try {
+      const rideId = `ride-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      addRide({
+        id: rideId,
+        driver: session.name ?? 'Conducteur',
+        plate: registeredPlate,
+        depart: meetingPoint.trim(),
+        destination: destination.trim(),
+        time: travelTime,
+        seats: places,
+        price: 0,
+        ownerEmail: session.email,
+        pricingMode: 'single',
+      });
+      Alert.alert('Trajet publié', 'Ton trajet apparaît maintenant dans Mes trajets.');
+      router.push('/driver-published');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Impossible de publier ce trajet.';
+      Alert.alert('Erreur', message);
+    } finally {
+      setIsPublishingRide(false);
+    }
+  }, [
+    canPublish,
+    destination,
+    isPublishingRide,
+    meetingPoint,
+    places,
+    registeredPlate,
+    router,
+    session.email,
+    session.isDriver,
+    session.name,
+    travelTime,
+  ]);
+
+  const meetingOptions = communeSuggestions;
+
+  const increasePlaces = useCallback(() => {
+    setPlaces((prev) => Math.min(prev + 1, 5));
+  }, []);
+
+  const decreasePlaces = useCallback(() => {
+    setPlaces((prev) => Math.max(prev - 1, 1));
+  }, []);
+
+  const renderFormBody = () => (
+    <>
+      <Text style={passengerStyles.sheetTitle}>Publier un trajet</Text>
+      <View
+        style={[
+          passengerStyles.destinationRow,
+          dropdownOpen && passengerStyles.destinationRowRaised,
+        ]}
+      >
+        <View
+          style={[
+            passengerStyles.destinationColumn,
+            dropdownOpen && passengerStyles.dropdownRaised,
+          ]}
+        >
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperTop]}>
+            <Text style={passengerStyles.dropdownLabel}>POINT DE RENCONTRE</Text>
+            <View style={passengerStyles.inputWrapper}>
+              <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+              <TextInput
+                style={passengerStyles.dropdownTextInput}
+                value={meetingPoint}
+                onChangeText={(value) => {
+                  setMeetingPoint(value);
+                  setDetectedMeetingCommune(null);
+                  if (!showMeetingList) {
+                    animateDropdown();
+                    setShowMeetingList(true);
+                  }
+                }}
+                placeholder="Saisir votre adresse"
+                placeholderTextColor={Colors.gray400}
+                onFocus={handleMeetingFocus}
+                onBlur={handleMeetingBlur}
+                autoCapitalize="words"
+                autoCorrect={false}
+                returnKeyType="done"
+              />
+            </View>
+            {detectedMeetingCommune ? (
+              <Text style={passengerStyles.locationDetectedText}>
+                Commune détectée : {detectedMeetingCommune}
+              </Text>
+            ) : null}
+            {showMeetingList ? (
+              <View style={passengerStyles.dropdownList}>
+                {meetingOptions.map((commune) => (
+                  <Pressable
+                    key={commune}
+                    style={passengerStyles.dropdownItem}
+                    onPress={() => selectMeetingPoint(commune)}
+                  >
+                    <Text style={passengerStyles.dropdownItemText}>{commune}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperBottom]}>
+            <Text style={passengerStyles.dropdownLabel}>DESTINATION</Text>
+            <View style={[passengerStyles.inputWrapper, passengerStyles.toInput]}>
+              <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
+              <Pressable
+                style={passengerStyles.dropdownTrigger}
+                onPress={toggleDestinationList}
+                accessibilityRole="button"
+                accessibilityLabel="Choisir un campus de destination"
+              >
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    !destination && passengerStyles.dropdownTextPlaceholder,
+                  ]}
+                >
+                  {destinationLabel}
+                </Text>
+              </Pressable>
+            </View>
+            {showDestinationList ? (
+              <View style={passengerStyles.dropdownList}>
+                {campusOptions.map((campus) => (
+                  <Pressable
+                    key={campus}
+                    style={passengerStyles.dropdownItem}
+                    onPress={() => selectDestinationCampus(campus)}
+                  >
+                    <Text style={passengerStyles.dropdownItemText}>{campus}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        </View>
+        <View style={passengerStyles.actionsColumn}>
+          <Pressable
+            style={passengerStyles.swapButton}
+            accessibilityRole="button"
+            accessibilityLabel="Inverser les points de trajet"
+            onPress={() => {
+              closeDropdowns();
+              setMeetingPoint(destination);
+              setDestination(meetingPoint);
+              setDetectedMeetingCommune(null);
+            }}
+          >
+            <IconSymbol name="chevron.up" size={18} color="#7A7A98" />
+            <IconSymbol name="chevron.down" size={18} color="#7A7A98" />
+          </Pressable>
+        </View>
+      </View>
+      <View style={passengerStyles.dateSection}>
+        <View style={passengerStyles.dateRow} pointerEvents={dropdownOpen ? 'none' : 'auto'}>
+          <Pressable
+            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
+            onPress={() => {
+              closeDropdowns();
+              openDatePicker();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Sélectionner une date"
+          >
+            <IconSymbol name="calendar" size={18} color={Colors.gray500} />
+            <Text
+              style={[
+                passengerStyles.dropdownText,
+                !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+              ]}
+            >
+              {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
+            onPress={() => {
+              closeDropdowns();
+              setShowTimePicker(true);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Sélectionner une heure"
+          >
+            <IconSymbol name="clock" size={18} color={Colors.gray500} />
+            <Text
+              style={[
+                passengerStyles.dropdownText,
+                !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+              ]}
+            >
+              {hasConfirmedTime ? travelTime : 'Choisir une heure'}
+            </Text>
+          </Pressable>
+        </View>
+        {validationMessage ? <Text style={passengerStyles.dateError}>{validationMessage}</Text> : null}
+      </View>
+      <View style={{ gap: Spacing.xs }}>
+        <Text style={passengerStyles.dropdownLabel}>PLACES DISPONIBLES</Text>
+        <View
+          style={[
+            passengerStyles.inputWrapper,
+            passengerStyles.smallInput,
+            { justifyContent: 'space-between', paddingVertical: Spacing.sm },
+          ]}
+        >
+          <IconSymbol name="person.fill" size={18} color={Colors.gray500} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+            <Pressable
+              style={{ padding: Spacing.md }}
+              onPress={decreasePlaces}
+              accessibilityRole="button"
+              accessibilityLabel="Réduire le nombre de places"
+            >
+              <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>−</Text>
+            </Pressable>
+            <Text style={{ fontWeight: '700', color: Colors.ink, fontSize: 16 }}>{places}</Text>
+            <Pressable
+              style={{ padding: Spacing.md }}
+              onPress={increasePlaces}
+              accessibilityRole="button"
+              accessibilityLabel="Augmenter le nombre de places"
+            >
+              <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>+</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+      <Pressable style={passengerStyles.moreFiltersButton}>
+        <Text style={passengerStyles.moreFiltersButtonText}>Plus de filtres</Text>
+      </Pressable>
+      <View style={passengerStyles.searchButtonWrapper}>
+        <View style={passengerStyles.searchButtonShield} />
+        <GradientButton
+          title="Publier un trajet"
+          onPress={handlePublish}
+          size="sm"
+          variant="cta"
+          fullWidth
+          style={passengerStyles.fullSearchButton}
+          contentStyle={{ gap: isPublishingRide ? Spacing.sm : 8 }}
+          accessibilityRole="button"
+          disabled={!canPublish || isPublishingRide}
+        >
+          {isPublishingRide ? <ActivityIndicator color="#fff" size="small" /> : null}
+        </GradientButton>
+      </View>
+    </>
+  );
+
+  const renderDatePickerModal = () => (
+    <Modal visible={showDatePicker} transparent animationType="fade" onRequestClose={() => setShowDatePicker(false)}>
+      <View style={passengerStyles.pickerOverlay}>
+        <Pressable style={passengerStyles.pickerBackdrop} onPress={() => setShowDatePicker(false)} />
+        <View style={passengerStyles.pickerCard}>
+          <View style={passengerStyles.calendarHeader}>
+            <Pressable
+              style={passengerStyles.calendarNavButton}
+              onPress={goToPrevMonth}
+              accessibilityRole="button"
+            >
+              <IconSymbol name="chevron.left" size={20} color={Colors.gray600} />
+            </Pressable>
+            <Text style={passengerStyles.calendarTitle}>{calendarTitle}</Text>
+            <Pressable
+              style={passengerStyles.calendarNavButton}
+              onPress={goToNextMonth}
+              accessibilityRole="button"
+            >
+              <IconSymbol name="chevron.right" size={20} color={Colors.gray600} />
+            </Pressable>
+          </View>
+          <View style={passengerStyles.calendarWeekdays}>
+            {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map((label) => (
+              <Text key={label} style={passengerStyles.calendarWeekdayText}>
+                {label}
+              </Text>
+            ))}
+          </View>
+          <View style={passengerStyles.calendarGrid}>
+            {calendarDays.map((day) => {
+              const selected = day.date ? isSameDay(day.date, selectedDate) : false;
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              const disabled = day.date ? day.date < today : true;
+              return (
+                <Pressable
+                  key={day.key}
+                  style={[
+                    passengerStyles.calendarDay,
+                    disabled && passengerStyles.calendarDayDisabled,
+                    selected && passengerStyles.calendarDaySelected,
+                  ]}
+                  disabled={!day.date || disabled}
+                  onPress={() => day.date && handleSelectDate(day.date)}
+                >
+                  <Text
+                    style={[
+                      passengerStyles.calendarDayText,
+                      selected && passengerStyles.calendarDayTextSelected,
+                    ]}
+                  >
+                    {day.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  const renderTimePickerModal = () => (
+    <Modal visible={showTimePicker} transparent animationType="fade" onRequestClose={() => setShowTimePicker(false)}>
+      <View style={passengerStyles.pickerOverlay}>
+        <Pressable style={passengerStyles.pickerBackdrop} onPress={() => setShowTimePicker(false)} />
+        <View style={passengerStyles.pickerCard}>
+          <Text style={passengerStyles.pickerTitle}>Choisir une heure</Text>
+          <ScrollView contentContainerStyle={passengerStyles.pickerGrid}>
+            {availableTimeOptions.map((slot) => (
+              <Pressable
+                key={slot}
+                style={[
+                  passengerStyles.pickerOption,
+                  travelTime === slot && passengerStyles.pickerOptionActive,
+                ]}
+                onPress={() => handleSelectTime(slot)}
+              >
+                <Text
+                  style={[
+                    passengerStyles.pickerOptionText,
+                    travelTime === slot && passengerStyles.pickerOptionTextActive,
+                  ]}
+                >
+                  {slot}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  const mapNode =
+    Platform.OS === 'web' ? (
+      <HeroWebMap
+        rides={[]}
+        depart={meetingPoint.trim() ? meetingPoint : undefined}
+        destination={destination.trim() ? destination : undefined}
+      />
+    ) : (
+      <PinchGestureHandler
+        onGestureEvent={pinchGestureHandler}
+        onHandlerStateChange={handlePinchStateChange}
+      >
+        <Animated.View
+          style={[
+            passengerStyles.mapContent,
+            { transform: [{ scale: mapScale }] },
+          ]}
+        >
+          <Image
+            source={HERO_MAP_IMAGE}
+            style={passengerStyles.mapImage}
+            resizeMode="cover"
+          />
+          <View pointerEvents="none" style={passengerStyles.mapTitleCard}>
+            <Text style={passengerStyles.mapTitle}>Trouver un trajet</Text>
+          </View>
+          <View style={passengerStyles.routeBadge}>
+            <Text style={passengerStyles.routeTitle}>{heroArrivalLabel}</Text>
+            <Text style={passengerStyles.routeDuration}>
+              {heroDurationLabel}
+            </Text>
+          </View>
+          <View style={passengerStyles.mapBubbleStart}>
+            <View
+              style={[
+                passengerStyles.mapBubbleDot,
+                { backgroundColor: routeVisual.startDot },
+              ]}
+            />
+            <View>
+              <Text style={passengerStyles.mapBubbleLabel}>Départ</Text>
+              <Text style={passengerStyles.mapBubbleValue}>
+                {heroDepartLabel}
+              </Text>
+            </View>
+          </View>
+          <View style={passengerStyles.mapBubbleDestination}>
+            <View
+              style={[
+                passengerStyles.mapBubbleDot,
+                passengerStyles.mapBubbleDotDestination,
+                { backgroundColor: routeVisual.endDot },
+              ]}
+            />
+            <View>
+              <Text
+                style={[
+                  passengerStyles.mapBubbleLabel,
+                  passengerStyles.mapBubbleLabelOnDark,
+                ]}
+              >
+                Destination
+              </Text>
+              <Text
+                style={[
+                  passengerStyles.mapBubbleValue,
+                  passengerStyles.mapBubbleValueOnDark,
+                ]}
+              >
+                {heroArrivalLabel}
+              </Text>
+            </View>
+          </View>
+        </Animated.View>
+      </PinchGestureHandler>
+    );
+
+  const renderFormCard = () => (
+    <View style={[passengerStyles.sheet, passengerStyles.sheetExpanded]}>
+      {renderFormBody()}
+    </View>
+  );
+
   return (
-    <AppBackground>
-      <SafeAreaView style={driverStyles.container} />
+    <AppBackground colors={Gradients.driver}>
+      <SafeAreaView style={passengerStyles.safe}>
+        <ScrollView
+          contentContainerStyle={scrollContentStyle}
+          showsVerticalScrollIndicator={false}
+          contentInsetAdjustmentBehavior="automatic"
+          style={{ flex: 1 }}
+        >
+          {Platform.OS === 'web' ? (
+            <View style={passengerStyles.heroColumnWeb}>
+              <View
+                style={[passengerStyles.heroCardWeb, passengerStyles.heroCardWebMap]}
+              >
+                <View style={passengerStyles.webMapHero}>{mapNode}</View>
+              </View>
+              <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardCompact]}>
+                {renderFormBody()}
+              </View>
+            </View>
+          ) : (
+            <>
+              <View style={passengerStyles.mapWrapper}>{mapNode}</View>
+              {renderFormCard()}
+            </>
+          )}
+        </ScrollView>
+        {renderDatePickerModal()}
+        {renderTimePickerModal()}
+      </SafeAreaView>
     </AppBackground>
   );
 }
-
-const driverStyles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-});
 
 function PassengerPublishScreen({
   session,
@@ -962,6 +1785,9 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
     });
   };
   const handleSelectDate = (date: Date) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (date < today) return;
     setSelectedDate(date);
     setHasConfirmedDate(true);
     setShowDatePicker(false);
@@ -1425,15 +2251,18 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
               <View style={passengerStyles.calendarGrid}>
                 {calendarDays.map((day) => {
                   const selected = day.date ? isSameDay(day.date, selectedDate) : false;
+                  const today = new Date();
+                  today.setHours(0, 0, 0, 0);
+                  const disabled = day.date ? day.date < today : true;
                   return (
                     <Pressable
                       key={day.key}
                       style={[
                         passengerStyles.calendarDay,
-                        !day.date && passengerStyles.calendarDayDisabled,
+                        disabled && passengerStyles.calendarDayDisabled,
                         selected && passengerStyles.calendarDaySelected,
                       ]}
-                      disabled={!day.date}
+                      disabled={disabled}
                       onPress={() => day.date && handleSelectDate(day.date)}
                     >
                       <Text

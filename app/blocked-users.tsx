@@ -1,5 +1,5 @@
-import { useCallback } from 'react';
 import { useRouter } from 'expo-router';
+import { useCallback } from 'react';
 import {
   Pressable,
   SafeAreaView,
@@ -9,12 +9,12 @@ import {
   View,
 } from 'react-native';
 
+import { unblockUser } from '@/app/services/blocked-users';
+import { Colors, Gradients, Radius, Shadows, Spacing, Typography } from '@/app/ui/theme';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, Gradients, Radius, Shadows, Spacing, Typography } from '@/app/ui/theme';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { useBlockedUsers } from '@/hooks/use-blocked-users';
-import { unblockUser } from '@/app/services/blocked-users';
 
 const C = Colors;
 
