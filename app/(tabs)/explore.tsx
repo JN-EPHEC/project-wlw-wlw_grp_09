@@ -33,7 +33,9 @@ import {
   addRide,
   getRide,
   hasRideDeparted,
+  removeRide,
   reserveSeat,
+  subscribeRides,
   updateRide,
   type Ride,
   type RidePayload,
@@ -123,6 +125,7 @@ const defaultRouteVisual = {
   endDot: Colors.secondary,
 };
 const HERO_MAP_IMAGE = require('../../assets/images/publish-map.png');
+const LEGEND_ICONS = ['graduationcap.fill', 'mappin.and.ellipse', 'car.fill'] as const;
 
 const PRICE_MIN = 2;
 const PRICE_MAX = 12;
@@ -237,6 +240,14 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
   const [reviews, setReviews] = useState<Review[]>([]);
   const [rewardSnapshot, setRewardSnapshot] = useState<RewardSnapshot | null>(null);
   const [pricingMode, setPricingMode] = useState<'single' | 'double'>('single');
+  const [rides, setRides] = useState<Ride[]>([]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeRides((items) => {
+      setRides(items);
+    });
+    return unsubscribe;
+  }, []);
 
   const myRides = useMemo(
     () =>
@@ -303,6 +314,10 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
     return Math.max(1, Math.min(4, Math.round(parsed)));
   }, [seats]);
   const priceBand = useMemo(() => buildPriceBand(km, seatsCount), [km, seatsCount]);
+  const priceQuote = useMemo<PriceQuote>(
+    () => estimatePrice(km, { seats: seatsCount }),
+    [km, seatsCount]
+  );
   const commissionPerPassenger = priceQuote.commissionPerPassenger;
   const customPrice = useMemo(
     () => (pricingMode === 'double' ? priceBand.double : priceBand.suggested),
@@ -824,6 +839,7 @@ function DriverPublishScreen({ session, params }: { session: AuthSnapshot; param
           ) : null}
           {errors.session ? <Text style={styles(C, S).error}>{errors.session}</Text> : null}
         </GradientBackground>
+        </View>
         </ScrollView>
       </SafeAreaView>
     </AppBackground>
@@ -4527,6 +4543,28 @@ const HeroWebMap = ({
   );
 };
 
+const RideMap = ({
+  rides,
+  selectedCampus,
+  previewDepart,
+  previewDestination,
+}: {
+  rides: Ride[];
+  selectedCampus?: string | null;
+  previewDepart?: string;
+  previewDestination?: string;
+}) => {
+  const destination = selectedCampus ?? previewDestination ?? null;
+  if (Platform.OS === 'web') {
+    return <HeroWebMap rides={rides} depart={previewDepart} destination={destination} />;
+  }
+  return (
+    <View style={styles(C, S).campusMap}>
+      <Image source={HERO_MAP_IMAGE} style={styles(C, S).campusFallbackMap} resizeMode="cover" />
+    </View>
+  );
+};
+
 const PublishCampusWebMap = () => {
   if (Platform.OS !== 'web') {
     return null;
@@ -4540,7 +4578,7 @@ const PublishCampusWebMap = () => {
 
   useEffect(() => {
     let mounted = true;
-    loadGoogleMaps()
+    loadGoogleMapsApi()
       .then((google) => {
         if (!mounted || !mapNode.current) return;
         const camera = computeCampusCamera();
