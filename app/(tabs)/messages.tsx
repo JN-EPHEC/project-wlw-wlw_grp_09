@@ -20,6 +20,7 @@ import { AppBackground } from '@/components/ui/app-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { WhiteRoundedContainer } from '@/components/ui/white-rounded-container';
 import { useAuthSession } from '@/hooks/use-auth-session';
+import { useBlockedUsers } from '@/hooks/use-blocked-users';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { Colors, Radius, Spacing } from '@/app/ui/theme';
 import { getAvatarUrl } from '@/app/ui/avatar';
