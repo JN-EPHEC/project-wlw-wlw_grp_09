@@ -20,31 +20,31 @@ import {
 } from 'react-native';
 import { PinchGestureHandler, State } from 'react-native-gesture-handler';
 
+import type { AuthSnapshot } from '@/app/services/auth';
+import { maskPlate } from '@/app/utils/plate';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { CAMPUS_LOCATIONS, findCampusLocation } from '@/constants/campuses';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { useDriverSecurity } from '@/hooks/use-driver-security';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
-import type { AuthSnapshot } from '@/app/services/auth';
+import { getCoordinates, getDistanceKm, getDurationMinutes } from '../services/distance';
+import { loadGoogleMapsApi } from '../services/google-maps-loader';
+import { getCurrentCommune, LocationPermissionError } from '../services/location';
+import type { PaymentMethod } from '../services/payments';
 import {
+  addRide,
   hasRideDeparted,
   reserveSeat,
   subscribeRides,
-  addRide,
   type Ride,
 } from '../services/rides';
-import type { PaymentMethod } from '../services/payments';
-import { getCoordinates, getDistanceKm, getDurationMinutes } from '../services/distance';
-import { loadGoogleMapsApi } from '../services/google-maps-loader';
-import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
-import { getAvatarUrl } from '../ui/avatar';
-import { BRUSSELS_COMMUNES } from '@/constants/communes';
-import { CAMPUS_LOCATIONS, findCampusLocation } from '@/constants/campuses';
-import { getCurrentCommune, LocationPermissionError } from '../services/location';
-import { maskPlate } from '@/app/utils/plate';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '../services/wallet';
+import { getAvatarUrl } from '../ui/avatar';
+import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
+import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
 
 const DefaultColors = {
   primary: '#E63946',
@@ -72,6 +72,8 @@ const C = (Colors ?? DefaultColors) as typeof DefaultColors;
 const S = (Shadows ?? { card: {} }) as typeof Shadows;
 const R = ThemeRadius;
 const Spacing = ThemeSpacing;
+const LOCATION_SUGGESTION_OPTION = 'Utiliser ma position';
+const LOCATION_SUGGESTION_OPTIONS = [LOCATION_SUGGESTION_OPTION];
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -116,11 +118,32 @@ const defaultRouteVisual = {
 };
 const HERO_MAP_IMAGE = require('../../assets/images/publish-map.png');
 
-const PRICE_MIN = 2;
-const PRICE_MAX = 12;
-const PRICE_STEP = 0.5;
+const DRIVER_PRICE_PER_KM = 0.4;
+const DRIVER_MIN_FARE = 1.5;
+const DRIVER_COMMISSION_RATE = 0.2;
+const DEFAULT_TRAVEL_TIME = '09:00';
+const TRIP_TYPE_ACTIVE_COLOR = '#7C3AED';
+const TRIP_TYPE_OPTIONS = [
+  { value: 'one_way', label: 'Aller' },
+  { value: 'round_trip', label: 'Aller-retour' },
+] as const;
 
-type ExploreParams = { edit?: string; depart?: string; campus?: string; requireSchedule?: string };
+const formatCurrency = (value: number) =>
+  value.toLocaleString('fr-BE', {
+    style: 'currency',
+    currency: 'EUR',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+type ExploreParams = {
+  edit?: string;
+  depart?: string;
+  campus?: string;
+  requireSchedule?: string;
+  driverMeeting?: string;
+  driverDestination?: string;
+};
 
 const derivePseudoRating = (ride: Ride) => {
   const seed = ride.driver.length + ride.destination.length;
@@ -135,9 +158,6 @@ type PassengerExplorePersistedState = {
   travelTime: string;
   hasConfirmedDate: boolean;
   hasConfirmedTime: boolean;
-  priceLimit: number;
-  draftPriceLimit: number;
-  moreFiltersVisible: boolean;
   searchResults: Ride[];
   searchPerformed: boolean;
   validationTouched: boolean;
@@ -172,6 +192,10 @@ export default function ExplorePublish() {
   const passengerOnly = session.isPassenger && !session.isDriver;
   const initialDepart = typeof params.depart === 'string' ? params.depart : undefined;
   const initialDestination = typeof params.campus === 'string' ? params.campus : undefined;
+  const initialDriverMeeting =
+    typeof params.driverMeeting === 'string' ? params.driverMeeting : undefined;
+  const initialDriverDestination =
+    typeof params.driverDestination === 'string' ? params.driverDestination : undefined;
   const requireScheduleConfirmation = params.requireSchedule === '1';
   if (passengerOnly) {
     return (
@@ -183,10 +207,21 @@ export default function ExplorePublish() {
       />
     );
   }
-  return <DriverPublishScreen />;
+  return (
+    <DriverPublishScreen
+      initialMeetingPoint={initialDriverMeeting}
+      initialDestination={initialDriverDestination}
+    />
+  );
 }
 
-function DriverPublishScreen() {
+function DriverPublishScreen({
+  initialMeetingPoint,
+  initialDestination,
+}: {
+  initialMeetingPoint?: string;
+  initialDestination?: string;
+}) {
   const session = useAuthSession();
   const pinchScale = useRef(new Animated.Value(1)).current;
   const baseScale = useRef(new Animated.Value(1)).current;
@@ -238,17 +273,38 @@ function DriverPublishScreen() {
     [tabBarInset]
   );
 
-  const [meetingPoint, setMeetingPoint] = useState('');
-  const [destination, setDestination] = useState('');
+  const [meetingPoint, setMeetingPoint] = useState(initialMeetingPoint ?? '');
+  const [destination, setDestination] = useState(initialDestination ?? '');
+  const meetingPrefillConsumed = useRef(false);
+  const destinationPrefillConsumed = useRef(false);
+
+  useEffect(() => {
+    if (!initialMeetingPoint || meetingPrefillConsumed.current) {
+      return;
+    }
+    setDetectedMeetingCommune(initialMeetingPoint);
+    meetingPrefillConsumed.current = true;
+  }, [initialMeetingPoint]);
+
+  useEffect(() => {
+    if (!initialDestination || destinationPrefillConsumed.current) {
+      return;
+    }
+    destinationPrefillConsumed.current = true;
+  }, [initialDestination]);
   const [places, setPlaces] = useState(1);
   const [selectedDate, setSelectedDate] = useState(defaultTomorrow);
-  const [travelTime, setTravelTime] = useState('09:00');
+  const [travelTime, setTravelTime] = useState(DEFAULT_TRAVEL_TIME);
   const [hasConfirmedDate, setHasConfirmedDate] = useState(false);
   const [hasConfirmedTime, setHasConfirmedTime] = useState(false);
   const [showMeetingList, setShowMeetingList] = useState(false);
   const [showDestinationList, setShowDestinationList] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+  const [timePickerTarget, setTimePickerTarget] = useState<'departure' | 'return'>('departure');
+  const [returnTime, setReturnTime] = useState(DEFAULT_TRAVEL_TIME);
+  const [hasConfirmedReturnTime, setHasConfirmedReturnTime] = useState(false);
+  const [tripType, setTripType] = useState<'one_way' | 'round_trip'>('one_way');
   const [calendarMonth, setCalendarMonth] = useState(defaultTomorrow.getMonth());
   const [calendarYear, setCalendarYear] = useState(defaultTomorrow.getFullYear());
   const [detectedMeetingCommune, setDetectedMeetingCommune] = useState<string | null>(null);
@@ -333,23 +389,22 @@ function DriverPublishScreen() {
     );
   }, []);
 
-  const communeSuggestions = useMemo(() => {
-    const query = meetingPoint.trim().toLowerCase();
-    const base =
-      query.length === 0
-        ? BRUSSELS_COMMUNES.slice(0, 6)
-        : BRUSSELS_COMMUNES.filter((commune) =>
-            commune.toLowerCase().includes(query)
-          ).slice(0, 10);
-    const unique = Array.from(new Set(base));
-    return ['Utiliser ma position', ...unique];
-  }, [meetingPoint]);
-
   const closeDropdowns = useCallback(() => {
     animateDropdown();
     setShowMeetingList(false);
     setShowDestinationList(false);
   }, [animateDropdown]);
+
+  const clearMeetingPoint = useCallback(() => {
+    setMeetingPoint('');
+    setDetectedMeetingCommune(null);
+    closeDropdowns();
+  }, [closeDropdowns]);
+
+  const clearDestination = useCallback(() => {
+    setDestination('');
+    closeDropdowns();
+  }, [closeDropdowns]);
 
   const handleMeetingFocus = useCallback(() => {
     if (meetingBlurTimeout.current) {
@@ -419,6 +474,9 @@ function DriverPublishScreen() {
     });
   }, [animateDropdown]);
 
+  const meetingPointHasValue = meetingPoint.trim().length > 0;
+  const destinationHasValue = destination.trim().length > 0;
+
   const goToPrevMonth = useCallback(() => {
     setCalendarMonth((prev) => {
       if (prev === 0) {
@@ -467,12 +525,37 @@ function DriverPublishScreen() {
       if (selection.getTime() < now.getTime()) {
         return;
       }
-      setTravelTime(slot);
-      setHasConfirmedTime(true);
+      if (timePickerTarget === 'departure') {
+        setTravelTime(slot);
+        setHasConfirmedTime(true);
+      } else {
+        setReturnTime(slot);
+        setHasConfirmedReturnTime(true);
+      }
       setShowTimePicker(false);
     },
-    [selectedDate]
+    [selectedDate, timePickerTarget]
   );
+  const clearSelectedDate = useCallback(() => {
+    setHasConfirmedDate(false);
+    setSelectedDate(defaultTomorrow);
+    setShowDatePicker(false);
+  }, [defaultTomorrow]);
+  const clearSelectedTime = useCallback(() => {
+    setHasConfirmedTime(false);
+    setTravelTime(DEFAULT_TRAVEL_TIME);
+    setShowTimePicker(false);
+  }, []);
+  const clearReturnTime = useCallback(() => {
+    setHasConfirmedReturnTime(false);
+    setReturnTime(DEFAULT_TRAVEL_TIME);
+    setShowTimePicker(false);
+  }, []);
+  useEffect(() => {
+    if (tripType === 'one_way') {
+      clearReturnTime();
+    }
+  }, [clearReturnTime, tripType]);
 
   const travelDateLabel = useMemo(
     () =>
@@ -487,6 +570,35 @@ function DriverPublishScreen() {
   const dropdownOpen = showMeetingList || showDestinationList;
 
   const destinationLabel = destination && destination.trim() ? destination : 'Sélectionnez un campus';
+
+  const distanceKm = useMemo(() => {
+    const origin = meetingPoint.trim();
+    const target = destination.trim();
+    if (!origin || !target) return null;
+    const value = getDistanceKm(origin, target);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return value;
+  }, [meetingPoint, destination]);
+
+  const finalFare = useMemo(() => {
+    if (distanceKm == null) return null;
+    return Math.max(distanceKm * DRIVER_PRICE_PER_KM, DRIVER_MIN_FARE);
+  }, [distanceKm]);
+
+  const driverGain = useMemo(() => {
+    if (finalFare == null) return null;
+    return finalFare * (1 - DRIVER_COMMISSION_RATE);
+  }, [finalFare]);
+
+  const returnTimeReady = tripType === 'round_trip' ? hasConfirmedReturnTime : true;
+  const driverTripReady =
+    meetingPoint.trim().length > 0 &&
+    destination.trim().length > 0 &&
+    hasConfirmedDate &&
+    hasConfirmedTime &&
+    places > 0 &&
+    returnTimeReady;
+  const summaryReady = distanceKm != null && finalFare != null && driverGain != null;
 
   const estimatedMinutes = useMemo(() => {
     if (!meetingPoint.trim() || !destination.trim()) return null;
@@ -517,6 +629,9 @@ function DriverPublishScreen() {
     if (!hasConfirmedTime) {
       return 'Choisissez une heure valide.';
     }
+    if (tripType === 'round_trip' && !hasConfirmedReturnTime) {
+      return 'Choisissez une heure de retour.';
+    }
     if (places <= 0) {
       return 'Indiquez le nombre de places disponibles.';
     }
@@ -527,7 +642,9 @@ function DriverPublishScreen() {
     destination,
     hasConfirmedDate,
     hasConfirmedTime,
+    hasConfirmedReturnTime,
     places,
+    tripType,
   ]);
 
   const canPublish =
@@ -535,7 +652,8 @@ function DriverPublishScreen() {
     !!destination.trim() &&
     hasConfirmedDate &&
     hasConfirmedTime &&
-    places > 0;
+    places > 0 &&
+    returnTimeReady;
 
   const handlePublish = useCallback(() => {
     if (isPublishingRide) return;
@@ -593,7 +711,7 @@ function DriverPublishScreen() {
     travelTime,
   ]);
 
-  const meetingOptions = communeSuggestions;
+  const meetingOptions = LOCATION_SUGGESTION_OPTIONS;
 
   const increasePlaces = useCallback(() => {
     setPlaces((prev) => Math.min(prev + 1, 5));
@@ -618,30 +736,40 @@ function DriverPublishScreen() {
             dropdownOpen && passengerStyles.dropdownRaised,
           ]}
         >
-          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperTop]}>
-            <Text style={passengerStyles.dropdownLabel}>POINT DE RENCONTRE</Text>
-            <View style={passengerStyles.inputWrapper}>
-              <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
-              <TextInput
-                style={passengerStyles.dropdownTextInput}
-                value={meetingPoint}
-                onChangeText={(value) => {
-                  setMeetingPoint(value);
-                  setDetectedMeetingCommune(null);
-                  if (!showMeetingList) {
-                    animateDropdown();
-                    setShowMeetingList(true);
-                  }
-                }}
-                placeholder="Saisir votre adresse"
-                placeholderTextColor={Colors.gray400}
-                onFocus={handleMeetingFocus}
-                onBlur={handleMeetingBlur}
-                autoCapitalize="words"
-                autoCorrect={false}
-                returnKeyType="done"
-              />
-            </View>
+              <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperTop]}>
+                <Text style={passengerStyles.dropdownLabel}>POINT DE RENCONTRE</Text>
+                <View style={passengerStyles.inputWrapper}>
+                  <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+                  <TextInput
+                    style={passengerStyles.dropdownTextInput}
+                    value={meetingPoint}
+                    onChangeText={(value) => {
+                      setMeetingPoint(value);
+                      setDetectedMeetingCommune(null);
+                      if (!showMeetingList) {
+                        animateDropdown();
+                        setShowMeetingList(true);
+                      }
+                    }}
+                    placeholder="Saisir votre adresse"
+                    placeholderTextColor={Colors.gray400}
+                    onFocus={handleMeetingFocus}
+                    onBlur={handleMeetingBlur}
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                    returnKeyType="done"
+                  />
+                  {meetingPointHasValue ? (
+                    <Pressable
+                      style={passengerStyles.clearButton}
+                      onPress={clearMeetingPoint}
+                      accessibilityLabel="Effacer le point de rencontre"
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                    </Pressable>
+                  ) : null}
+                </View>
             {detectedMeetingCommune ? (
               <Text style={passengerStyles.locationDetectedText}>
                 Commune détectée : {detectedMeetingCommune}
@@ -665,21 +793,33 @@ function DriverPublishScreen() {
             <Text style={passengerStyles.dropdownLabel}>DESTINATION</Text>
             <View style={[passengerStyles.inputWrapper, passengerStyles.toInput]}>
               <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
-              <Pressable
-                style={passengerStyles.dropdownTrigger}
-                onPress={toggleDestinationList}
-                accessibilityRole="button"
-                accessibilityLabel="Choisir un campus de destination"
-              >
-                <Text
-                  style={[
-                    passengerStyles.dropdownText,
-                    !destination && passengerStyles.dropdownTextPlaceholder,
-                  ]}
+              <View style={passengerStyles.dropdownValueWithClear}>
+                <Pressable
+                  style={passengerStyles.dropdownTrigger}
+                  onPress={toggleDestinationList}
+                  accessibilityRole="button"
+                  accessibilityLabel="Choisir un campus de destination"
                 >
-                  {destinationLabel}
-                </Text>
-              </Pressable>
+                  <Text
+                    style={[
+                      passengerStyles.dropdownText,
+                      !destinationHasValue && passengerStyles.dropdownTextPlaceholder,
+                    ]}
+                  >
+                    {destinationLabel}
+                  </Text>
+                </Pressable>
+                {destinationHasValue ? (
+                  <Pressable
+                    style={passengerStyles.clearButton}
+                    onPress={clearDestination}
+                    accessibilityLabel="Effacer la destination"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                  </Pressable>
+                ) : null}
+              </View>
             </View>
             {showDestinationList ? (
               <View style={passengerStyles.dropdownList}>
@@ -715,91 +855,224 @@ function DriverPublishScreen() {
       </View>
       <View style={passengerStyles.dateSection}>
         <View style={passengerStyles.dateRow} pointerEvents={dropdownOpen ? 'none' : 'auto'}>
-          <Pressable
-            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-            onPress={() => {
-              closeDropdowns();
-              openDatePicker();
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Sélectionner une date"
-          >
-            <IconSymbol name="calendar" size={18} color={Colors.gray500} />
-            <Text
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+            <Text style={passengerStyles.dropdownLabel}>DATE</Text>
+            <View
               style={[
-                passengerStyles.dropdownText,
-                !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+                passengerStyles.inputWrapper,
+                passengerStyles.smallInput,
+                passengerStyles.pickerTrigger,
               ]}
             >
-              {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-            onPress={() => {
-              closeDropdowns();
-              setShowTimePicker(true);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Sélectionner une heure"
-          >
-            <IconSymbol name="clock" size={18} color={Colors.gray500} />
-            <Text
+              <Pressable
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+                onPress={() => {
+                  closeDropdowns();
+                  openDatePicker();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Sélectionner une date"
+              >
+                <IconSymbol name="calendar" size={18} color={Colors.gray500} />
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+                    { marginLeft: Spacing.xs },
+                  ]}
+                >
+                  {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
+                </Text>
+              </Pressable>
+              {hasConfirmedDate ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearSelectedDate}
+                  accessibilityLabel="Effacer la date"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+            <Text style={passengerStyles.dropdownLabel}>HEURE</Text>
+            <View
               style={[
-                passengerStyles.dropdownText,
-                !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+                passengerStyles.inputWrapper,
+                passengerStyles.smallInput,
+                passengerStyles.pickerTrigger,
               ]}
             >
-              {hasConfirmedTime ? travelTime : 'Choisir une heure'}
-            </Text>
-          </Pressable>
+              <Pressable
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+                onPress={() => {
+                  closeDropdowns();
+                  setTimePickerTarget('departure');
+                  setShowTimePicker(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Sélectionner une heure"
+              >
+                <IconSymbol name="clock" size={18} color={Colors.gray500} />
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+                    { marginLeft: Spacing.xs },
+                  ]}
+                >
+                  {hasConfirmedTime ? travelTime : 'Choisir une heure'}
+                </Text>
+              </Pressable>
+              {hasConfirmedTime ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearSelectedTime}
+                  accessibilityLabel="Effacer l'heure"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
         </View>
         {validationMessage ? <Text style={passengerStyles.dateError}>{validationMessage}</Text> : null}
       </View>
-      <View style={{ gap: Spacing.xs }}>
-        <Text style={passengerStyles.dropdownLabel}>PLACES DISPONIBLES</Text>
-        <View
-          style={[
-            passengerStyles.inputWrapper,
-            passengerStyles.smallInput,
-            { justifyContent: 'space-between', paddingVertical: Spacing.sm },
-          ]}
-        >
-          <IconSymbol name="person.fill" size={18} color={Colors.gray500} />
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
-            <Pressable
-              style={{ padding: Spacing.md }}
-              onPress={decreasePlaces}
-              accessibilityRole="button"
-              accessibilityLabel="Réduire le nombre de places"
-            >
-              <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>−</Text>
-            </Pressable>
-            <Text style={{ fontWeight: '700', color: Colors.ink, fontSize: 16 }}>{places}</Text>
-            <Pressable
-              style={{ padding: Spacing.md }}
-              onPress={increasePlaces}
-              accessibilityRole="button"
-              accessibilityLabel="Augmenter le nombre de places"
-            >
-              <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>+</Text>
-            </Pressable>
+      <View style={passengerStyles.dateRow}>
+        <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+          <Text style={passengerStyles.dropdownLabel}>PLACES DISPONIBLES</Text>
+          <View
+            style={[
+              passengerStyles.inputWrapper,
+              passengerStyles.smallInput,
+              passengerStyles.placesInput,
+            ]}
+          >
+            <IconSymbol name="person.fill" size={18} color={Colors.gray500} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+              <Pressable
+                style={passengerStyles.placesButton}
+                onPress={decreasePlaces}
+                accessibilityRole="button"
+                accessibilityLabel="Réduire le nombre de places"
+              >
+                <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>−</Text>
+              </Pressable>
+              <Text style={{ fontWeight: '700', color: Colors.ink, fontSize: 16 }}>{places}</Text>
+              <Pressable
+                style={passengerStyles.placesButton}
+                onPress={increasePlaces}
+                accessibilityRole="button"
+                accessibilityLabel="Augmenter le nombre de places"
+              >
+                <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>+</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+        <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+          <Text style={passengerStyles.dropdownLabel}>TYPE DE TRAJET</Text>
+          <View style={passengerStyles.tripTypeControl}>
+            {TRIP_TYPE_OPTIONS.map((option, index) => (
+              <Pressable
+                key={option.value}
+                style={[
+                  passengerStyles.tripTypeOption,
+                  index > 0 && passengerStyles.tripTypeOptionSeparator,
+                ]}
+                onPress={() => setTripType(option.value)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: tripType === option.value }}
+              >
+                <Text
+                  style={[
+                    passengerStyles.tripTypeOptionText,
+                    tripType === option.value && passengerStyles.tripTypeOptionTextActive,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+            ))}
           </View>
         </View>
       </View>
-      <Pressable style={passengerStyles.moreFiltersButton}>
-        <Text style={passengerStyles.moreFiltersButtonText}>Plus de filtres</Text>
-      </Pressable>
+      {tripType === 'round_trip' ? (
+        <View style={[passengerStyles.dropdownWrapper, passengerStyles.returnField]}>
+          <Text style={passengerStyles.dropdownLabel}>HEURE RETOUR</Text>
+          <View
+            style={[
+              passengerStyles.inputWrapper,
+              passengerStyles.smallInput,
+              passengerStyles.pickerTrigger,
+            ]}
+          >
+            <Pressable
+              style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+              onPress={() => {
+                setTimePickerTarget('return');
+                setShowTimePicker(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Sélectionner une heure de retour"
+            >
+              <IconSymbol name="clock" size={18} color={Colors.gray500} />
+              <Text
+                style={[
+                  passengerStyles.dropdownText,
+                  !hasConfirmedReturnTime && passengerStyles.dropdownTextPlaceholder,
+                  { marginLeft: Spacing.xs },
+                ]}
+              >
+                {hasConfirmedReturnTime ? returnTime : 'Choisir une heure'}
+              </Text>
+            </Pressable>
+            {hasConfirmedReturnTime ? (
+              <Pressable
+                style={passengerStyles.clearButton}
+                onPress={clearReturnTime}
+                accessibilityLabel="Effacer l'heure de retour"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+      {summaryReady && driverTripReady ? (
+        <View style={passengerStyles.fareSummaryWrapper}>
+          <View style={passengerStyles.fareSummaryCard}>
+            <Text style={passengerStyles.fareSummaryGain}>
+              Tu gagneras {formatCurrency(driverGain!)}
+            </Text>
+            <Text style={passengerStyles.fareSummarySubtext}>après la commission de 20 %</Text>
+            <View style={passengerStyles.fareSummaryDetails}>
+              <Text style={passengerStyles.fareSummaryDetail}>
+                Prix payé par le passager : {formatCurrency(finalFare!)}
+              </Text>
+              <Text style={passengerStyles.fareSummaryDetailSecondary}>
+                (0,40 € par km, minimum 1,50 € par trajet)
+              </Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
       <View style={passengerStyles.searchButtonWrapper}>
         <View style={passengerStyles.searchButtonShield} />
         <GradientButton
           title="Publier un trajet"
           onPress={handlePublish}
           size="sm"
-          variant="cta"
+          variant="twilight"
           fullWidth
-          style={passengerStyles.fullSearchButton}
-          contentStyle={{ gap: isPublishingRide ? Spacing.sm : 8 }}
+          style={[passengerStyles.fullSearchButton, passengerStyles.driverCTA]}
+          contentStyle={{
+            paddingVertical: Spacing.lg,
+          }}
           accessibilityRole="button"
           disabled={!canPublish || isPublishingRide}
         >
@@ -872,37 +1145,40 @@ function DriverPublishScreen() {
     </Modal>
   );
 
-  const renderTimePickerModal = () => (
-    <Modal visible={showTimePicker} transparent animationType="fade" onRequestClose={() => setShowTimePicker(false)}>
-      <View style={passengerStyles.pickerOverlay}>
-        <Pressable style={passengerStyles.pickerBackdrop} onPress={() => setShowTimePicker(false)} />
-        <View style={passengerStyles.pickerCard}>
-          <Text style={passengerStyles.pickerTitle}>Choisir une heure</Text>
-          <ScrollView contentContainerStyle={passengerStyles.pickerGrid}>
-            {availableTimeOptions.map((slot) => (
-              <Pressable
-                key={slot}
-                style={[
-                  passengerStyles.pickerOption,
-                  travelTime === slot && passengerStyles.pickerOptionActive,
-                ]}
-                onPress={() => handleSelectTime(slot)}
-              >
-                <Text
+  const renderTimePickerModal = () => {
+    const currentTimeSelection = timePickerTarget === 'return' ? returnTime : travelTime;
+    return (
+      <Modal visible={showTimePicker} transparent animationType="fade" onRequestClose={() => setShowTimePicker(false)}>
+        <View style={passengerStyles.pickerOverlay}>
+          <Pressable style={passengerStyles.pickerBackdrop} onPress={() => setShowTimePicker(false)} />
+          <View style={passengerStyles.pickerCard}>
+            <Text style={passengerStyles.pickerTitle}>Choisir une heure</Text>
+            <ScrollView contentContainerStyle={passengerStyles.pickerGrid}>
+              {availableTimeOptions.map((slot) => (
+                <Pressable
+                  key={slot}
                   style={[
-                    passengerStyles.pickerOptionText,
-                    travelTime === slot && passengerStyles.pickerOptionTextActive,
+                    passengerStyles.pickerOption,
+                    currentTimeSelection === slot && passengerStyles.pickerOptionActive,
                   ]}
+                  onPress={() => handleSelectTime(slot)}
                 >
-                  {slot}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
+                  <Text
+                    style={[
+                      passengerStyles.pickerOptionText,
+                      currentTimeSelection === slot && passengerStyles.pickerOptionTextActive,
+                    ]}
+                  >
+                    {slot}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
         </View>
-      </View>
-    </Modal>
-  );
+      </Modal>
+    );
+  };
 
   const mapNode =
     Platform.OS === 'web' ? (
@@ -910,6 +1186,7 @@ function DriverPublishScreen() {
         rides={[]}
         depart={meetingPoint.trim() ? meetingPoint : undefined}
         destination={destination.trim() ? destination : undefined}
+        fallbackSegmentsEnabled={false}
       />
     ) : (
       <PinchGestureHandler
@@ -1089,7 +1366,7 @@ function PassengerPublishScreen({
     }
     return defaultTomorrow;
   });
-  const [travelTime, setTravelTime] = useState(restoredState?.travelTime ?? '09:00');
+  const [travelTime, setTravelTime] = useState(restoredState?.travelTime ?? DEFAULT_TRAVEL_TIME);
   const [hasConfirmedDate, setHasConfirmedDate] = useState(restoredState?.hasConfirmedDate ?? false);
   const [hasConfirmedTime, setHasConfirmedTime] = useState(restoredState?.hasConfirmedTime ?? false);
   const [showDestList, setShowDestList] = useState(false);
@@ -1109,12 +1386,6 @@ function PassengerPublishScreen({
   const [wallet, setWallet] = useState<WalletSnapshot | null>(() =>
     session.email ? getWallet(session.email) : null
   );
-  const [moreFiltersVisible, setMoreFiltersVisible] = useState(restoredState?.moreFiltersVisible ?? false);
-  const restoredPriceLimit = restoredState?.priceLimit ?? 8;
-  const restoredDraftPriceLimit = restoredState?.draftPriceLimit ?? restoredPriceLimit;
-  const [priceLimit, setPriceLimit] = useState(restoredPriceLimit);
-  const [draftPriceLimit, setDraftPriceLimit] = useState(restoredDraftPriceLimit);
-  const [priceSliderWidth, setPriceSliderWidth] = useState(1);
   const [searchPerformed, setSearchPerformed] = useState(restoredState?.searchPerformed ?? false);
   const [isSearching, setIsSearching] = useState(false);
   const [searchInstance, setSearchInstance] = useState(restoredState?.searchInstance ?? 0);
@@ -1161,49 +1432,42 @@ function PassengerPublishScreen({
     const unsubscribe = subscribeWallet(session.email, setWallet);
     return unsubscribe;
   }, [session.email]);
-useEffect(() => {
-  setDraftPriceLimit(priceLimit);
-}, [priceLimit]);
-useEffect(() => {
-  stateSnapshotRef.current = {
+
+  useEffect(() => {
+    stateSnapshotRef.current = {
+      fromCampus,
+      toCampus,
+      selectedDateISO: selectedDate.toISOString(),
+      travelTime,
+      hasConfirmedDate,
+      hasConfirmedTime,
+      searchResults: cloneRideList(searchResults),
+      searchPerformed,
+      validationTouched,
+      searchInstance,
+      scrollOffset: scrollOffsetRef.current,
+    };
+  }, [
     fromCampus,
     toCampus,
-    selectedDateISO: selectedDate.toISOString(),
+    selectedDate,
     travelTime,
     hasConfirmedDate,
     hasConfirmedTime,
-    priceLimit,
-    draftPriceLimit,
-    moreFiltersVisible,
-    searchResults: cloneRideList(searchResults),
+    searchResults,
     searchPerformed,
     validationTouched,
     searchInstance,
-    scrollOffset: scrollOffsetRef.current,
-  };
-}, [
-  fromCampus,
-  toCampus,
-  selectedDate,
-  travelTime,
-  hasConfirmedDate,
-  hasConfirmedTime,
-  priceLimit,
-  draftPriceLimit,
-  moreFiltersVisible,
-  searchResults,
-  searchPerformed,
-  validationTouched,
-  searchInstance,
-]);
-useEffect(() => {
-  return () => {
-    passengerExplorePersistedState = stateSnapshotRef.current;
-  };
-}, []);
-const [reservingRideId, setReservingRideId] = useState<string | null>(null);
-const [paymentRide, setPaymentRide] = useState<Ride | null>(null);
-const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'card' | 'wallet'>('apple-pay');
+  ]);
+
+  useEffect(() => {
+    return () => {
+      passengerExplorePersistedState = stateSnapshotRef.current;
+    };
+  }, []);
+  const [reservingRideId, setReservingRideId] = useState<string | null>(null);
+  const [paymentRide, setPaymentRide] = useState<Ride | null>(null);
+  const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'card' | 'wallet'>('apple-pay');
   const [cardNumber, setCardNumber] = useState('');
   const [cardExpiry, setCardExpiry] = useState('');
   const [cardCvv, setCardCvv] = useState('');
@@ -1259,13 +1523,15 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
   const heroDepartLabel = fromCampus || 'Commune au choix';
   const heroArrivalLabel = toCampus || 'Destination EPHEC';
   const heroDurationLabel = sampledMinutes ? `${sampledMinutes} min estimées` : 'Temps estimé';
-  const scopedResults = searchResults;
+  const sampleSearchResults = useMemo(() => {
+    return ridesReady && rides.length === 0 ? FALLBACK_UPCOMING : [];
+  }, [rides.length, ridesReady]);
+  const scopedResults = searchResults.length > 0 ? searchResults : sampleSearchResults;
   const ridesCardList = useMemo(() => {
     return [...scopedResults]
       .filter((ride) => ride.seats - ride.passengers.length >= 1)
-      .filter((ride) => ride.price <= priceLimit + 0.001)
       .sort((a, b) => a.departureAt - b.departureAt);
-  }, [priceLimit, scopedResults]);
+  }, [scopedResults]);
   const resultsCountLabel = useMemo(() => {
     if (!searchPerformed) return 'Prêt à lancer une recherche';
     if (ridesCardList.length === 0) {
@@ -1363,39 +1629,25 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
     return null;
   }, [validationTouched, allFieldsReady, isScheduleInPast]);
   const showResultsCard = searchPerformed && scheduleReady && isLocationReady;
-  const handlePriceSliderChange = useCallback(
-    (locationX: number) => {
-      const width = priceSliderWidth || 1;
-      const ratio = Math.min(Math.max(locationX / width, 0), 1);
-      const rawValue = PRICE_MIN + ratio * (PRICE_MAX - PRICE_MIN);
-      const stepped = Math.round(rawValue / PRICE_STEP) * PRICE_STEP;
-      setDraftPriceLimit(Number(Math.min(PRICE_MAX, Math.max(PRICE_MIN, stepped)).toFixed(1)));
-    },
-    [priceSliderWidth]
-  );
-  const priceSliderRatio = useMemo(() => {
-    return Math.min(1, Math.max(0, (draftPriceLimit - PRICE_MIN) / (PRICE_MAX - PRICE_MIN)));
-  }, [draftPriceLimit]);
-  const applyPriceFilter = useCallback(() => {
-    setPriceLimit(draftPriceLimit);
-  }, [draftPriceLimit]);
-  const priceApplyDisabled = draftPriceLimit === priceLimit;
+  const fromCampusHasValue = fromCampus.trim().length > 0;
+  const toCampusHasValue = toCampus.trim().length > 0;
   const dropdownOpen = showFromList || showDestList;
   const closeDropdowns = useCallback(() => {
     animateDropdown();
     setShowDestList(false);
     setShowFromList(false);
   }, [animateDropdown]);
-  const communeSuggestions = useMemo(() => {
-    const query = fromCampus.trim().toLowerCase();
-    const base =
-      query.length === 0
-        ? BRUSSELS_COMMUNES.slice(0, 6)
-        : BRUSSELS_COMMUNES.filter((commune) => commune.toLowerCase().includes(query)).slice(0, 10);
-    const unique = Array.from(new Set(base));
-    return ['Ma position actuelle', ...unique];
-  }, [fromCampus]);
 
+  const clearFromCampus = useCallback(() => {
+    setFromCampus('');
+    setDetectedCommune(null);
+    closeDropdowns();
+  }, [closeDropdowns]);
+
+  const clearToCampus = useCallback(() => {
+    setToCampus('');
+    closeDropdowns();
+  }, [closeDropdowns]);
   const handleUseLocation = useCallback(async () => {
     try {
       setLocationLoading(true);
@@ -1449,7 +1701,7 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
   }, [animateDropdown]);
   const selectFromCommune = useCallback(
     (commune: string) => {
-      if (commune === 'Ma position actuelle') {
+      if (commune === LOCATION_SUGGESTION_OPTION) {
         handleUseLocation();
         return;
       }
@@ -1506,15 +1758,25 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
                 autoCorrect={false}
                 returnKeyType="done"
               />
+              {fromCampusHasValue ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearFromCampus}
+                  accessibilityLabel="Effacer le point de départ"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
             </View>
             {detectedCommune ? (
               <Text style={passengerStyles.locationDetectedText}>
                 Commune détectée : {detectedCommune}
               </Text>
             ) : null}
-            {showFromList && communeSuggestions.length > 0 ? (
+            {showFromList && LOCATION_SUGGESTION_OPTIONS.length > 0 ? (
               <View style={passengerStyles.dropdownList}>
-                {communeSuggestions.map((commune) => (
+                {LOCATION_SUGGESTION_OPTIONS.map((commune) => (
                   <Pressable
                     key={commune}
                     style={passengerStyles.dropdownItem}
@@ -1530,21 +1792,33 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
             <Text style={passengerStyles.dropdownLabel}>DESTINATION</Text>
             <View style={[passengerStyles.inputWrapper, passengerStyles.toInput]}>
               <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
-              <Pressable
-                style={passengerStyles.dropdownTrigger}
-                onPress={toggleDestList}
-                accessibilityRole="button"
-                accessibilityLabel="Choisir un campus de destination"
-              >
-                <Text
-                  style={[
-                    passengerStyles.dropdownText,
-                    (!toCampus || !toCampus.trim()) && passengerStyles.dropdownTextPlaceholder,
-                  ]}
+              <View style={passengerStyles.dropdownValueWithClear}>
+                <Pressable
+                  style={passengerStyles.dropdownTrigger}
+                  onPress={toggleDestList}
+                  accessibilityRole="button"
+                  accessibilityLabel="Choisir un campus de destination"
                 >
-                  {toCampus && toCampus.trim() ? toCampus : 'Sélectionnez un campus'}
-                </Text>
-              </Pressable>
+                  <Text
+                    style={[
+                      passengerStyles.dropdownText,
+                      !toCampusHasValue && passengerStyles.dropdownTextPlaceholder,
+                    ]}
+                  >
+                    {toCampusHasValue ? toCampus : 'Sélectionnez un campus'}
+                  </Text>
+                </Pressable>
+                {toCampusHasValue ? (
+                  <Pressable
+                    style={passengerStyles.clearButton}
+                    onPress={clearToCampus}
+                    accessibilityLabel="Effacer la destination"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                  </Pressable>
+                ) : null}
+              </View>
             </View>
             {showDestList ? (
               <View style={passengerStyles.dropdownList}>
@@ -1580,112 +1854,91 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
       </View>
       <View style={passengerStyles.dateSection}>
         <View style={passengerStyles.dateRow} pointerEvents={dropdownOpen ? 'none' : 'auto'}>
-          <Pressable
-            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-            onPress={() => {
-              closeDropdowns();
-              openDatePicker();
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Sélectionner une date"
-          >
-            <IconSymbol name="calendar" size={18} color={Colors.gray500} />
-            <Text
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+            <Text style={passengerStyles.dropdownLabel}>DATE</Text>
+            <View
               style={[
-                passengerStyles.dropdownText,
-                !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+                passengerStyles.inputWrapper,
+                passengerStyles.smallInput,
+                passengerStyles.pickerTrigger,
               ]}
             >
-              {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-            onPress={() => {
-              closeDropdowns();
-              setShowTimePicker(true);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Sélectionner une heure"
-          >
-            <IconSymbol name="clock" size={18} color={Colors.gray500} />
-            <Text
+              <Pressable
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+                onPress={() => {
+                  closeDropdowns();
+                  openDatePicker();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Sélectionner une date"
+              >
+                <IconSymbol name="calendar" size={18} color={Colors.gray500} />
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+                    { marginLeft: Spacing.xs },
+                  ]}
+                >
+                  {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
+                </Text>
+              </Pressable>
+              {hasConfirmedDate ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearSheetDate}
+                  accessibilityLabel="Effacer la date"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+            <Text style={passengerStyles.dropdownLabel}>HEURE</Text>
+            <View
               style={[
-                passengerStyles.dropdownText,
-                !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+                passengerStyles.inputWrapper,
+                passengerStyles.smallInput,
+                passengerStyles.pickerTrigger,
               ]}
             >
-              {hasConfirmedTime ? travelTime : 'Choisir une heure'}
-            </Text>
-          </Pressable>
+              <Pressable
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+                onPress={() => {
+                  closeDropdowns();
+                  setShowTimePicker(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Sélectionner une heure"
+              >
+                <IconSymbol name="clock" size={18} color={Colors.gray500} />
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+                    { marginLeft: Spacing.xs },
+                  ]}
+                >
+                  {hasConfirmedTime ? travelTime : 'Choisir une heure'}
+                </Text>
+              </Pressable>
+              {hasConfirmedTime ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearSheetTime}
+                  accessibilityLabel="Effacer l'heure"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
         </View>
         {validationMessage ? <Text style={passengerStyles.dateError}>{validationMessage}</Text> : null}
       </View>
-      <Pressable
-        style={[passengerStyles.moreFiltersButton, moreFiltersVisible && passengerStyles.moreFiltersButtonActive]}
-        onPress={() => setMoreFiltersVisible((prev) => !prev)}
-        accessibilityRole="button"
-      >
-        <IconSymbol
-          name={moreFiltersVisible ? 'line.horizontal.3.decrease.circle.fill' : 'line.horizontal.3.decrease.circle'}
-          size={20}
-          color={moreFiltersVisible ? Colors.primary : Colors.gray600}
-        />
-        <Text
-          style={[
-            passengerStyles.moreFiltersButtonText,
-            moreFiltersVisible && passengerStyles.moreFiltersButtonTextActive,
-          ]}
-        >
-          Plus de filtres
-        </Text>
-      </Pressable>
-      {moreFiltersVisible ? (
-        <View style={passengerStyles.moreFiltersPanel}>
-          <View style={passengerStyles.filterGroup}>
-            <Text style={passengerStyles.filterGroupLabel}>Prix</Text>
-            <View style={passengerStyles.sliderLabelRow}>
-              <Text style={passengerStyles.sliderValue}>{draftPriceLimit.toFixed(1)} €</Text>
-            </View>
-            <View
-              style={passengerStyles.sliderTrack}
-              onLayout={(event) => setPriceSliderWidth(Math.max(event.nativeEvent.layout.width, 1))}
-              onStartShouldSetResponder={() => true}
-              onMoveShouldSetResponder={() => true}
-              onResponderGrant={(event) => {
-                handlePriceSliderChange(event.nativeEvent.locationX);
-              }}
-              onResponderMove={(event) => {
-                handlePriceSliderChange(event.nativeEvent.locationX);
-              }}
-            >
-              <View style={passengerStyles.sliderTrackBackground} />
-              <View style={[passengerStyles.sliderTrackFill, { width: `${priceSliderRatio * 100}%` }]} />
-              <View
-                style={[
-                  passengerStyles.sliderThumb,
-                  { left: `${priceSliderRatio * 100}%` },
-                ]}
-              />
-            </View>
-            <View style={passengerStyles.sliderScale}>
-              <Text style={passengerStyles.sliderScaleLabel}>{PRICE_MIN} €</Text>
-              <Text style={passengerStyles.sliderScaleLabel}>{PRICE_MAX} €</Text>
-            </View>
-            <Pressable
-              style={[
-                passengerStyles.filterApplyButton,
-                priceApplyDisabled && passengerStyles.filterApplyButtonDisabled,
-              ]}
-              onPress={applyPriceFilter}
-              disabled={priceApplyDisabled}
-              accessibilityRole="button"
-            >
-              <Text style={passengerStyles.filterApplyButtonText}>Appliquer</Text>
-            </Pressable>
-          </View>
-        </View>
-      ) : null}
       <View style={passengerStyles.searchButtonWrapper}>
         <GradientButton
           title="Chercher"
@@ -1792,6 +2045,16 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
     setHasConfirmedDate(true);
     setShowDatePicker(false);
   };
+  const clearSheetDate = useCallback(() => {
+    setHasConfirmedDate(false);
+    setSelectedDate(defaultTomorrow);
+    setShowDatePicker(false);
+  }, [defaultTomorrow]);
+  const clearSheetTime = useCallback(() => {
+    setHasConfirmedTime(false);
+    setTravelTime(DEFAULT_TRAVEL_TIME);
+    setShowTimePicker(false);
+  }, []);
 
   const openRide = useCallback(
     (id: string) => {
@@ -1829,14 +2092,23 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
       }
       if (!response) return false;
       if (response.ok) {
+        const params = {
+          driver: ride.driver,
+          depart: ride.depart,
+          destination: ride.destination,
+          departureAt: String(ride.departureAt),
+          paymentMethod: method,
+        };
+        const route =
+          method === 'wallet' ? '/ride/payment-confirmation' : '/ride/request-confirmation';
         router.push({
-          pathname: '/ride/request-confirmation',
-          params: {
-            driver: ride.driver,
-            depart: ride.depart,
-            destination: ride.destination,
-            paid: '1',
-          },
+          pathname: route,
+          params: method === 'wallet'
+            ? params
+            : {
+                ...params,
+                paid: '1',
+              },
         });
         return true;
       }
@@ -2136,7 +2408,12 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
           {Platform.OS === 'web' ? (
             <View style={passengerStyles.heroColumnWeb}>
               <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardWebMap]}>
-                <HeroWebMap rides={rides} depart={fromCampus} destination={toCampus} />
+                <HeroWebMap
+                  rides={rides}
+                  depart={fromCampus}
+                  destination={toCampus}
+                  fallbackSegmentsEnabled={false}
+                />
               </View>
               <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardCompact]}>
                 {renderSheetContent()}
@@ -2873,6 +3150,12 @@ const passengerStyles = StyleSheet.create({
     zIndex: 5,
     position: 'relative',
   },
+  dateField: {
+    flex: 1,
+  },
+  returnField: {
+    marginTop: Spacing.md,
+  },
   dateError: {
     marginTop: Spacing.xs,
     color: Colors.danger,
@@ -2886,6 +3169,17 @@ const passengerStyles = StyleSheet.create({
     borderRadius: R.lg,
     paddingHorizontal: Spacing.sm,
     backgroundColor: '#F9F9FF',
+  },
+  dropdownValueWithClear: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  clearButton: {
+    marginLeft: Spacing.sm,
+    padding: Spacing.xs,
+    borderRadius: 999,
   },
   input: {
     flex: 1,
@@ -2918,6 +3212,39 @@ const passengerStyles = StyleSheet.create({
   },
   smallInput: {
     flex: 1,
+  },
+  placesInput: {
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    minHeight: 48,
+    alignItems: 'center',
+  },
+  tripTypeControl: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: '#E5E7F2',
+    borderRadius: R.lg,
+    backgroundColor: '#F9F9FF',
+    overflow: 'hidden',
+  },
+  tripTypeOption: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.sm,
+    minHeight: 48,
+  },
+  tripTypeOptionSeparator: {
+    borderLeftWidth: 1,
+    borderLeftColor: '#E5E7F2',
+  },
+  tripTypeOptionText: {
+    fontWeight: '600',
+    color: Colors.gray600,
+  },
+  tripTypeOptionTextActive: {
+    color: TRIP_TYPE_ACTIVE_COLOR,
+    fontWeight: '700',
   },
   dropdownTrigger: {
     flex: 1,
@@ -2973,6 +3300,10 @@ const passengerStyles = StyleSheet.create({
     marginTop: Spacing.md,
     position: 'relative',
   },
+  driverCTA: {
+    borderRadius: R.xl,
+    height: 58,
+  },
   searchLoading: {
     marginTop: Spacing.sm,
     flexDirection: 'row',
@@ -2983,119 +3314,55 @@ const passengerStyles = StyleSheet.create({
     color: Colors.gray600,
     fontWeight: '600',
   },
+  fareSummaryWrapper: {
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  fareSummaryCard: {
+    borderRadius: R.xl,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: Colors.gray150,
+    padding: Spacing.lg,
+    alignItems: 'center',
+    gap: Spacing.xs,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  fareSummaryGain: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Colors.ink,
+    textAlign: 'center',
+  },
+  fareSummarySubtext: {
+    fontSize: 13,
+    color: Colors.gray600,
+    textAlign: 'center',
+  },
+  fareSummaryDetails: {
+    width: '100%',
+    marginTop: Spacing.sm,
+    gap: Spacing.xs,
+    alignItems: 'center',
+  },
+  fareSummaryDetail: {
+    fontSize: 13,
+    color: Colors.gray600,
+    textAlign: 'center',
+  },
+  fareSummaryDetailSecondary: {
+    fontSize: 12,
+    color: Colors.gray500,
+    textAlign: 'center',
+  },
   pickerTrigger: {
     paddingRight: Spacing.md,
     minHeight: 48,
     justifyContent: 'center',
-  },
-  moreFiltersButton: {
-    marginTop: Spacing.xs,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: R.pill,
-    borderWidth: 0,
-    backgroundColor: Colors.white,
-  },
-  moreFiltersButtonActive: {
-    backgroundColor: Colors.white,
-  },
-  moreFiltersButtonText: {
-    fontWeight: '700',
-    color: Colors.gray700,
-  },
-  moreFiltersButtonTextActive: {
-    color: Colors.primaryDark,
-  },
-  moreFiltersPanel: {
-    marginTop: Spacing.xs,
-    padding: Spacing.md,
-    borderRadius: R.xl,
-    borderWidth: 1,
-    borderColor: Colors.gray150,
-    backgroundColor: Colors.gray50,
-    gap: Spacing.sm,
-  },
-  filterGroup: {
-    gap: Spacing.xs,
-  },
-  filterGroupLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: Colors.gray600,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  sliderLabelRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  sliderValue: {
-    fontWeight: '800',
-    color: Colors.primaryDark,
-  },
-  sliderTrack: {
-    marginTop: Spacing.xs,
-    height: 28,
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  sliderTrackBackground: {
-    position: 'absolute',
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Colors.gray200,
-    width: '100%',
-    left: 0,
-  },
-  sliderTrackFill: {
-    position: 'absolute',
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Colors.primary,
-    left: 0,
-  },
-  sliderThumb: {
-    position: 'absolute',
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: Colors.white,
-    borderWidth: 2,
-    borderColor: Colors.primary,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-    transform: [{ translateX: -11 }],
-  },
-  sliderScale: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: Spacing.xs,
-  },
-  sliderScaleLabel: {
-    fontSize: 12,
-    color: Colors.gray500,
-  },
-  filterApplyButton: {
-    alignSelf: 'flex-end',
-    marginTop: Spacing.xs,
-    paddingVertical: Spacing.xs,
-    paddingHorizontal: Spacing.lg,
-    borderRadius: R.lg,
-    backgroundColor: Colors.primary,
-  },
-  filterApplyButtonDisabled: {
-    backgroundColor: Colors.gray300,
-  },
-  filterApplyButtonText: {
-    color: Colors.white,
-    fontWeight: '700',
-    letterSpacing: 0.2,
   },
   dropdownList: {
     position: 'absolute',
@@ -3121,6 +3388,17 @@ const passengerStyles = StyleSheet.create({
   dropdownItemText: {
     fontWeight: '600',
     color: Colors.ink,
+  },
+  placesButton: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: R.pill,
+  },
+  placesInput: {
+    justifyContent: 'space-between',
+    paddingVertical: 0,
+    minHeight: 48,
+    alignItems: 'center',
   },
   pickerOverlay: {
     flex: 1,
@@ -4269,10 +4547,12 @@ const HeroWebMap = ({
   rides,
   depart,
   destination,
+  fallbackSegmentsEnabled = true,
 }: {
   rides: Ride[];
   depart?: string | null;
   destination?: string | null;
+  fallbackSegmentsEnabled?: boolean;
 }) => {
   const mapNode = useRef<HTMLDivElement | null>(null);
   const mapInstance = useRef<any>(null);
@@ -4304,7 +4584,7 @@ const HeroWebMap = ({
   }, [rides]);
 
   const hasPreviewInput = Boolean(depart?.trim()) || Boolean(destination?.trim());
-  const usingFallback = segments.length === 0 && !hasPreviewInput;
+  const usingFallback = fallbackSegmentsEnabled && segments.length === 0 && !hasPreviewInput;
   const displaySegments = usingFallback ? HERO_FALLBACK_SEGMENTS : segments;
   const safeDisplaySegments = useMemo(() => sanitizeHeroSegments(displaySegments), [displaySegments]);
   const cameraSegments = useMemo(() => {
@@ -4616,6 +4896,10 @@ const HeroWebMap = ({
         previewMarkers.start.label,
         previewMarkers.end.label
       );
+      const distanceKmValue = getDistanceKm(
+        previewMarkers.start.label,
+        previewMarkers.end.label
+      );
       if (durationMinutes && Number.isFinite(durationMinutes)) {
         const midpoint = (() => {
           if (previewPath && previewPath.length > 0) {
@@ -4631,8 +4915,17 @@ const HeroWebMap = ({
           `<div style="position:relative;display:inline-flex;align-items:center;font-size:13px;font-weight:700;color:#111;">` +
           `<div style="width:0;height:0;border-top:7px solid transparent;border-bottom:7px solid transparent;` +
           `border-right:9px solid #fff;box-shadow:1px 0 1px rgba(0,0,0,0.12);margin-right:-1px;"></div>` +
-          `<span style="background:#fff;border:2px solid #dcdcdc;border-radius:18px;padding:4px 12px;box-shadow:0 2px 6px rgba(0,0,0,0.15);">` +
-          `${durationMinutes} min</span>` +
+          `<div style="background:#fff;border:2px solid #dcdcdc;border-radius:18px;padding:4px 12px;box-shadow:0 2px 6px rgba(0,0,0,0.15);display:flex;flex-direction:column;align-items:center;gap:2px;">` +
+          `<span style="font-weight:700;">${durationMinutes} min</span>` +
+          `${
+            Number.isFinite(distanceKmValue)
+              ? `<span style="font-size:12px;color:#6b7280;">${distanceKmValue.toLocaleString('fr-BE', {
+                  minimumFractionDigits: 1,
+                  maximumFractionDigits: 1,
+                })} km</span>`
+              : ''
+          }` +
+          `</div>` +
           `</div>`;
         const infoWindowDiv = document.createElement('div');
         infoWindowDiv.innerHTML = bubbleContent;

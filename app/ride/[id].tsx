@@ -50,10 +50,16 @@ import { CAMPUSRIDE_COMMISSION_RATE } from '@/app/constants/fuel';
 import { maskPlate } from '@/app/utils/plate';
 import { MeetingMap } from '@/components/meeting-map';
 import type { PaymentMethod } from '@/app/services/payments';
+import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
 
 const C = Colors;
 const S = Shadows;
 const PRICE_RATE_PER_KM = 0.4;
+
+const findFallbackRide = (rideId?: string | null) => {
+  if (!rideId) return null;
+  return FALLBACK_UPCOMING.find((ride) => ride.id === rideId) ?? null;
+};
 
 const ensureStudentEmail = (email: string) => {
   if (!email) return '';
@@ -66,7 +72,11 @@ export default function RideDetailScreen() {
   const session = useAuthSession();
   const { width } = useWindowDimensions();
   const isCompact = width < 420;
-  const [ride, setRide] = useState<Ride | null>(() => (id ? getRide(String(id)) ?? null : null));
+  const initialRealRide = id ? getRide(String(id)) : null;
+  const initialFallbackRide = !initialRealRide ? findFallbackRide(id) : null;
+  const initialRide = initialRealRide ?? initialFallbackRide;
+  const [ride, setRide] = useState<Ride | null>(initialRide);
+  const [isFallbackRide, setIsFallbackRide] = useState(!initialRealRide && !!initialFallbackRide);
   const [driverCompleted, setDriverCompleted] = useState(0);
   const [driverRating, setDriverRating] = useState<{ average: number; count: number }>({
     average: 0,
@@ -122,15 +132,18 @@ export default function RideDetailScreen() {
   useEffect(() => {
     const unsubscribe = subscribeRides((rides) => {
       const next = rides.find((item) => item.id === id) ?? null;
-      setRide(next);
       if (next) {
-        const completed = rides.filter(
-          (item) => item.ownerEmail === next.ownerEmail && hasRideDeparted(item)
-        ).length;
-        setDriverCompleted(completed);
-      } else {
-        setDriverCompleted(0);
+        setRide(next);
+        setDriverCompleted(
+          rides.filter((item) => item.ownerEmail === next.ownerEmail && hasRideDeparted(item)).length
+        );
+        setIsFallbackRide(false);
+        return;
       }
+      const fallback = findFallbackRide(id);
+      setRide(fallback);
+      setDriverCompleted(0);
+      setIsFallbackRide(!!fallback);
     });
     return unsubscribe;
   }, [id]);
@@ -614,6 +627,14 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
               </Pressable>
               <Text style={styles.pageTitle}>Informations du trajet</Text>
             </View>
+            {isFallbackRide ? (
+              <View style={styles.fallbackBanner}>
+                <Text style={styles.fallbackLabel}>Trajet de démonstration</Text>
+                <Text style={styles.fallbackText}>
+                  Les informations affichées ici sont fictives, elles servent à tester l’accès aux détails.
+                </Text>
+              </View>
+            ) : null}
             {reservationAccepted ? (
               <View style={[styles.acceptBanner, isCompact && styles.acceptBannerCompact]}>
                 <View style={styles.acceptIconCircle}>
@@ -1237,6 +1258,24 @@ const styles = StyleSheet.create({
   noticeBannerCompact: {
     flexDirection: 'column',
     alignItems: 'flex-start',
+  },
+  fallbackBanner: {
+    width: '100%',
+    borderRadius: Radius['2xl'],
+    padding: Spacing.md,
+    backgroundColor: '#F5F3FF',
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+    marginBottom: Spacing.md,
+    gap: Spacing.xs,
+  },
+  fallbackLabel: {
+    fontWeight: '700',
+    color: '#7C3AED',
+  },
+  fallbackText: {
+    color: C.gray600,
+    fontSize: 13,
   },
   noticeIcon: {
     width: 56,

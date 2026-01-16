@@ -503,7 +503,10 @@ export const reserveSeat = (
     });
     scheduleRideReminder(updated, passengerEmail, 'passenger');
     persistRideSnapshot(updated);
-    void recordReservedRide(updated, passengerEmail);
+    void recordReservedRide(updated, passengerEmail, {
+      status: 'confirmed',
+      startDateTime: updated.departureAt,
+    });
     return { ok: true, ride: updated, payment };
   }
 

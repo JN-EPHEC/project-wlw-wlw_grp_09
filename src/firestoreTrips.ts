@@ -58,6 +58,7 @@ const buildRidePayload = (ride: RideSnapshot) => ({
   createdAt: ride.createdAt,
   updatedAt: ride.updatedAt,
   departureAt: ride.departureAt,
+  startDateTime: ride.departureAt,
   payoutProcessed: !!ride.payoutProcessed,
   availableSeats: Math.max(ride.seats - ride.passengers.length, 0),
 });
@@ -98,17 +99,27 @@ export const recordPublishedRide = async (ride: RideSnapshot) => {
   }
 };
 
-export const recordReservedRide = async (ride: RideSnapshot, passengerEmail: string) => {
+export type ReservationSyncStatus = 'upcoming' | 'departed' | 'confirmed';
+export const recordReservedRide = async (
+  ride: RideSnapshot,
+  passengerEmail: string,
+  options?: { status?: ReservationSyncStatus; startDateTime?: number }
+) => {
   try {
     const uid = await resolveUserUid(passengerEmail);
     if (!uid) return;
+    const normalizedStatus =
+      options?.status ??
+      (ride.departureAt <= Date.now() ? 'departed' : 'upcoming');
+    const startDateTime = options?.startDateTime ?? ride.departureAt;
     const payload = {
       type: 'reserved' as const,
       role: 'passenger' as const,
       passengerEmail: normalizeEmail(passengerEmail),
       ...buildRidePayload(ride),
       reservedAt: Date.now(),
-      status: ride.departureAt <= Date.now() ? 'departed' : 'upcoming',
+      status: normalizedStatus,
+      startDateTime,
     };
     await persistTripRecord(uid, 'reservations', ride.id, payload);
   } catch (error) {

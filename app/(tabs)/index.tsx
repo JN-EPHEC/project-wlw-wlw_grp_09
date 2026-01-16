@@ -17,6 +17,7 @@ import {
 
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
+import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
 import type { AuthSession } from '@/app/services/auth';
@@ -27,7 +28,6 @@ import { subscribeNotifications } from '@/app/services/notifications';
 import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
 import { usePassengerRequests } from '@/hooks/use-passenger-requests';
-import { BRUSSELS_COMMUNES } from '@/constants/communes';
 import { getCurrentCommune, LocationPermissionError } from '@/app/services/location';
 
 type SectionKey = 'search' | 'requests' | 'trips';
@@ -71,6 +71,8 @@ const quickSponsor = {
   url: 'https://www.quick.be/fr/deals',
   logo: require('@/assets/images/Quick.png'),
 };
+
+const LOCATION_SUGGESTION_OPTION = 'Utiliser ma position';
 
 const formatDate = (timestamp: number) =>
   new Date(timestamp).toLocaleDateString('fr-BE', {
@@ -316,12 +318,6 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
     departureBlurTimeout.current = setTimeout(() => setDepartureFocused(false), 120);
   };
 
-  const selectDepartureSuggestion = (value: string) => {
-    setDepartureInput(value);
-    setDetectedCommune(null);
-    setDepartureFocused(false);
-  };
-
   const handleUseLocation = useCallback(async () => {
     try {
       setLocationLoading(true);
@@ -415,15 +411,12 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
   }, [sliderWidth, sponsorSlides.length]);
 
 
-  const departureSuggestions = useMemo(() => {
-    const query = departureInput.trim().toLowerCase();
-    if (!query) return [...BRUSSELS_COMMUNES];
-    return BRUSSELS_COMMUNES.filter((commune) =>
-      commune.toLowerCase().includes(query)
-    );
-  }, [departureInput]);
+  const departureDropdownOptions = useMemo(() => [LOCATION_SUGGESTION_OPTION], []);
 
-  const showDepartureSuggestions = isDepartureFocused && departureSuggestions.length > 0;
+  const showDepartureSuggestions = isDepartureFocused;
+  const departureHasValue = departureInput.trim().length > 0;
+  const destinationHasValue = campus.trim().length > 0;
+  const destinationLabel = destinationHasValue ? campus : 'Sélectionnez un campus';
 
   return (
     <AppBackground colors={Gradients.background}>
@@ -458,7 +451,7 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
                 >
                   <View style={styles.quickIconWrapper}>
                     <View style={styles.quickIcon}>
-                      <IconSymbol name={action.icon} size={24} color={Colors.primary} />
+                      <IconSymbol name={action.icon} size={24} color={Colors.primaryDark} />
                     </View>
                     {action.badge ? (
                       <View style={styles.quickActionBadge}>
@@ -475,107 +468,130 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
           <View style={styles.section} onLayout={registerSection('search')}>
             <Text style={styles.sectionTitle}>Choisir votre destination</Text>
             <View style={styles.formCard}>
-              <Text style={styles.inputLabel}>Point de départ</Text>
-              <View style={styles.dropdownContainer}>
-                <View style={styles.inputRow}>
-                  <View style={[styles.inputWrapper, styles.inputWrapperSoft]}>
-                    <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
-                    <TextInput
-                      placeholder="Saisir votre adresse"
-                      placeholderTextColor={Colors.gray400}
-                      value={departureInput}
-                      onChangeText={(value) => {
-                        setDepartureInput(value);
-                        setDetectedCommune(null);
-                      }}
-                      style={styles.input}
-                      onFocus={handleDepartureFocus}
-                      onBlur={handleDepartureBlur}
-                      autoCapitalize="words"
-                      autoCorrect={false}
-                    />
-                  </View>
-                  <Pressable
-                    style={styles.swapButton}
-                    accessibilityRole="button"
-                    accessibilityLabel="Inverser départ et destination"
-                    onPress={() => {
-                      setDepartureInput(campus);
-                      setCampus(departureInput);
+              <View style={[searchStyles.dropdownWrapper, searchStyles.dropdownWrapperTop]}>
+                <Text style={searchStyles.dropdownLabel}>POINT DE DÉPART</Text>
+                <View style={searchStyles.inputWrapper}>
+                  <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+                  <TextInput
+                    placeholder="Saisir votre adresse"
+                    placeholderTextColor={Colors.gray400}
+                    value={departureInput}
+                    onChangeText={(value) => {
+                      setDepartureInput(value);
                       setDetectedCommune(null);
-                      setShowCampusList(false);
                     }}
-                  >
-                    <IconSymbol name="chevron.up" size={18} color={Colors.gray500} />
-                    <IconSymbol name="chevron.down" size={18} color={Colors.gray500} />
-                  </Pressable>
+                    style={searchStyles.dropdownTextInput}
+                    onFocus={handleDepartureFocus}
+                    onBlur={handleDepartureBlur}
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                  />
+                  {departureHasValue ? (
+                    <Pressable
+                      style={searchStyles.clearButton}
+                      onPress={() => {
+                        setDepartureInput('');
+                        setDetectedCommune(null);
+                        setDepartureFocused(false);
+                      }}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Effacer le point de départ"
+                    >
+                      <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                    </Pressable>
+                  ) : null}
                 </View>
+                {detectedCommune ? (
+                  <Text style={searchStyles.locationDetectedText}>
+                    Commune détectée : {detectedCommune}
+                  </Text>
+                ) : null}
                 {showDepartureSuggestions ? (
-                  <View style={styles.dropdownListHome}>
+                  <View style={searchStyles.dropdownList}>
                     <ScrollView
                       style={styles.suggestionScroll}
                       keyboardShouldPersistTaps="handled"
                       nestedScrollEnabled
                       showsVerticalScrollIndicator={false}
                     >
-                      {[locationLoading ? 'Localisation…' : 'Ma position actuelle', ...departureSuggestions].map(
-                        (suggestion, index) => (
-                          <Pressable
-                            key={`${suggestion}-${index}`}
-                            style={styles.dropdownItemHome}
-                            onPress={() => {
-                              if (index === 0) {
-                                handleUseLocation();
-                                return;
-                              }
-                              selectDepartureSuggestion(suggestion);
-                            }}
-                          >
-                            <Text style={styles.dropdownItemHomeText}>{suggestion}</Text>
-                          </Pressable>
-                        )
-                      )}
+                      {departureDropdownOptions.map((option, index) => (
+                        <Pressable
+                          key={`${option}-${index}`}
+                          style={searchStyles.dropdownItem}
+                          onPress={() => {
+                            handleUseLocation();
+                          }}
+                        >
+                          <Text style={searchStyles.dropdownItemText}>
+                            {locationLoading ? 'Localisation…' : option}
+                          </Text>
+                        </Pressable>
+                      ))}
                     </ScrollView>
                   </View>
                 ) : null}
               </View>
-              <Text style={styles.inputLabel}>Destination</Text>
-              <View style={styles.dropdownContainer}>
-                <Pressable style={[styles.selector]} onPress={handleCampusSelect}>
+              <View style={[searchStyles.dropdownWrapper, searchStyles.dropdownWrapperBottom]}>
+                <Text style={searchStyles.dropdownLabel}>DESTINATION</Text>
+                <View style={[searchStyles.inputWrapper, searchStyles.toInput]}>
                   <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
-                  <Text style={[styles.selectorText, !campus && styles.selectorPlaceholder]}>
-                    {campus || 'Sélectionnez un campus'}
-                  </Text>
-                  <IconSymbol name="chevron.down" size={18} color={Colors.gray400} />
-                </Pressable>
+                  <View style={searchStyles.dropdownValueWithClear}>
+                    <Pressable
+                      style={searchStyles.dropdownTrigger}
+                      onPress={handleCampusSelect}
+                      accessibilityRole="button"
+                      accessibilityLabel="Choisir un campus"
+                    >
+                      <Text
+                        style={[
+                          searchStyles.dropdownText,
+                          !destinationHasValue && searchStyles.dropdownTextPlaceholder,
+                        ]}
+                      >
+                        {destinationLabel}
+                      </Text>
+                    </Pressable>
+                    {destinationHasValue ? (
+                      <Pressable
+                        style={searchStyles.clearButton}
+                        onPress={() => {
+                          selectCampus('');
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Effacer la destination"
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
                 {showCampusList ? (
-                  <View style={styles.dropdownListInline}>
+                  <View style={searchStyles.dropdownList}>
                     {CAMPUS_OPTIONS.map((option) => (
                       <Pressable
                         key={option}
-                        style={[
-                          styles.dropdownItemInline,
-                          option === campus && styles.dropdownItemInlineActive,
-                        ]}
+                        style={searchStyles.dropdownItem}
                         onPress={() => selectCampus(option)}
                       >
-                        <Text
-                          style={[
-                            styles.dropdownItemInlineText,
-                            option === campus && styles.dropdownItemInlineTextActive,
-                          ]}
-                        >
-                          {option}
-                        </Text>
+                        <Text style={searchStyles.dropdownItemText}>{option}</Text>
                       </Pressable>
                     ))}
                   </View>
                 ) : null}
               </View>
-              <Pressable style={styles.primaryButton} onPress={handleSearch} accessibilityRole="button">
-                <IconSymbol name="magnifyingglass" size={18} color={Colors.white} />
-                <Text style={styles.primaryButtonText}>Rechercher</Text>
-              </Pressable>
+              <View style={searchStyles.searchButtonWrapper}>
+                <GradientButton
+                  title="Rechercher"
+                  onPress={handleSearch}
+                  variant="cta"
+                  fullWidth
+                  style={searchStyles.fullSearchButton}
+                  contentStyle={{ paddingVertical: Spacing.lg }}
+                  accessibilityRole="button"
+                />
+              </View>
             </View>
           </View>
 
@@ -670,6 +686,11 @@ function DriverDashboard({ session }: DriverDashboardProps) {
   const [meetingPoint, setMeetingPoint] = useState('');
   const [destination, setDestination] = useState('');
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [showMeetingList, setShowMeetingList] = useState(false);
+  const [showDestinationList, setShowDestinationList] = useState(false);
+  const [detectedMeetingCommune, setDetectedMeetingCommune] = useState<string | null>(null);
+  const meetingBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeRides((items) => {
@@ -717,6 +738,89 @@ function DriverDashboard({ session }: DriverDashboardProps) {
     ],
     [router]
   );
+
+  const meetingPointHasValue = meetingPoint.trim().length > 0;
+  const destinationHasValue = destination.trim().length > 0;
+  const destinationLabelDriver = destinationHasValue ? destination : 'Sélectionnez un campus';
+  const meetingDropdownOptions = useMemo(() => [LOCATION_SUGGESTION_OPTION], []);
+  const canContinue = meetingPointHasValue && destinationHasValue;
+
+  const closeDriverDropdowns = useCallback(() => {
+    setShowMeetingList(false);
+    setShowDestinationList(false);
+  }, []);
+
+  const handleDriverMeetingFocus = useCallback(() => {
+    if (meetingBlurTimeout.current) {
+      clearTimeout(meetingBlurTimeout.current);
+      meetingBlurTimeout.current = null;
+    }
+    setShowMeetingList(true);
+    setShowDestinationList(false);
+  }, []);
+
+  const handleDriverMeetingBlur = useCallback(() => {
+    meetingBlurTimeout.current = setTimeout(() => {
+      setShowMeetingList(false);
+    }, 120);
+  }, []);
+
+  const handleDriverUseLocation = useCallback(async () => {
+    try {
+      setLocationLoading(true);
+      const { commune } = await getCurrentCommune();
+      setMeetingPoint(commune);
+      setDetectedMeetingCommune(commune);
+      closeDriverDropdowns();
+    } catch (error) {
+      if (error instanceof LocationPermissionError) {
+        Alert.alert(
+          'Localisation désactivée',
+          'Active la localisation pour détecter automatiquement ton point de rencontre.'
+        );
+      } else {
+        Alert.alert(
+          'Position indisponible',
+          'Impossible de récupérer ta position. Réessaie dans un instant.'
+        );
+      }
+    } finally {
+      setLocationLoading(false);
+    }
+  }, [closeDriverDropdowns]);
+
+  const toggleDriverDestinationList = useCallback(() => {
+    setShowDestinationList((prev) => !prev);
+    setShowMeetingList(false);
+  }, []);
+
+  const selectDriverDestination = useCallback(
+    (value: string) => {
+      setDestination(value);
+      closeDriverDropdowns();
+    },
+    [closeDriverDropdowns]
+  );
+
+  const handleContinue = useCallback(() => {
+    if (!canContinue) return;
+    closeDriverDropdowns();
+    router.push({
+      pathname: '/explore',
+      params: {
+        driverMeeting: meetingPoint.trim(),
+        driverDestination: destination.trim(),
+      } as any,
+    });
+  }, [canContinue, closeDriverDropdowns, destination, meetingPoint]);
+
+  useEffect(() => {
+    return () => {
+      if (meetingBlurTimeout.current) {
+        clearTimeout(meetingBlurTimeout.current);
+      }
+    };
+  }, []);
 
   return (
     <AppBackground style={driverStyles.screen}>
@@ -767,38 +871,131 @@ function DriverDashboard({ session }: DriverDashboardProps) {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Publier mon trajet</Text>
             <View style={styles.formCard}>
-              <Text style={styles.inputLabel}>Point de rencontre</Text>
-              <View style={[styles.inputWrapper, styles.inputWrapperSoft]}>
-                <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
-                <TextInput
-                  value={meetingPoint}
-                  onChangeText={setMeetingPoint}
-                  placeholder="Saisir le point de rencontre"
-                  placeholderTextColor={Colors.gray400}
-                  style={styles.input}
-                  autoCapitalize="words"
+              <View style={[searchStyles.dropdownWrapper, searchStyles.dropdownWrapperTop]}>
+                <Text style={searchStyles.dropdownLabel}>POINT DE RENCONTRE</Text>
+                <View style={searchStyles.inputWrapper}>
+                  <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+                  <TextInput
+                    value={meetingPoint}
+                    onChangeText={(value) => {
+                      setMeetingPoint(value);
+                      setDetectedMeetingCommune(null);
+                      if (!showMeetingList) {
+                        setShowMeetingList(true);
+                      }
+                    }}
+                    placeholder="Saisir votre adresse"
+                    placeholderTextColor={Colors.gray400}
+                    style={searchStyles.dropdownTextInput}
+                    autoCapitalize="words"
+                    onFocus={handleDriverMeetingFocus}
+                    onBlur={handleDriverMeetingBlur}
+                  />
+                  {meetingPointHasValue ? (
+                    <Pressable
+                      style={searchStyles.clearButton}
+                      onPress={() => {
+                        setMeetingPoint('');
+                        setDetectedMeetingCommune(null);
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Effacer le point de rencontre"
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                    </Pressable>
+                  ) : null}
+                </View>
+                {detectedMeetingCommune ? (
+                  <Text style={searchStyles.locationDetectedText}>
+                    Commune détectée : {detectedMeetingCommune}
+                  </Text>
+                ) : null}
+                {showMeetingList ? (
+                  <View style={searchStyles.dropdownList}>
+                    <ScrollView
+                      style={styles.suggestionScroll}
+                      keyboardShouldPersistTaps="handled"
+                      nestedScrollEnabled
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {meetingDropdownOptions.map((option, index) => (
+                        <Pressable
+                          key={`${option}-${index}`}
+                          style={searchStyles.dropdownItem}
+                          onPress={handleDriverUseLocation}
+                        >
+                          <Text style={searchStyles.dropdownItemText}>
+                            {locationLoading ? 'Localisation…' : option}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
+              </View>
+              <View style={[searchStyles.dropdownWrapper, searchStyles.dropdownWrapperBottom]}>
+                <Text style={searchStyles.dropdownLabel}>DESTINATION</Text>
+                <View style={[searchStyles.inputWrapper, searchStyles.toInput]}>
+                  <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
+                  <View style={searchStyles.dropdownValueWithClear}>
+                    <Pressable
+                      style={searchStyles.dropdownTrigger}
+                      onPress={toggleDriverDestinationList}
+                      accessibilityRole="button"
+                      accessibilityLabel="Choisir une destination"
+                    >
+                      <Text
+                        style={[
+                          searchStyles.dropdownText,
+                          !destinationHasValue && searchStyles.dropdownTextPlaceholder,
+                        ]}
+                      >
+                        {destinationLabelDriver}
+                      </Text>
+                    </Pressable>
+                    {destinationHasValue ? (
+                      <Pressable
+                        style={searchStyles.clearButton}
+                        onPress={() => {
+                          setDestination('');
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Effacer la destination"
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
+                {showDestinationList ? (
+                  <View style={searchStyles.dropdownList}>
+                    {CAMPUS_OPTIONS.map((option) => (
+                      <Pressable
+                        key={option}
+                        style={searchStyles.dropdownItem}
+                        onPress={() => selectDriverDestination(option)}
+                      >
+                        <Text style={searchStyles.dropdownItemText}>{option}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+              <View style={searchStyles.searchButtonWrapper}>
+                <GradientButton
+                  title="Continuer"
+                  onPress={handleContinue}
+                  variant="twilight"
+                  size="sm"
+                  fullWidth
+                  style={[searchStyles.fullSearchButton, searchStyles.driverCTA]}
+                  contentStyle={{ paddingVertical: Spacing.lg }}
+                  accessibilityRole="button"
+                  disabled={!canContinue}
                 />
               </View>
-              <Text style={styles.inputLabel}>Destination</Text>
-              <View style={styles.selector}>
-                <IconSymbol name="map.fill" size={18} color={Colors.gray500} />
-                <TextInput
-                  value={destination}
-                  onChangeText={setDestination}
-                  placeholder="Sélectionnez une destination"
-                  placeholderTextColor={Colors.gray400}
-                  style={[styles.selectorText, !destination && styles.selectorPlaceholder]}
-                />
-                <IconSymbol name="chevron.down" size={18} color={Colors.gray400} />
-              </View>
-              <Pressable
-                style={[styles.primaryButton, driverStyles.publishButton]}
-                onPress={() => {}}
-                accessibilityRole="button"
-              >
-                <IconSymbol name="magnifyingglass" size={18} color={Colors.white} />
-                <Text style={styles.primaryButtonText}>Publier</Text>
-              </Pressable>
             </View>
           </View>
         </ScrollView>
@@ -901,7 +1098,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: Colors.accentSoft,
+    backgroundColor: Colors.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Spacing.sm,
@@ -943,128 +1140,8 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     ...Shadows.card,
   },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: Colors.gray600,
-    textTransform: 'uppercase',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  input: {
-    flex: 1,
-    color: Colors.ink,
-    fontSize: 15,
-  },
-  inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7F2',
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md,
-    height: 56,
-    gap: Spacing.sm,
-  },
-  inputWrapperSoft: {
-    backgroundColor: '#F9F9FF',
-    borderColor: '#E5E7F2',
-  },
-  swapButton: {
-    width: 48,
-    height: 56,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: '#E5E7F2',
-    backgroundColor: '#F9F9FF',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-    paddingVertical: Spacing.xs,
-  },
-  suggestionList: {
-    marginTop: Spacing.xs,
-    borderRadius: Radius.lg,
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    overflow: 'hidden',
-  },
   suggestionScroll: {
     maxHeight: 280,
-  },
-  dropdownContainer: {
-    position: 'relative',
-  },
-  suggestionItem: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-  },
-  suggestionText: {
-    color: Colors.ink,
-    fontWeight: '600',
-  },
-  selector: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7F2',
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md,
-    height: 56,
-    gap: Spacing.sm,
-    backgroundColor: '#F9F9FF',
-  },
-  selectorText: {
-    flex: 1,
-    color: Colors.ink,
-    fontSize: 15,
-  },
-  selectorPlaceholder: {
-    color: Colors.gray400,
-  },
-  dropdownListInline: {
-    marginTop: Spacing.xs,
-    borderRadius: Radius.lg,
-    backgroundColor: '#FFFFFF',
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-  },
-  dropdownItemInline: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-  },
-  dropdownItemInlineText: {
-    color: Colors.ink,
-  },
-  dropdownItemInlineActive: {
-    backgroundColor: Colors.primaryLight,
-  },
-  dropdownItemInlineTextActive: {
-    color: Colors.primaryDark,
-    fontWeight: '700',
-  },
-  primaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    backgroundColor: Colors.primary,
-    borderRadius: Radius.pill,
-    paddingVertical: Spacing.md,
-    justifyContent: 'center',
-    marginTop: Spacing.md,
-  },
-  primaryButtonText: {
-    color: Colors.white,
-    fontWeight: '700',
   },
   recommendedList: {
     paddingVertical: Spacing.sm,
@@ -1380,6 +1457,114 @@ const styles = StyleSheet.create({
   },
 });
 
+const searchStyles = StyleSheet.create({
+  dropdownWrapper: {
+    position: 'relative',
+    gap: Spacing.xs,
+  },
+  dropdownWrapperTop: {
+    zIndex: 140,
+  },
+  dropdownWrapperBottom: {
+    zIndex: 120,
+  },
+  dropdownLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.gray600,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E7F2',
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    height: 52,
+    gap: Spacing.sm,
+    backgroundColor: '#F9F9FF',
+  },
+  toInput: {
+    alignItems: 'center',
+    position: 'relative',
+  },
+  dropdownValueWithClear: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  dropdownTrigger: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.sm,
+  },
+  dropdownText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.ink,
+  },
+  dropdownTextPlaceholder: {
+    color: Colors.gray400,
+  },
+  dropdownTextInput: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: Spacing.sm,
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.ink,
+  },
+  clearButton: {
+    marginLeft: Spacing.sm,
+    padding: Spacing.xs,
+    borderRadius: 999,
+  },
+  locationDetectedText: {
+    marginTop: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    fontSize: 12,
+    color: Colors.gray600,
+    fontWeight: '500',
+  },
+  dropdownList: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    marginTop: Spacing.xs,
+    paddingVertical: Spacing.xs,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    zIndex: 1000,
+    elevation: 20,
+  },
+  dropdownItem: {
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  dropdownItemText: {
+    fontWeight: '600',
+    color: Colors.ink,
+  },
+  searchButtonWrapper: {
+    marginTop: Spacing.md,
+  },
+  fullSearchButton: {
+    position: 'relative',
+  },
+  driverCTA: {
+    borderRadius: Radius.xl,
+    height: 58,
+  },
+});
+
 
 const driverStyles = StyleSheet.create({
   screen: {
@@ -1429,9 +1614,8 @@ const driverStyles = StyleSheet.create({
   },
   quickAction: {},
   quickIcon: {
-    backgroundColor: 'transparent',
-    borderWidth: 1.5,
-    borderColor: Colors.accent,
+    backgroundColor: Colors.accentSoft,
+    borderWidth: 0,
   },
   publishCard: {
     marginTop: Spacing.md,
@@ -1892,29 +2076,5 @@ const driverStyles = StyleSheet.create({
   addRideText: {
     color: '#FFFFFF',
     fontWeight: '700',
-  },
-  dropdownListHome: {
-    position: 'absolute',
-    top: '100%',
-    left: 0,
-    right: 0,
-    backgroundColor: '#FFFFFF',
-    borderRadius: Radius.lg,
-    marginTop: Spacing.xs,
-    paddingVertical: Spacing.xs,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    zIndex: 100,
-    elevation: 10,
-  },
-  dropdownItemHome: {
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-  },
-  dropdownItemHomeText: {
-    color: Colors.ink,
-    fontWeight: '600',
   },
 });

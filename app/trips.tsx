@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Image, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 
 import { AppBackground } from '@/components/ui/app-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -13,6 +13,7 @@ const C = Colors;
 
 export default function TripsScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ initialTab?: 'upcoming' | 'history' }>();
   const session = useAuthSession();
   const [rides, setRides] = useState<Ride[]>(() => getRides());
   const [activeTab, setActiveTab] = useState<'upcoming' | 'history'>('upcoming');
@@ -21,6 +22,11 @@ export default function TripsScreen() {
     const unsubscribe = subscribeRides(setRides);
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    if (!params.initialTab) return;
+    setActiveTab(params.initialTab === 'history' ? 'history' : 'upcoming');
+  }, [params.initialTab]);
 
   const myTrips = useMemo(() => {
     if (!session.email) return [];
