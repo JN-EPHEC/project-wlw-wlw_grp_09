@@ -33,6 +33,11 @@ service cloud.firestore {
       allow read, update, delete: if isDocumentOwner(resource.data.email);
     }
 
+    match /businessQuotes/{quoteId} {
+      allow create: if isSignedIn();
+      allow read, update, delete: if request.auth.token.admin == true;
+    }
+
     match /trajets/{userId} {
       allow read, write: if isSignedIn() && request.auth.uid == userId;
     }

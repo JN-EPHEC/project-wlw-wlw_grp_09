@@ -3,6 +3,7 @@ import {
   User,
   UserCredential,
   createUserWithEmailAndPassword,
+  deleteUser,
   onAuthStateChanged,
   reauthenticateWithCredential,
   signInWithEmailAndPassword,
@@ -20,6 +21,7 @@ import {
   updatePassengerProfile,
   updateUserRoles,
 } from '@/src/firestoreUsers';
+import { deleteAccountData } from './account';
 import { isStrongPassword, isStudentEmail, sanitizeEmail, sanitizeName } from '../validators';
 import {
   initDriverSecurity,
@@ -27,6 +29,8 @@ import {
   updateDriverLicense as seedDriverLicense,
   updateVehicleInfo as seedVehicleInfo,
 } from './security';
+
+export type RoleMode = 'driver' | 'passenger';
 
 export type AuthSession = {
   email: string | null;
@@ -38,6 +42,7 @@ export type AuthSession = {
   avatarUrl: string | null;
   isDriver: boolean;
   isPassenger: boolean;
+  roleMode: RoleMode;
 };
 
 export type AuthSnapshot = AuthSession;
@@ -72,9 +77,73 @@ type VerificationState = {
   verified: boolean;
 };
 
-const listeners = new Set<Listener>();
-let currentSession: AuthSession = createEmptySession();
-const verificationCache = new Map<string, VerificationState>();
+const ROLE_MODE_STORAGE_KEY = 'campusride:role-mode';
+let persistedRoleMode: RoleMode | null = null;
+
+const getPersistedRoleMode = (): RoleMode => {
+  if (persistedRoleMode) {
+    return persistedRoleMode;
+  }
+  persistedRoleMode = 'passenger';
+  return persistedRoleMode;
+};
+
+type AsyncStorageModule = typeof import('@react-native-async-storage/async-storage')['default'];
+let asyncStoragePromise: Promise<AsyncStorageModule | null> | null = null;
+
+const isRoleMode = (value: string | null): value is RoleMode =>
+  value === 'driver' || value === 'passenger';
+
+const acquireAsyncStorage = async () => {
+  if (asyncStoragePromise) {
+    return asyncStoragePromise;
+  }
+  asyncStoragePromise = import('@react-native-async-storage/async-storage')
+    .then((module) => module.default)
+    .catch(() => null);
+  return asyncStoragePromise;
+};
+
+const readPersistedRoleMode = async (): Promise<RoleMode | null> => {
+  if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+    const stored = window.localStorage.getItem(ROLE_MODE_STORAGE_KEY);
+    if (isRoleMode(stored)) {
+      return stored;
+    }
+  }
+  const AsyncStorage = await acquireAsyncStorage();
+  if (!AsyncStorage) {
+    return null;
+  }
+  try {
+    const stored = await AsyncStorage.getItem(ROLE_MODE_STORAGE_KEY);
+    if (isRoleMode(stored)) {
+      return stored;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+};
+
+const writePersistedRoleMode = async (mode: RoleMode) => {
+  if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+    try {
+      window.localStorage.setItem(ROLE_MODE_STORAGE_KEY, mode);
+    } catch {
+      // ignore failures
+    }
+  }
+  const AsyncStorage = await acquireAsyncStorage();
+  if (!AsyncStorage) {
+    return;
+  }
+  try {
+    await AsyncStorage.setItem(ROLE_MODE_STORAGE_KEY, mode);
+  } catch {
+    // ignore failures
+  }
+};
 
 const createEmptyState = (): VerificationState => ({ code: null, expiresAt: null, verified: false });
 
@@ -89,10 +158,15 @@ function createEmptySession(): AuthSession {
     avatarUrl: null,
     isDriver: false,
     isPassenger: false,
+    roleMode: getPersistedRoleMode(),
   };
 }
 
 const cloneSession = (session: AuthSession): AuthSession => ({ ...session });
+
+const listeners = new Set<Listener>();
+const verificationCache = new Map<string, VerificationState>();
+let currentSession: AuthSession = createEmptySession();
 
 const authError = (code: string, message: string) => {
   const error = new Error(message) as Error & { code: string };
@@ -168,6 +242,17 @@ const setCurrentSession = (session: AuthSession) => {
   currentSession = session;
   notify();
 };
+
+const hydratePersistedRoleMode = async () => {
+  const stored = await readPersistedRoleMode();
+  if (!stored) {
+    return;
+  }
+  persistedRoleMode = stored;
+  setCurrentSession({ ...currentSession, roleMode: stored });
+};
+
+void hydratePersistedRoleMode();
 
 const ensureVerificationEntry = (email: string) => {
   const key = normalizeEmail(email);
@@ -255,6 +340,7 @@ const buildSessionFromUser = async (user: User | null): Promise<AuthSession> => 
       avatarUrl: user.photoURL,
       isDriver: false,
       isPassenger: true,
+      roleMode: getPersistedRoleMode(),
     };
   }
 
@@ -279,6 +365,7 @@ const buildSessionFromUser = async (user: User | null): Promise<AuthSession> => 
     avatarUrl: profile.selfieUrl ?? user.photoURL ?? null,
     isDriver: hasDriverFlag ? !!profile.isDriver : isDriverFromRole,
     isPassenger: hasPassengerFlag ? !!profile.isPassenger : !isDriverFromRole,
+    roleMode: getPersistedRoleMode(),
   };
 };
 
@@ -297,6 +384,30 @@ export const subscribe = (listener: Listener) => {
   return () => {
     listeners.delete(listener);
   };
+};
+
+export const applySessionRoleChanges = (changes: {
+  driver?: boolean;
+  passenger?: boolean;
+}) => {
+  const next = cloneSession(currentSession);
+  if (typeof changes.driver === 'boolean') {
+    next.isDriver = changes.driver;
+  }
+  if (typeof changes.passenger === 'boolean') {
+    next.isPassenger = changes.passenger;
+  }
+  setCurrentSession(next);
+};
+
+export const setRoleMode = (mode: RoleMode) => {
+  const currentMode = getPersistedRoleMode();
+  if (currentMode === mode && currentSession.roleMode === mode) {
+    return;
+  }
+  persistedRoleMode = mode;
+  setCurrentSession({ ...currentSession, roleMode: mode });
+  void writePersistedRoleMode(mode);
 };
 
 export const createUser = async (payload: CreateUserPayload): Promise<AuthSnapshot> => {
@@ -355,6 +466,32 @@ export const authenticate = async (email: string, password: string): Promise<Aut
 
 export const signOut = async () => {
   await firebaseSignOut(auth);
+  setCurrentSession(createEmptySession());
+};
+
+export const deleteCurrentAccount = async () => {
+  const user = auth.currentUser;
+  if (!user || !user.email) {
+    throw authError('USER_NOT_FOUND', 'Aucun compte connecté pour la suppression.');
+  }
+  try {
+    await deleteUser(user);
+  } catch (error) {
+    const authErr = error as FirebaseAuthError;
+    if (authErr.code === 'auth/requires-recent-login') {
+      throw authError(
+        'REAUTH_REQUIRED',
+        'Reconnecte-toi pour supprimer ton compte (vérification récente requise).'
+      );
+    }
+    throw error;
+  }
+  deleteAccountData(user.email);
+  try {
+    await firebaseSignOut(auth);
+  } catch {
+    // ignore sign-out errors
+  }
   setCurrentSession(createEmptySession());
 };
 
