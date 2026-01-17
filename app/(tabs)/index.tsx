@@ -41,6 +41,7 @@ const CAMPUS_OPTIONS = [
   'EPHEC Louvain-la-Neuve',
   'EPHEC Schaerbeek',
   'EPHEC Woluwe',
+  'EPHEC Schuman',
 ];
 
 const sponsorOffer = {
@@ -321,8 +322,8 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
   const handleUseLocation = useCallback(async () => {
     try {
       setLocationLoading(true);
-      const { commune } = await getCurrentCommune();
-      setDepartureInput(commune);
+      const { commune, address } = await getCurrentCommune();
+      setDepartureInput(address);
       setDetectedCommune(commune);
       setDepartureFocused(false);
     } catch (error) {
@@ -768,8 +769,8 @@ function DriverDashboard({ session }: DriverDashboardProps) {
   const handleDriverUseLocation = useCallback(async () => {
     try {
       setLocationLoading(true);
-      const { commune } = await getCurrentCommune();
-      setMeetingPoint(commune);
+      const { commune, address } = await getCurrentCommune();
+      setMeetingPoint(address);
       setDetectedMeetingCommune(commune);
       closeDriverDropdowns();
     } catch (error) {
