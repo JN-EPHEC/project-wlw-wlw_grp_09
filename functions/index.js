@@ -184,3 +184,312 @@ exports.driverDocuments = functions.https.onRequest(async (req, res) => {
 
   return res.status(405).json({ error: 'METHOD_NOT_ALLOWED' });
 });
+
+const BATCH_DELETE_LIMIT = 400;
+
+const annotateStep = (error, step, collection = null) => {
+  const err = error instanceof Error ? error : new Error(String(error));
+  err.step = step;
+  if (collection) {
+    err.collection = collection;
+  }
+  return err;
+};
+
+async function deleteDocAndSubcollections(docRef) {
+  const subcollections = await docRef.listCollections();
+  for (const collectionRef of subcollections) {
+    await deleteCollectionRecursively(collectionRef);
+  }
+  await docRef.delete();
+}
+
+async function deleteCollectionRecursively(collectionRef) {
+  const documentRefs = await collectionRef.listDocuments();
+  for (const docRef of documentRefs) {
+    await deleteDocAndSubcollections(docRef);
+  }
+}
+
+const ensureDeletedCountEntry = (deletedCounts, label) => {
+  if (deletedCounts[label] === undefined) {
+    deletedCounts[label] = 0;
+  }
+};
+
+const deleteDocIfExists = async (docRef, label, deletedCounts, options = {}) => {
+  ensureDeletedCountEntry(deletedCounts, label);
+  try {
+    const snapshot = await docRef.get();
+    if (!snapshot.exists) {
+      return false;
+    }
+    if (options.deleteSubcollections) {
+      await deleteDocAndSubcollections(docRef);
+    } else {
+      await docRef.delete();
+    }
+    deletedCounts[label] += 1;
+    return true;
+  } catch (error) {
+    throw annotateStep(error, `firestore:${label}`, label);
+  }
+};
+
+const deleteQueryBatch = async (label, queryFactory, deletedCounts) => {
+  ensureDeletedCountEntry(deletedCounts, label);
+  try {
+    let deleted = 0;
+    while (true) {
+      const snapshot = await queryFactory().limit(BATCH_DELETE_LIMIT).get();
+      if (snapshot.empty) {
+        break;
+      }
+      const batch = db.batch();
+      snapshot.forEach((doc) => batch.delete(doc.ref));
+      await batch.commit();
+      deleted += snapshot.size;
+    }
+    deletedCounts[label] += deleted;
+    return deleted;
+  } catch (error) {
+    throw annotateStep(error, `firestore:${label}`, label);
+  }
+};
+
+const deleteStorageForUser = async (bucket, uid) => {
+  try {
+    const [files] = await bucket.getFiles({ prefix: `users/${uid}/`, autoPaginate: true });
+    if (!files.length) {
+      return 0;
+    }
+    await bucket.deleteFiles({ prefix: `users/${uid}/`, autoPaginate: true });
+    return files.length;
+  } catch (error) {
+    throw annotateStep(error, 'storage:delete', 'storage');
+  }
+};
+
+const logAuditRecord = async (uid, email, deletedCounts, status, metadata = {}) => {
+  try {
+    await db.collection('auditLogs').add({
+      uid,
+      email,
+      action: 'delete-account',
+      deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+      deletedCounts,
+      status,
+      ...metadata,
+    });
+  } catch (logError) {
+    functions.logger.error('Failed to write account deletion audit log', {
+      uid,
+      error: logError,
+    });
+  }
+};
+
+const normalizeEmail = (value) => {
+  if (!value) {
+    return null;
+  }
+  return value.trim().toLowerCase();
+};
+
+const isUniversityEmail = (value) => {
+  if (!value || typeof value !== 'string') {
+    return false;
+  }
+  return value.toLowerCase().endsWith('@students.ephec.be');
+};
+
+exports.deleteAccountAndData = functions.https.onCall(async (_, context) => {
+  const deletedCounts = {};
+  let uid = null;
+  let email = null;
+  let step = 'auth-check';
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('[backend] 🟢 deleteAccountAndData called');
+  console.log('[backend] UID:', context.auth?.uid ?? '(missing)');
+  console.log('[backend] Time:', new Date().toISOString());
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+  const logStep = (nextStep, meta = {}) => {
+    step = nextStep;
+    console.log(`[deleteAccountAndData] step=${nextStep}`, { uid, email, ...meta });
+  };
+
+  try {
+    logStep('auth-check');
+    if (!context.auth?.uid) {
+      console.error('[backend] 🔴 ERROR: Not authenticated');
+      throw new functions.https.HttpsError('unauthenticated', 'Connexion requise.', { step });
+    }
+    uid = context.auth.uid;
+
+    logStep('load-user');
+    const userRecord = await admin.auth().getUser(uid);
+    console.log('[backend] 🟢 Firestore user loaded for deletion', { uid, email });
+    email = normalizeEmail(userRecord.email);
+    if (email && !isUniversityEmail(email)) {
+      throw new functions.https.HttpsError('permission-denied', 'Ton adresse e-mail n’est pas autorisée à supprimer ce compte.', {
+        step,
+      });
+    }
+    functions.logger.info('deleteAccountAndData', { uid, email, step: 'start' });
+
+    logStep('firestore-delete-users-doc');
+    const userRef = db.collection('users').doc(uid);
+    const userSnap = await userRef.get();
+    if (userSnap.exists) {
+      await userRef.delete();
+      deletedCounts.usersDoc = 1;
+    } else {
+      deletedCounts.usersDoc = 0;
+    }
+
+    logStep('firestore-delete-related');
+    console.log('[backend] 1️⃣ Deleting Firestore related data');
+    await deleteQueryBatch(
+      'usersAuthUidDocs',
+      () => db.collection('users').where('authUid', '==', uid),
+      deletedCounts
+    );
+    await deleteDocIfExists(db.collection('wallets').doc(uid), 'walletsDoc', deletedCounts);
+    await deleteQueryBatch(
+      'walletsByOwnerUid',
+      () => db.collection('wallets').where('ownerUid', '==', uid),
+      deletedCounts
+    );
+    await deleteQueryBatch(
+      'trajetsByOwnerUid',
+      () => db.collection('trajets').where('ownerUid', '==', uid),
+      deletedCounts
+    );
+    await deleteQueryBatch(
+      'trajetsByDriverUid',
+      () => db.collection('trajets').where('driverUid', '==', uid),
+      deletedCounts
+    );
+    await deleteQueryBatch(
+      'ridesByOwnerUid',
+      () => db.collection('rides').where('ownerUid', '==', uid),
+      deletedCounts
+    );
+    await deleteQueryBatch(
+      'ridesByPassengerUid',
+      () => db.collection('rides').where('passengerUid', '==', uid),
+      deletedCounts
+    );
+    await deleteQueryBatch(
+      'notificationsByUserId',
+      () => db.collection('notifications').where('userId', '==', uid),
+      deletedCounts
+    );
+    await deleteQueryBatch(
+      'notificationsByOwnerUid',
+      () => db.collection('notifications').where('ownerUid', '==', uid),
+      deletedCounts
+    );
+    await deleteDocIfExists(
+      db.collection('notificationPreferences').doc(uid),
+      'notificationPreferencesDoc',
+      deletedCounts
+    );
+    await deleteDocIfExists(
+      db.collection('notificationTokens').doc(uid),
+      'notificationTokensDoc',
+      deletedCounts
+    );
+    await deleteQueryBatch(
+      'notificationTokensByOwnerUid',
+      () => db.collection('notificationTokens').where('ownerUid', '==', uid),
+      deletedCounts
+    );
+    await deleteQueryBatch(
+      'notificationTokensByAuthUid',
+      () => db.collection('notificationTokens').where('authUid', '==', uid),
+      deletedCounts
+    );
+    await deleteQueryBatch(
+      'businessQuotesByUid',
+      () => db.collection('businessQuotes').where('createdByUid', '==', uid),
+      deletedCounts
+    );
+    await deleteDocIfExists(
+      db.collection('driverVerifications').doc(uid),
+      'driverVerificationsDoc',
+      deletedCounts
+    );
+
+    logStep('storage-delete');
+    console.log('[backend] 3️⃣ Cleaning up storage');
+    let storageCount = 0;
+    try {
+      const storageBucket = admin.storage().bucket();
+      storageCount = await deleteStorageForUser(storageBucket, uid);
+      console.log('[backend] 3️⃣ ✅ Storage cleaned', { storageCount });
+    } catch (storageError) {
+      console.warn('[backend] 3️⃣ ⚠️ Storage cleanup failed (non-fatal)', storageError);
+    }
+    deletedCounts.storageObjects = storageCount;
+    deletedCounts.storageDeleted = storageCount > 0;
+
+    logStep('auth-delete');
+    console.log('[backend] 2️⃣ Deleting auth account');
+    await admin.auth().deleteUser(uid);
+    console.log('[backend] 2️⃣ ✅ Auth account deleted');
+    deletedCounts.authDeleted = true;
+    deletedCounts.auth = 1;
+
+    logStep('post-delete-check');
+    const postCheck = await userRef.get();
+    console.log(`[deleteAccountAndData] postDelete usersDoc exists? ${postCheck.exists}`);
+    if (postCheck.exists) {
+      throw new functions.https.HttpsError(
+        'internal',
+        'users/{uid} still exists after delete.',
+        { step, uid }
+      );
+    }
+
+    logStep('audit-log');
+    await logAuditRecord(uid, email, deletedCounts, 'success', { step });
+    functions.logger.info('deleteAccountAndData', { uid, email, step: 'complete', deletedCounts });
+    const result = { success: true, deletedCounts };
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('[backend] 🎉 SUCCESS - Returning:', JSON.stringify(result));
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    return result;
+  } catch (error) {
+    const failingStep = step ?? error?.step ?? 'auth-check';
+    logStep('audit-log');
+    const errorCode = error instanceof functions.https.HttpsError ? error.code : error?.code ?? 'internal';
+    const errorMessage =
+      error instanceof functions.https.HttpsError
+        ? error.message
+        : error?.message || 'Impossible de supprimer ton compte pour le moment.';
+
+    await logAuditRecord(uid, email, deletedCounts, 'error', {
+      step: failingStep,
+      error: { code: errorCode, message: errorMessage },
+    });
+
+    functions.logger.error('deleteAccountAndData failed', {
+      uid,
+      email,
+      step: failingStep,
+      error,
+    });
+
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+
+    throw new functions.https.HttpsError(
+      errorCode,
+      errorMessage,
+      { step: failingStep, code: errorCode, message: errorMessage, uid }
+    );
+  }
+});
