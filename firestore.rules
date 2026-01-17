@@ -33,13 +33,107 @@ service cloud.firestore {
       allow read, update, delete: if isDocumentOwner(resource.data.email);
     }
 
-    match /businessQuotes/{quoteId} {
-      allow create: if isSignedIn();
-      allow read, update, delete: if request.auth.token.admin == true;
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
     }
 
-    match /trajets/{userId} {
-      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    function isValidPlatform(value) {
+      return value == null || value in ['ios', 'android', 'web'];
+    }
+
+    function isBusinessQuoteKeyset() {
+      return request.resource.data.keys().hasOnly([
+        'quoteId',
+        'createdAt',
+        'updatedAt',
+        'status',
+        'source',
+        'appVersion',
+        'platform',
+        'createdByUid',
+        'createdByEmail',
+        'roleAtSubmit',
+        'companyName',
+        'contactName',
+        'email',
+        'phone',
+        'website',
+        'formatWanted',
+        'budgetMonthly',
+        'messageObjectives',
+        'originRoute',
+        'clientTimestamp',
+      ]);
+    }
+
+    function isValidRole(value) {
+      return value == null || value in ['passenger', 'driver'];
+    }
+
+    function isBusinessQuotePayload() {
+      return request.auth != null &&
+        request.auth.token.email != null &&
+        request.resource.data.companyName is string &&
+        request.resource.data.contactName is string &&
+        request.resource.data.email is string &&
+        request.resource.data.formatWanted is string &&
+        request.resource.data.budgetMonthly is string &&
+        request.resource.data.messageObjectives is string &&
+        request.resource.data.status == 'new' &&
+        request.resource.data.source == 'business-quote' &&
+        request.resource.data.originRoute == '/business-quote' &&
+        request.resource.data.clientTimestamp is number &&
+        request.resource.data.createdByUid == request.auth.uid &&
+        request.resource.data.createdByEmail == request.auth.token.email &&
+        (request.resource.data.phone == null || request.resource.data.phone is string) &&
+        (request.resource.data.website == null || request.resource.data.website is string) &&
+        (request.resource.data.appVersion == null || request.resource.data.appVersion is string) &&
+        isValidPlatform(request.resource.data.platform) &&
+        isValidRole(request.resource.data.roleAtSubmit) &&
+        isBusinessQuoteKeyset();
+    }
+
+    match /businessQuotes/{quoteId} {
+      allow create: if isBusinessQuotePayload();
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /trajets/{trajetId} {
+      function isTripOwner() {
+        return isSignedIn() && (
+          (resource != null && resource.data.ownerUid == request.auth.uid) ||
+          (request.resource != null && request.resource.data.ownerUid == request.auth.uid)
+        );
+      }
+
+      function canManageUserJournal() {
+        return isSignedIn() && request.auth.uid == trajetId;
+      }
+
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (canManageUserJournal() || isTripOwner());
+      allow update, delete: if isSignedIn() && (canManageUserJournal() || isTripOwner());
+
+      match /requests/{requestId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() &&
+          request.resource.data.passengerUid == request.auth.uid &&
+          request.resource.data.seatsRequested is number;
+        allow update: if isTripOwner();
+      }
+
+      match /reservations/{reservationId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() &&
+          (request.resource.data.passengerUid == request.auth.uid || isTripOwner());
+        allow update: if isTripOwner();
+      }
+
+      match /history/{eventId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() &&
+          (isTripOwner() || request.resource.data.actorUid == request.auth.uid);
+      }
     }
 
     match /{document=**} {

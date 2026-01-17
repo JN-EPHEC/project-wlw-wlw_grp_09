@@ -7,22 +7,22 @@ import {
 
 import { db } from "./firebase";
 
+export type BusinessQuoteRole = "passenger" | "driver";
+
 export type BusinessQuoteInput = {
   companyName: string;
   contactName: string;
-  contactEmail: string;
-  contactPhone: string | null;
-  website: string | null;
-  desiredFormat: string;
-  estimatedMonthlyBudget: string;
+  email: string;
+  phone?: string | null;
+  website?: string | null;
+  formatWanted: string;
+  budgetMonthly: string;
   messageObjectives: string;
   appVersion: string | null;
   platform: string | null;
-  userId: string | null;
-  userEmail: string | null;
-  role: string | null;
-  consent?: boolean;
-  note?: string | null;
+  createdByUid: string | null;
+  createdByEmail: string | null;
+  roleAtSubmit?: BusinessQuoteRole | null;
   originRoute: string;
   clientTimestamp: number;
 };
@@ -34,23 +34,22 @@ export const persistBusinessQuote = async (payload: BusinessQuoteInput) => {
   await setDoc(quoteRef, {
     quoteId: quoteRef.id,
     createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
     status: "new",
     source: "business-quote",
     appVersion: payload.appVersion ?? null,
     platform: payload.platform ?? null,
-    userId: payload.userId ?? null,
-    userEmail: payload.userEmail ?? null,
-    role: payload.role ?? null,
+    createdByUid: payload.createdByUid ?? null,
+    createdByEmail: payload.createdByEmail ?? null,
+    roleAtSubmit: payload.roleAtSubmit ?? null,
     companyName: payload.companyName,
     contactName: payload.contactName,
-    contactEmail: payload.contactEmail,
-    contactPhone: payload.contactPhone ?? null,
+    email: payload.email,
+    phone: payload.phone ?? null,
     website: payload.website ?? null,
-    desiredFormat: payload.desiredFormat,
-    estimatedMonthlyBudget: payload.estimatedMonthlyBudget,
+    formatWanted: payload.formatWanted,
+    budgetMonthly: payload.budgetMonthly,
     messageObjectives: payload.messageObjectives,
-    consent: payload.consent ?? true,
-    note: payload.note ?? null,
     originRoute: payload.originRoute,
     clientTimestamp: payload.clientTimestamp,
   });

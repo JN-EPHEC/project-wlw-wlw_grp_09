@@ -1,40 +1,33 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { Image, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
 import { Colors, Gradients, Radius, Spacing, Typography } from '@/app/ui/theme';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-
-const BACKGROUND_MODES: Record<'driver' | 'passenger', keyof typeof Gradients> = {
-  driver: 'driver',
-  passenger: 'twilight',
-};
 
 export default function AccountDeletedScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams();
-  const mode = params.mode === 'driver' ? 'driver' : 'passenger';
-  const backgroundColors = Gradients[BACKGROUND_MODES[mode]];
-
-  const goHome = () => {
-    router.replace('/welcome');
+  const carIllustration = require('@/assets/images/Bienvenue.png');
+  const handleReconnect = () => {
+    router.replace('/sign-in');
   };
 
   return (
-    <GradientBackground colors={backgroundColors} style={styles.background}>
+    <GradientBackground colors={Gradients.twilight} style={styles.background}>
       <SafeAreaView style={styles.safe}>
-        <View style={styles.content}>
-          <IconSymbol name="checkmark.seal.fill" size={72} color={Colors.white} />
+        <View style={styles.card}>
           <Text style={styles.title}>Compte supprimé</Text>
+          <Text style={styles.subtitle}>À bientôt.</Text>
+          <Image source={carIllustration} style={styles.image} resizeMode="contain" />
           <Text style={styles.description}>
-            Ton compte a bien été supprimé. Tu peux créer un nouveau compte ou te reconnecter.
+            Ton compte a bien été supprimé. Merci d’avoir utilisé CampusRide.
           </Text>
           <GradientButton
-            title="Retour à l’accueil"
-            onPress={goHome}
+            title="Me reconnecter"
+            onPress={handleReconnect}
             fullWidth
             variant="cta"
+            style={styles.button}
           />
         </View>
       </SafeAreaView>
@@ -51,24 +44,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.xl,
     justifyContent: 'center',
   },
-  content: {
-    flex: 1,
+  card: {
     borderRadius: Radius.xl,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
     padding: Spacing.xl,
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.md,
+    gap: Spacing.sm,
   },
   title: {
-    color: Colors.white,
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: Typography.heading.fontWeight,
+    color: Colors.ink,
+  },
+  subtitle: {
+    fontSize: 20,
+    fontWeight: Typography.heading.fontWeight,
+    color: Colors.secondary,
+    marginTop: Spacing.xs,
+  },
+  image: {
+    width: 220,
+    height: 220,
+    marginVertical: Spacing.md,
   },
   description: {
-    color: Colors.white,
     fontSize: 16,
+    color: Colors.gray600,
     textAlign: 'center',
     lineHeight: 22,
+  },
+  button: {
+    marginTop: Spacing.md,
   },
 });

@@ -34,6 +34,7 @@ import {
   type Message,
   type ThreadSnapshot,
 } from '@/app/services/messages';
+import { blockUser, unblockUser } from '@/app/services/blocked-users';
 import { createReport } from '@/app/services/reports';
 import { subscribeDriverReviews, type Review } from '@/app/services/reviews';
 
@@ -596,6 +597,24 @@ export default function MessagesScreen() {
               <Pressable style={styles.optionsItem} onPress={handleReportUser}>
                 <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
                   Signaler cet utilisateur
+                </Text>
+              </Pressable>
+              <Pressable
+                style={styles.optionsItem}
+                onPress={partnerBlocked ? handleUnblockUser : handleBlockUser}
+              >
+                <Text
+                  style={[
+                    styles.optionsItemText,
+                    partnerBlocked ? undefined : styles.optionsDestructive,
+                  ]}
+                >
+                  {partnerBlocked ? 'Débloquer l’utilisateur' : 'Bloquer l’utilisateur'}
+                </Text>
+              </Pressable>
+              <Pressable style={styles.optionsItem} onPress={handleDeleteConversation}>
+                <Text style={[styles.optionsItemText, styles.optionsDestructive]}>
+                  Supprimer la conversation
                 </Text>
               </Pressable>
             </View>
