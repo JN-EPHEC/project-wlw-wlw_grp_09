@@ -55,9 +55,9 @@ export default function PaymentConfirmationScreen() {
               <View style={styles.iconCircle}>
                 <IconSymbol name="checkmark.seal.fill" size={32} color={C.white} />
               </View>
-              <Text style={styles.title}>Paiement confirmé</Text>
+              <Text style={styles.title}>Vous avez payé</Text>
               <Text style={styles.subtitle}>
-                Ta réservation est confirmée. Merci d’avoir utilisé ton wallet.
+                Ton trajet est confirmé et apparaît automatiquement dans tes trajets à venir.
               </Text>
             </View>
 
@@ -79,8 +79,8 @@ export default function PaymentConfirmationScreen() {
             </View>
 
             <Text style={styles.infoCopy}>
-              Ton trajet est ajouté automatiquement à « Mes trajets → À venir ». Tu peux
-              y accéder à tout moment pour suivre ou modifier la réservation.
+              Tu peux retrouver cette réservation dans « Mes trajets → À venir » pour suivre ou
+              modifier ton trajet.
             </Text>
           </View>
 

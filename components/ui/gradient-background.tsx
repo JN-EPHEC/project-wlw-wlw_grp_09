@@ -15,11 +15,18 @@ const ensurePalette = (colors?: readonly [string, string?, string?]) => {
   return [a, b ?? a, c ?? b ?? a] as const;
 };
 
-export function GradientBackground({ colors, style, children, blur = 0.55, ...rest }: GradientProps) {
+export function GradientBackground({
+  colors,
+  style,
+  children,
+  blur = 0.55,
+  pointerEvents = 'box-none',
+  ...rest
+}: GradientProps) {
   const [base, mid, highlight] = ensurePalette(colors);
 
   return (
-    <View {...rest} style={[styles.container, style]} pointerEvents="box-none">
+    <View {...rest} style={[styles.container, style]} pointerEvents={pointerEvents}>
       <LinearGradient
         colors={[base, mid, highlight]}
         locations={[0, 0.5, 1]}

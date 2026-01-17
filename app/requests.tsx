@@ -7,8 +7,13 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
 import { getAvatarUrl } from '@/app/ui/avatar';
 import { useAuthSession } from '@/hooks/use-auth-session';
+import { useDriverRequests } from '@/hooks/use-driver-requests';
 import { usePassengerRequests } from '@/hooks/use-passenger-requests';
-import { type ReservationRequestEntry } from '@/app/services/reservation-requests';
+import {
+  acceptDriverReservationRequest,
+  rejectDriverReservationRequest,
+  type ReservationRequestEntry,
+} from '@/app/services/reservation-requests';
 
 const C = Colors;
 
@@ -16,22 +21,56 @@ export default function RequestsScreen() {
   const router = useRouter();
   const session = useAuthSession();
   const isDriver = session.isDriver;
-  const { pending, accepted } = usePassengerRequests(session.email);
+  const passengerRequests = usePassengerRequests(session.email);
+  const driverRequests = useDriverRequests(session.email);
   const [activeTab, setActiveTab] = useState<'pending' | 'accepted'>('pending');
 
   const sections = useMemo(
     () => [
-      { key: 'pending', label: 'Demandes en cours', count: pending.length },
-      { key: 'accepted', label: 'Demandes acceptées', count: accepted.length },
+      {
+        key: 'pending',
+        label: isDriver ? 'Demandes en attente' : 'Demandes en cours',
+        count: isDriver ? driverRequests.pending.length : passengerRequests.pending.length,
+      },
+      {
+        key: 'accepted',
+        label: 'Demandes acceptées',
+        count: isDriver ? driverRequests.accepted.length : passengerRequests.accepted.length,
+      },
     ],
-    [pending.length, accepted.length]
+    [
+      driverRequests.pending.length,
+      driverRequests.accepted.length,
+      passengerRequests.pending.length,
+      passengerRequests.accepted.length,
+      isDriver,
+    ]
   );
 
-  const currentList = activeTab === 'pending' ? pending : accepted;
-  const emptyCopy =
-    activeTab === 'pending'
+  const currentList = useMemo(() => {
+    if (isDriver) {
+      return activeTab === 'pending' ? driverRequests.pending : driverRequests.accepted;
+    }
+    return activeTab === 'pending' ? passengerRequests.pending : passengerRequests.accepted;
+  }, [
+    activeTab,
+    driverRequests.accepted,
+    driverRequests.pending,
+    isDriver,
+    passengerRequests.accepted,
+    passengerRequests.pending,
+  ]);
+
+  const emptyCopy = useMemo(() => {
+    if (isDriver) {
+      return activeTab === 'pending'
+        ? 'Tu n’as aucune demande en attente pour le moment.'
+        : 'Prends une décision pour afficher les demandes acceptées.';
+    }
+    return activeTab === 'pending'
       ? 'Tu n’as envoyé aucune demande pour l’instant.'
       : 'Pas encore de demande acceptée. Réserve un trajet pour commencer.';
+  }, [activeTab, isDriver]);
 
   const activeTabBackgroundColor = isDriver ? Colors.accentSoft : Colors.primaryLight;
   const activeTabTextColor = isDriver ? Colors.accent : Colors.primaryDark;
@@ -43,50 +82,111 @@ export default function RequestsScreen() {
   );
 
   const renderCard = useCallback(
-    (request: ReservationRequestEntry) => (
-      <Pressable
-        key={request.id}
-        style={styles.card}
-        onPress={() => openRideDetails(request.rideId)}
-        accessibilityRole="button"
-      >
-        <View style={styles.cardHeader}>
-          <Image source={{ uri: getAvatarUrl(request.driverEmail, 96) }} style={styles.cardAvatar} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.cardDriver}>{request.driver}</Text>
-            <Text style={styles.cardMeta}>
-              {request.depart} → {request.destination}
-            </Text>
-          </View>
-          <View style={[styles.badge, request.status === 'pending' ? styles.badgePending : styles.badgeAccepted]}>
-            <Text style={styles.badgeText}>{request.status === 'pending' ? 'En attente' : 'Acceptée'}</Text>
-          </View>
-        </View>
-        <View style={styles.cardFooter}>
-          <View style={styles.cardFooterRow}>
-            <IconSymbol name="clock" size={16} color={C.gray500} />
-            <Text style={styles.cardFooterText}>{request.timeLabel}</Text>
-          </View>
-          <View style={styles.cardFooterRow}>
-            <IconSymbol name="creditcard.fill" size={16} color={C.gray500} />
-            <Text style={styles.cardFooterText}>{request.price.toFixed(2)} €</Text>
-          </View>
-        </View>
-        {request.status === 'accepted' ? (
+    (request: ReservationRequestEntry) => {
+      const isDriverCard = isDriver;
+      if (isDriverCard) {
+        return (
           <Pressable
-            style={styles.payButton}
-            onPress={(event) => {
-              event.stopPropagation();
-              openRideDetails(request.rideId);
-            }}
+            key={request.id}
+            style={styles.card}
+            onPress={() => openRideDetails(request.rideId)}
+            accessibilityRole="button"
           >
-            <IconSymbol name="creditcard" size={16} color={C.white} />
-            <Text style={styles.payButtonText}>Procéder au paiement</Text>
+            <View style={styles.cardHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardDriver}>{request.passenger}</Text>
+                <Text style={styles.cardMeta}>
+                  {request.depart} → {request.destination}
+                </Text>
+              </View>
+              <View style={[styles.badge, request.status === 'pending' ? styles.badgePending : styles.badgeAccepted]}>
+                <Text style={styles.badgeText}>{request.status === 'pending' ? 'En attente' : 'Acceptée'}</Text>
+              </View>
+            </View>
+            <View style={styles.cardFooter}>
+              <View style={styles.cardFooterRow}>
+                <IconSymbol name="clock" size={16} color={C.gray500} />
+                <Text style={styles.cardFooterText}>{request.timeLabel}</Text>
+              </View>
+              <View style={styles.cardFooterRow}>
+                <IconSymbol name="creditcard.fill" size={16} color={C.gray500} />
+                <Text style={styles.cardFooterText}>{request.price.toFixed(2)} €</Text>
+              </View>
+            </View>
+            {request.status === 'pending' ? (
+              <View style={styles.requestActions}>
+                <Pressable
+                  style={[styles.requestActionButton, styles.requestActionButtonSecondary]}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    rejectDriverReservationRequest(session.email, request.id);
+                  }}
+                >
+                  <Text style={[styles.requestActionText, styles.requestActionTextSecondary]}>Refuser</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.requestActionButton, styles.requestActionButtonPrimary]}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    acceptDriverReservationRequest(session.email, request.id);
+                  }}
+                >
+                  <Text style={[styles.requestActionText, styles.requestActionTextPrimary]}>Accepter</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </Pressable>
-        ) : null}
-      </Pressable>
-    ),
-    [openRideDetails]
+        );
+      }
+      return (
+        <Pressable
+          key={request.id}
+          style={styles.card}
+          onPress={() => openRideDetails(request.rideId)}
+          accessibilityRole="button"
+        >
+          <View style={styles.cardHeader}>
+            <Image source={{ uri: getAvatarUrl(request.driverEmail, 96) }} style={styles.cardAvatar} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardDriver}>{request.driver}</Text>
+              <Text style={styles.cardMeta}>
+                {request.depart} → {request.destination}
+              </Text>
+            </View>
+            <View style={[styles.badge, request.status === 'pending' ? styles.badgePending : styles.badgeAccepted]}>
+              <Text style={styles.badgeText}>{request.status === 'pending' ? 'En attente' : 'Acceptée'}</Text>
+            </View>
+          </View>
+          <View style={styles.cardFooter}>
+            <View style={styles.cardFooterRow}>
+              <IconSymbol name="clock" size={16} color={C.gray500} />
+              <Text style={styles.cardFooterText}>{request.timeLabel}</Text>
+            </View>
+            <View style={styles.cardFooterRow}>
+              <IconSymbol name="creditcard.fill" size={16} color={C.gray500} />
+              <Text style={styles.cardFooterText}>{request.price.toFixed(2)} €</Text>
+            </View>
+          </View>
+          {request.status === 'accepted' ? (
+            <Pressable
+              style={styles.payButton}
+              onPress={(event) => {
+                event.stopPropagation();
+                console.debug('[Requests] checkout open', request.rideId);
+                router.push({
+                  pathname: '/ride/checkout',
+                  params: { rideId: request.rideId },
+                });
+              }}
+            >
+              <IconSymbol name="creditcard" size={16} color={C.white} />
+              <Text style={styles.payButtonText}>Procéder au paiement</Text>
+            </Pressable>
+          ) : null}
+        </Pressable>
+      );
+    },
+    [isDriver, openRideDetails, session.email]
   );
 
   return (
@@ -254,6 +354,33 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: C.ink,
+  },
+  requestActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  requestActionButton: {
+    flex: 1,
+    borderRadius: Radius.pill,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  requestActionButtonPrimary: {
+    backgroundColor: C.primary,
+  },
+  requestActionButtonSecondary: {
+    backgroundColor: C.gray300,
+  },
+  requestActionText: {
+    fontWeight: '700',
+  },
+  requestActionTextPrimary: {
+    color: C.white,
+  },
+  requestActionTextSecondary: {
+    color: C.gray700,
   },
   emptyState: {
     borderRadius: Radius['2xl'],

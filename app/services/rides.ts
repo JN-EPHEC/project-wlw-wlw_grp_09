@@ -30,6 +30,7 @@ export type Ride = {
   seats: number;  // 1..3
   price: number;  // € / passager
   pricingMode: 'single' | 'double';
+  tripType?: 'one_way' | 'round_trip';
   createdAt: number;
   ownerEmail: string;
   passengers: string[];
@@ -72,6 +73,8 @@ export type RidePayload = {
   price: number;
   ownerEmail: string;
   pricingMode?: 'single' | 'double';
+  tripType?: 'one_way' | 'round_trip';
+  departureAt?: number;
 };
 
 const capitalise = (segment: string) =>
@@ -200,7 +203,11 @@ const buildRide = (payload: RidePayload): Ride => {
   const price = computeRidePrice(depart, destination, seats, pricingMode);
 
   const createdAt = Date.now();
-  const departureAt = computeDepartureAt(time, createdAt);
+  if (payload.departureAt != null && !Number.isFinite(payload.departureAt)) {
+    throw new Error('Horodatage de départ invalide');
+  }
+  const departureAt = payload.departureAt ?? computeDepartureAt(time, createdAt);
+  const tripType = payload.tripType ?? 'one_way';
 
   return {
     id: payload.id,
@@ -213,6 +220,7 @@ const buildRide = (payload: RidePayload): Ride => {
     price,
     ownerEmail,
     pricingMode,
+    tripType,
     passengers: [],
     canceledPassengers: [],
     createdAt,
@@ -251,6 +259,7 @@ const updateRideFromPatch = (ride: Ride, patch: Partial<RidePayload>): Ride => {
   }
 
   if (patch.pricingMode !== undefined) next.pricingMode = patch.pricingMode;
+  if (patch.tripType !== undefined) next.tripType = patch.tripType;
 
   next.price = computeRidePrice(next.depart, next.destination, next.seats, next.pricingMode);
 
@@ -330,6 +339,9 @@ export const getRides = () => {
 };
 
 export const addRide = (payload: RidePayload) => {
+  if (__DEV__) {
+    console.debug('[addRide] input payload', payload);
+  }
   const ride = buildRide(payload);
   rides = [ride, ...rides];
   scheduleRideReminder(ride, ride.ownerEmail, 'driver');
@@ -359,6 +371,10 @@ export const addRide = (payload: RidePayload) => {
   persistRideSnapshot(ride);
   void recordPublishedRide(ride);
   notifyRides();
+  if (__DEV__) {
+    console.debug('[addRide] created ride', ride);
+    console.debug('[addRide] rides count after push', rides.length);
+  }
   return ride;
 };
 
@@ -407,10 +423,19 @@ export const removeRide = (id: string) => {
 };
 
 export const subscribeRides = (cb: Listener) => {
-  listeners.push(cb);
-  cb(getRides());
+  if (__DEV__) {
+    console.debug('[subscribeRides] listener added');
+  }
+  const emitter: Listener = (items) => {
+    if (__DEV__) {
+      console.debug('[subscribeRides] emitted count', items.length, 'first ids', items.slice(0, 3).map((ride) => ride.id));
+    }
+    cb(items);
+  };
+  listeners.push(emitter);
+  emitter(getRides());
   return () => {
-    const i = listeners.indexOf(cb);
+    const i = listeners.indexOf(emitter);
     if (i >= 0) listeners.splice(i, 1);
   };
 };

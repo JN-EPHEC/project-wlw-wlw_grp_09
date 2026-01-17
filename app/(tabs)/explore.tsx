@@ -23,6 +23,7 @@ import {
 import { PinchGestureHandler, State } from 'react-native-gesture-handler';
 
 import CampusRideMap from '@/components/maps/CampusRideMap';
+import { loadGoogleMapsApi } from '@/app/services/google-maps-loader';
 import type { AuthSnapshot } from '@/app/services/auth';
 import { maskPlate } from '@/app/utils/plate';
 import { AppBackground } from '@/components/ui/app-background';
@@ -85,7 +86,7 @@ const Spacing = ThemeSpacing;
 const isAppleCleanMap = Platform.OS === 'ios' && Constants.appOwnership === 'expo';
 const LOCATION_SUGGESTION_OPTION = 'Utiliser ma position';
 const LOCATION_SUGGESTION_OPTIONS = [LOCATION_SUGGESTION_OPTION];
-const LOCAL_LOCATION_LABEL = 'Ma localisation';
+const CURRENT_LOCATION_LABEL = 'Position actuelle';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -297,6 +298,7 @@ function DriverPublishScreen({
   const [originSelection, setOriginSelection] = useState<LocationSelection | null>(null);
   const [originLatLng, setOriginLatLng] = useState<LatLng | null>(null);
   const [destinationLatLng, setDestinationLatLng] = useState<LatLng | null>(null);
+  const [isUsingLocation, setIsUsingLocation] = useState(false);
   const originGeocodeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const originGeocodeRequestId = useRef(0);
   const meetingPrefillConsumed = useRef(false);
@@ -437,6 +439,7 @@ function DriverPublishScreen({
     setDetectedMeetingCommune(null);
     setOriginSelection(null);
     setOriginLatLng(null);
+    setIsUsingLocation(false);
     closeDropdowns();
   }, [closeDropdowns, setOriginSelection]);
 
@@ -463,18 +466,17 @@ function DriverPublishScreen({
 
   const handleUseMeetingLocation = useCallback(async () => {
     try {
-      const placeholder = LOCAL_LOCATION_LABEL;
-      setMeetingPointInput(placeholder);
+      setIsUsingLocation(true);
+      setMeetingPointInput(CURRENT_LOCATION_LABEL);
       setMeetingPointSelected(null);
+      setDetectedMeetingCommune(null);
       const { commune, coords, address, latLng } = await getCurrentCommune();
-      const label = address || placeholder;
+      const selectionLabel = address?.trim() || CURRENT_LOCATION_LABEL;
       setDetectedMeetingCommune(commune);
-      setMeetingPointInput(label);
-      setMeetingPointSelected(label);
-      logSelectedPoint('origin', label, latLng);
+      logSelectedPoint('origin', selectionLabel, latLng);
       setOriginSelection({
         type: 'current_location',
-        label,
+        label: selectionLabel,
         coords: {
           latitude: coords.latitude,
           longitude: coords.longitude,
@@ -484,8 +486,12 @@ function DriverPublishScreen({
       setOriginLatLng(latLng);
       setShowMeetingList(false);
     } catch (error) {
+      setIsUsingLocation(false);
       if (error instanceof LocationPermissionError) {
-        Alert.alert('Localisation désactivée', 'Active la localisation pour remplir automatiquement votre position.');
+        Alert.alert(
+          'Localisation désactivée',
+          'Active la localisation pour remplir automatiquement votre position.'
+        );
       } else {
         Alert.alert(
           'Position indisponible',
@@ -511,7 +517,11 @@ function DriverPublishScreen({
       setOriginLatLng(null);
       return;
     }
-    if (trimmed === LOCAL_LOCATION_LABEL) {
+    if (
+      trimmed === LOCATION_SUGGESTION_OPTION ||
+      trimmed === CURRENT_LOCATION_LABEL ||
+      (isUsingLocation && trimmed === CURRENT_LOCATION_LABEL)
+    ) {
       return;
     }
     if (trimmed.length < 3) {
@@ -575,14 +585,16 @@ function DriverPublishScreen({
         originGeocodeTimeout.current = null;
       }
     };
-  }, [meetingPoint, setOriginSelection, logSelectedPoint]);
+  }, [meetingPoint, setOriginSelection, logSelectedPoint, isUsingLocation]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
       return;
     }
     console.debug('[DriverMap] origin', originLatLng, 'meetingPoint:', meetingPoint);
-  }, [originLatLng, meetingPoint]);
+    console.debug('[Driver] useLocation coords', originLatLng);
+    console.debug('[Driver] meetingPoint', meetingPoint, 'isUsingLocation', isUsingLocation);
+  }, [originLatLng, meetingPoint, isUsingLocation]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -616,20 +628,21 @@ function DriverPublishScreen({
     console.debug('[DriverMap] destination', destinationLatLng, 'destination:', destination);
   }, [destinationLatLng, destination]);
 
-  const selectMeetingPoint = useCallback(
-    (commune: string) => {
-      if (commune === LOCATION_SUGGESTION_OPTION) {
-        handleUseMeetingLocation();
-        return;
-      }
-      setMeetingPointInput(commune);
-      setMeetingPointSelected(commune);
-      setDetectedMeetingCommune(null);
-      animateDropdown();
-      setShowMeetingList(false);
-    },
-    [animateDropdown, handleUseMeetingLocation]
-  );
+const selectMeetingPoint = useCallback(
+  (commune: string) => {
+    if (commune === LOCATION_SUGGESTION_OPTION) {
+      handleUseMeetingLocation();
+      return;
+    }
+    setMeetingPointInput(commune);
+    setMeetingPointSelected(commune);
+    setDetectedMeetingCommune(null);
+    setIsUsingLocation(false);
+    animateDropdown();
+    setShowMeetingList(false);
+  },
+  [animateDropdown, handleUseMeetingLocation]
+);
 
   const selectDestinationCampus = useCallback(
     (campus: string) => {
@@ -832,7 +845,8 @@ function DriverPublishScreen({
     places > 0 &&
     returnTimeReady;
 
-  const handlePublish = useCallback(() => {
+  const handlePublish = useCallback(async () => {
+    console.log('[UI] Publish pressed');
     if (isPublishingRide) return;
     setValidationTouched(true);
     if (!session.email) {
@@ -853,8 +867,15 @@ function DriverPublishScreen({
 
     setIsPublishingRide(true);
     try {
+      if (__DEV__) {
+        console.debug('[publish] click');
+      }
       const rideId = `ride-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      addRide({
+      const publishingDate = new Date(selectedDate);
+      const [hours, minutes] = travelTime.split(':').map((value) => parseInt(value, 10) || 0);
+      publishingDate.setHours(hours, minutes, 0, 0);
+      const pricePerPassenger = finalFare != null ? Number(finalFare.toFixed(2)) : 0;
+      const payload = {
         id: rideId,
         driver: session.name ?? 'Conducteur',
         plate: registeredPlate,
@@ -862,13 +883,41 @@ function DriverPublishScreen({
         destination: destination.trim(),
         time: travelTime,
         seats: places,
-        price: 0,
+        price: pricePerPassenger,
         ownerEmail: session.email,
         pricingMode: 'single',
+        tripType,
+        departureAt: publishingDate.getTime(),
+      };
+      console.log('[Publish] start', {
+        depart: payload.depart,
+        destination: payload.destination,
+        time: payload.time,
+        seats: payload.seats,
+        price: payload.price,
       });
-      Alert.alert('Trajet publié', 'Ton trajet apparaît maintenant dans Mes trajets.');
-      router.push('/driver-published');
+      if (__DEV__) {
+        console.debug('[publish] payload', payload);
+      }
+      const publishedRide = await Promise.resolve(addRide(payload));
+      if (!publishedRide?.id) {
+        throw new Error('Impossible de publier ce trajet pour le moment.');
+      }
+      if (__DEV__) {
+        console.debug('[publish] addRide result', publishedRide);
+      }
+      console.log('[Publish] created rideId', publishedRide.id);
+      if (__DEV__) {
+        console.debug('[Publish] rideId', publishedRide.id);
+      }
+      router.replace({
+        pathname: '/driver/ride-published',
+        params: {
+          id: publishedRide.id,
+        },
+      });
     } catch (error) {
+      console.error('[Publish] error', error);
       const message = error instanceof Error ? error.message : 'Impossible de publier ce trajet.';
       Alert.alert('Erreur', message);
     } finally {
@@ -917,18 +966,19 @@ function DriverPublishScreen({
                 <Text style={passengerStyles.dropdownLabel}>POINT DE RENCONTRE</Text>
                 <View style={passengerStyles.inputWrapper}>
                   <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
-                <TextInput
-                  style={passengerStyles.dropdownTextInput}
-                  value={meetingPoint}
-                  onChangeText={(value) => {
-                    setMeetingPointInput(value);
-                    setMeetingPointSelected(null);
-                    setDetectedMeetingCommune(null);
-                    if (!showMeetingList) {
-                      animateDropdown();
-                      setShowMeetingList(true);
-                    }
-                  }}
+                  <TextInput
+                    style={passengerStyles.dropdownTextInput}
+                    value={meetingPoint}
+                    onChangeText={(value) => {
+                      setMeetingPointInput(value);
+                      setMeetingPointSelected(null);
+                      setDetectedMeetingCommune(null);
+                      setIsUsingLocation(false);
+                      if (!showMeetingList) {
+                        animateDropdown();
+                        setShowMeetingList(true);
+                      }
+                    }}
                     placeholder="Saisir votre adresse"
                     placeholderTextColor={Colors.gray400}
                     onFocus={handleMeetingFocus}
@@ -1590,6 +1640,10 @@ function PassengerPublishScreen({
     },
     [baseScale, pinchScale, MAX_MAP_SCALE, MIN_MAP_SCALE]
   );
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    loadGoogleMapsApi().catch(() => {});
+  }, []);
   const formatDateLabel = useCallback(
     (date: Date) =>
       date.toLocaleDateString('fr-BE', {
@@ -1634,6 +1688,7 @@ function PassengerPublishScreen({
   const [ridesReady, setRidesReady] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
   const [detectedCommune, setDetectedCommune] = useState<string | null>(null);
+  const [detectedAddress, setDetectedAddress] = useState<string | null>(null);
   const [originLatLng, setOriginLatLng] = useState<LatLng | null>(null);
   const [destinationLatLng, setDestinationLatLng] = useState<LatLng | null>(null);
   const [searchResults, setSearchResults] = useState<Ride[]>(() =>
@@ -1900,6 +1955,7 @@ function PassengerPublishScreen({
     setFromCampus('');
     setDetectedCommune(null);
     setOriginLatLng(null);
+    setDetectedAddress(null);
     closeDropdowns();
   }, [closeDropdowns]);
 
@@ -1911,8 +1967,9 @@ function PassengerPublishScreen({
     try {
       setLocationLoading(true);
       const { commune, address, latLng } = await getCurrentCommune();
-      setFromCampus(address);
+      setFromCampus(CURRENT_LOCATION_LABEL);
       setDetectedCommune(commune);
+      setDetectedAddress(address ?? null);
       if (latLng) {
         setOriginLatLng(latLng);
       }
@@ -1962,13 +2019,15 @@ function PassengerPublishScreen({
     console.debug('[PassengerMap] input', trimmed || '<empty>');
     if (!trimmed) {
       setOriginLatLng(null);
+      setDetectedAddress(null);
       return;
     }
-    if (trimmed === LOCATION_SUGGESTION_OPTION || trimmed === 'Position actuelle') {
+    if (trimmed === LOCATION_SUGGESTION_OPTION || trimmed === CURRENT_LOCATION_LABEL) {
       return;
     }
     if (trimmed.length < 3) {
       setOriginLatLng(null);
+      setDetectedAddress(null);
       return;
     }
     const requestId = ++originGeocodeRequestId.current;
@@ -1982,12 +2041,17 @@ function PassengerPublishScreen({
           }
           if (!preview) {
             setOriginLatLng(null);
+            setDetectedAddress(null);
             return;
           }
           setOriginLatLng({ lat: preview.lat, lng: preview.lng });
+          const addressValue =
+            preview.formattedAddress?.trim() || preview.label?.trim() || null;
+          setDetectedAddress(addressValue);
         } catch {
           if (active && requestId === originGeocodeRequestId.current) {
             setOriginLatLng(null);
+            setDetectedAddress(null);
           }
         } finally {
           if (originGeocodeTimeout.current) {
@@ -2126,6 +2190,11 @@ function PassengerPublishScreen({
             {detectedCommune ? (
               <Text style={passengerStyles.locationDetectedText}>
                 Commune détectée : {detectedCommune}
+              </Text>
+            ) : null}
+            {detectedAddress ? (
+              <Text style={passengerStyles.locationDetectedText}>
+                Adresse détectée : {detectedAddress}
               </Text>
             ) : null}
             {showFromList && LOCATION_SUGGESTION_OPTIONS.length > 0 ? (
@@ -2604,6 +2673,25 @@ function PassengerPublishScreen({
       }
     } else {
       method = 'apple-pay';
+    }
+    if (method === 'wallet') {
+      if (!paymentRide) return;
+      console.debug('[WalletPay] pressed', {
+        rideId: paymentRide.id,
+        amount: paymentRide.price,
+      });
+      setCardMasked(true);
+      closePaymentSheet();
+      router.push({
+        pathname: '/ride/wallet-confirmation',
+        params: {
+          rideId: paymentRide.id,
+          amount: paymentRide.price.toFixed(2),
+          depart: paymentRide.depart,
+          destination: paymentRide.destination,
+        },
+      });
+      return;
     }
     const success = handleReserveRide(paymentRide, method);
     if (success) {

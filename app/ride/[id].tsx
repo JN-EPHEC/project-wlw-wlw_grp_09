@@ -1,6 +1,7 @@
 import { useLocalSearchParams, router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   KeyboardAvoidingView,
@@ -31,7 +32,14 @@ import {
   type Ride,
 } from '@/app/services/rides';
 import { createThread } from '@/app/services/messages';
-import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
+import { createBooking } from '@/app/services/booking-store';
+import {
+  creditWallet,
+  debitWallet,
+  getWallet,
+  subscribeWallet,
+  type WalletSnapshot,
+} from '@/app/services/wallet';
 import { logReservationRequest, removeReservationRequest } from '@/app/services/reservation-requests';
 import { usePassengerRequests } from '@/hooks/use-passenger-requests';
 import { subscribeDriverReviews } from '@/app/services/reviews';
@@ -52,6 +60,13 @@ import { MeetingMap } from '@/components/meeting-map';
 import type { PaymentMethod } from '@/app/services/payments';
 import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
 
+export type RideDetailScreenMode = 'detail' | 'checkout';
+
+export type RideDetailScreenProps = {
+  mode?: RideDetailScreenMode;
+  overrideRideId?: string;
+};
+
 const C = Colors;
 const S = Shadows;
 const PRICE_RATE_PER_KM = 0.4;
@@ -67,13 +82,16 @@ const ensureStudentEmail = (email: string) => {
   return `${local}@students.ephec.be`;
 };
 
-export default function RideDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+export default function RideDetailScreen({ mode: propMode, overrideRideId }: RideDetailScreenProps = {}) {
+  const params = useLocalSearchParams<{ id?: string; mode?: RideDetailScreenMode }>();
+  const paramId = Array.isArray(params.id) ? params.id[0] : params.id;
+  const rideId = overrideRideId ?? paramId ?? null;
   const session = useAuthSession();
   const { width } = useWindowDimensions();
   const isCompact = width < 420;
-  const initialRealRide = id ? getRide(String(id)) : null;
-  const initialFallbackRide = !initialRealRide ? findFallbackRide(id) : null;
+  const routeMode = propMode ?? (params.mode === 'checkout' ? 'checkout' : 'detail');
+  const initialRealRide = rideId ? getRide(String(rideId)) : null;
+  const initialFallbackRide = !initialRealRide ? findFallbackRide(rideId) : null;
   const initialRide = initialRealRide ?? initialFallbackRide;
   const [ride, setRide] = useState<Ride | null>(initialRide);
   const [isFallbackRide, setIsFallbackRide] = useState(!initialRealRide && !!initialFallbackRide);
@@ -103,6 +121,10 @@ export default function RideDetailScreen() {
     session.email
   );
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
+  const [showWalletConfirmModal, setShowWalletConfirmModal] = useState(false);
+  const [isPaying, setIsPaying] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [walletPaymentError, setWalletPaymentError] = useState<string | null>(null);
 
   const platformFeePerPassenger = useMemo(() => {
     if (!ride) return 0;
@@ -124,14 +146,34 @@ export default function RideDetailScreen() {
   const reservationAccepted = !!acceptedReservation;
   const reservationPending = !!pendingReservation && !reservationAccepted;
   const hasRequestedReservation = reservationPending || reservationAccepted;
+  const amOwner = useMemo(
+    () => !!session.email && ride?.ownerEmail === session.email,
+    [ride, session.email]
+  );
+  const amPassenger = useMemo(
+    () => !!session.email && !!ride && ride.passengers.includes(session.email),
+    [ride, session.email]
+  );
+  const canViewSensitiveDetails = routeMode === 'checkout' && (amOwner || amPassenger || reservationAccepted);
+  useEffect(() => {
+    if (!rideId) return;
+    const status = reservationAccepted ? 'accepted' : reservationPending ? 'pending' : 'idle';
+    console.debug('[Request] status', status, rideId);
+  }, [reservationAccepted, reservationPending, rideId]);
+  const walletBalance = wallet?.balance ?? 0;
+  const checkoutAmount = ride?.price ?? 0;
+  const walletBalanceLabel = walletBalance.toFixed(2);
+  const checkoutAmountLabel = checkoutAmount.toFixed(2);
+  const hasWalletBalance = ride ? walletBalance >= ride.price : false;
   const openDriverProfile = () => {
     if (!ride) return;
     router.push({ pathname: '/driver-profile/[email]', params: { email: ride.ownerEmail } });
   };
 
   useEffect(() => {
+    if (!rideId) return;
     const unsubscribe = subscribeRides((rides) => {
-      const next = rides.find((item) => item.id === id) ?? null;
+      const next = rides.find((item) => item.id === rideId) ?? null;
       if (next) {
         setRide(next);
         setDriverCompleted(
@@ -140,13 +182,13 @@ export default function RideDetailScreen() {
         setIsFallbackRide(false);
         return;
       }
-      const fallback = findFallbackRide(id);
+      const fallback = findFallbackRide(rideId);
       setRide(fallback);
       setDriverCompleted(0);
       setIsFallbackRide(!!fallback);
     });
     return unsubscribe;
-  }, [id]);
+  }, [rideId]);
 
   useEffect(() => {
     if (!ride?.ownerEmail) {
@@ -185,19 +227,8 @@ export default function RideDetailScreen() {
   }, [session.email]);
 
 
-  const amOwner = useMemo(
-    () => !!session.email && ride?.ownerEmail === session.email,
-    [ride, session.email]
-  );
-
-  const amPassenger = useMemo(
-    () => !!session.email && !!ride && ride.passengers.includes(session.email),
-    [ride, session.email]
-  );
-
   const seatsLeft = ride ? ride.seats - ride.passengers.length : 0;
   const departed = ride ? hasRideDeparted(ride) : false;
-  const canViewSensitiveDetails = amOwner || amPassenger || reservationAccepted;
   const reward = useMemo(
     () =>
       evaluateRewards({
@@ -207,8 +238,16 @@ export default function RideDetailScreen() {
       }),
     [driverCompleted, driverRating.average, driverRating.count]
   );
-  const walletBalance = wallet?.balance ?? 0;
-  const hasWalletBalance = ride ? walletBalance >= ride.price : false;
+  useEffect(() => {
+    if (routeMode === 'checkout' && rideId) {
+      console.debug('[Checkout] open', rideId);
+    }
+  }, [routeMode, rideId]);
+  useEffect(() => {
+    if (routeMode === 'checkout') {
+      console.debug('[Checkout] canPay', hasWalletBalance);
+    }
+  }, [routeMode, hasWalletBalance]);
 
   const departureDayLabel = useMemo(() => {
     if (!ride) return '';
@@ -231,7 +270,7 @@ export default function RideDetailScreen() {
     return map;
   }, [driverFeedback]);
 
-  if (!id) {
+  if (!rideId) {
     return (
       <View style={styles.container}>
         <Text style={styles.error}>Aucun trajet sélectionné.</Text>
@@ -307,6 +346,111 @@ export default function RideDetailScreen() {
         destination: ride.destination,
       },
     });
+  };
+
+  const handleProceedToPayment = () => {
+    if (!ride) return;
+    if (!session.email) {
+      router.push('/sign-up');
+      return;
+    }
+    if (!reservationAccepted) {
+      setCheckoutError('Le conducteur doit accepter ta demande avant le paiement.');
+      return;
+    }
+    if (!Number.isFinite(ride.departureAt)) {
+      setCheckoutError('Informations de trajet manquantes.');
+      return;
+    }
+    setCheckoutError(null);
+    setWalletPaymentError(null);
+    console.debug('[Checkout] proceed clicked', { rideId: ride.id, amount: ride.price });
+    setShowWalletConfirmModal(true);
+  };
+
+  const confirmWalletCheckoutPayment = async () => {
+    if (!ride) return;
+    if (!session.email) {
+      router.push('/sign-up');
+      return;
+    }
+    const amount = ride.price;
+    const rideIdValue = ride.id;
+    const passengerEmail = session.email;
+    const currentBalance = wallet?.balance ?? 0;
+    console.debug('[Checkout] wallet confirm', { rideId: rideIdValue, amount });
+    if (currentBalance < amount) {
+      setWalletPaymentError('Solde insuffisant.');
+      return;
+    }
+    setIsPaying(true);
+    setWalletPaymentError(null);
+    let debited = false;
+    try {
+      const debitResult = debitWallet(
+        passengerEmail,
+        amount,
+        `Paiement trajet ${ride.depart} → ${ride.destination}`,
+        { rideId: rideIdValue, reason: 'ride_payment' }
+      );
+      if (!debitResult) {
+        setWalletPaymentError('Solde insuffisant.');
+        return;
+      }
+      debited = true;
+      const bookingPayload = {
+        id: `${rideIdValue}:${passengerEmail}:${Date.now()}`,
+        rideId: rideIdValue,
+        passengerEmail,
+        status: 'paid' as const,
+        paid: true,
+        paymentMethod: 'wallet' as const,
+        paidAt: Date.now(),
+        amount,
+        pricePaid: amount,
+        createdAt: Date.now(),
+        depart: ride.depart,
+        destination: ride.destination,
+        driver: ride.driver,
+        ownerEmail: ride.ownerEmail,
+        departureAt: ride.departureAt,
+        meetingPoint: ride.depart,
+        time: ride.time,
+        plate: ride.plate ?? null,
+      };
+      const bookingResult = createBooking(bookingPayload);
+      if (!bookingResult.ok) {
+        throw new Error('Impossible de sauvegarder la réservation.');
+      }
+      console.debug('[Checkout] booking created', { bookingId: bookingPayload.id });
+      removeReservationRequest(passengerEmail, rideIdValue);
+      setShowWalletConfirmModal(false);
+      router.replace({
+        pathname: '/ride/confirmed',
+        params: { bookingId: bookingPayload.id },
+      });
+    } catch (error) {
+      console.error('[Checkout] payment failed', error);
+      if (debited) {
+        try {
+          creditWallet(passengerEmail, amount, {
+            description: 'Reversion paiement',
+            reason: 'rollback',
+            rideId: rideIdValue,
+          });
+        } catch (rollbackError) {
+          console.error('[Checkout] rollback failed', rollbackError);
+        }
+      }
+      setWalletPaymentError('Paiement impossible, réessaie.');
+    } finally {
+      setIsPaying(false);
+    }
+  };
+
+  const closeWalletConfirmModal = () => {
+    setShowWalletConfirmModal(false);
+    setWalletPaymentError(null);
   };
 
   const confirmReservation = (method: PaymentMethod) => {
@@ -786,7 +930,7 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                 <View style={styles.restrictedNotice}>
                   <Text style={styles.restrictedNoticeTitle}>Visible après acceptation</Text>
                   <Text style={styles.restrictedNoticeText}>
-                    Le conducteur partagera le lieu exact dès que ta demande sera acceptée.
+                    Ces informations apparaissent dans la page de paiement après que ta demande est acceptée.
                   </Text>
                 </View>
               )}
@@ -823,11 +967,29 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                 <View style={styles.restrictedNotice}>
                   <Text style={styles.restrictedNoticeTitle}>Montant masqué</Text>
                   <Text style={styles.restrictedNoticeText}>
-                    Tu verras le tarif exact dès que ta demande aura été acceptée par le conducteur.
+                    Les détails sont disponibles sur la page de paiement une fois ta demande acceptée.
                   </Text>
                 </View>
               )}
             </View>
+
+            {routeMode === 'checkout' && !reservationAccepted ? (
+              <View style={styles.checkoutNotice}>
+                <Text style={styles.checkoutNoticeTitle}>Paiement indisponible</Text>
+                <Text style={styles.checkoutNoticeText}>
+                  Ta demande doit d’abord être acceptée par le conducteur pour continuer.
+                </Text>
+                <GradientButton
+                  title="Retour"
+                  size="sm"
+                  variant="lavender"
+                  fullWidth
+                  style={[styles.actionButton, isCompact && styles.actionButtonFull]}
+                  onPress={() => router.back()}
+                  accessibilityRole="button"
+                />
+              </View>
+            ) : null}
 
             <View style={styles.actionStack}>
               {departed ? (
@@ -864,16 +1026,25 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                   accessibilityRole="button"
                 />
               ) : reservationAccepted ? (
-                <GradientButton
-                  title={seatsLeft > 0 ? 'Procéder au paiement' : 'Complet'}
-                  size="sm"
-                  variant="cta"
-                  fullWidth
-                  style={[styles.actionButton, isCompact && styles.actionButtonFull]}
-                  onPress={onReserve}
-                  disabled={seatsLeft <= 0}
-                  accessibilityRole="button"
-                />
+                routeMode === 'checkout' ? (
+                  <>
+                    {checkoutError ? <Text style={styles.errorText}>{checkoutError}</Text> : null}
+                    <GradientButton
+                      title={isPaying ? 'Paiement en cours…' : seatsLeft > 0 ? 'Procéder au paiement' : 'Complet'}
+                      size="sm"
+                      variant="cta"
+                      fullWidth
+                      style={[styles.actionButton, isCompact && styles.actionButtonFull]}
+                      onPress={handleProceedToPayment}
+                      disabled={seatsLeft <= 0 || isPaying || !ride}
+                      accessibilityRole="button"
+                    />
+                  </>
+                ) : (
+                  <Text style={styles.statusText}>
+                    Ta demande est acceptée. Consulte l’onglet « Mes demandes » pour procéder au paiement.
+                  </Text>
+                )
               ) : reservationPending ? (
                 <>
                   <Text style={styles.statusText}>Demande en attente de confirmation.</Text>
@@ -904,7 +1075,55 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
           </ScrollView>
         </SafeAreaView>
       </AppBackground>
-      {paymentModalVisible ? (
+      <Modal
+        visible={routeMode === 'checkout' && showWalletConfirmModal}
+        animationType="slide"
+        transparent
+        onRequestClose={closeWalletConfirmModal}
+      >
+        <View style={[styles.modalBackdrop, isCompact && styles.modalBackdropCompact]}>
+          <View
+            style={[
+              styles.modalCard,
+              styles.walletConfirmModalCard,
+              isCompact && styles.modalCardCompact,
+            ]}
+          >
+            <Text style={styles.walletConfirmTitle}>Confirmer le paiement</Text>
+            <Text style={styles.walletConfirmDescription}>
+              Ce trajet coûte {checkoutAmountLabel} €. Ton solde wallet : {walletBalanceLabel} €.
+            </Text>
+            {walletBalance < checkoutAmount ? (
+              <Text style={styles.walletConfirmWarning}>Solde insuffisant</Text>
+            ) : null}
+            {walletPaymentError ? (
+              <Text style={styles.walletPaymentError}>{walletPaymentError}</Text>
+            ) : null}
+            <GradientButton
+              title={isPaying ? 'Paiement en cours…' : `Confirmer ${checkoutAmountLabel} €`}
+              size="sm"
+              variant="cta"
+              fullWidth
+              style={styles.walletConfirmButton}
+              contentStyle={styles.walletConfirmButtonContent}
+              onPress={confirmWalletCheckoutPayment}
+              disabled={isPaying || walletBalance < checkoutAmount}
+              accessibilityRole="button"
+            >
+              {isPaying ? <ActivityIndicator color="#fff" /> : null}
+            </GradientButton>
+            <Pressable
+              activeOpacity={0.85}
+              style={styles.walletCancelButton}
+              onPress={closeWalletConfirmModal}
+              accessibilityRole="button"
+            >
+              <Text style={styles.walletCancelButtonText}>Annuler</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+      {routeMode !== 'checkout' && paymentModalVisible ? (
         <View style={styles.inlineModalPortal}>
           <View style={[styles.modalBackdrop, isCompact && styles.modalBackdropCompact]}>
             <View style={[styles.modalCard, styles.paymentModalCard, isCompact && styles.modalCardCompact]}>
@@ -1470,6 +1689,22 @@ const styles = StyleSheet.create({
     color: C.gray500,
     fontSize: 12,
   },
+  checkoutNotice: {
+    backgroundColor: C.white,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+    ...S.card,
+  },
+  checkoutNoticeTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: C.ink,
+  },
+  checkoutNoticeText: {
+    color: C.gray600,
+    lineHeight: 20,
+  },
   actionStack: {
     gap: Spacing.md,
   },
@@ -1641,6 +1876,36 @@ const styles = StyleSheet.create({
     color: C.gray700,
     fontWeight: '700',
     textAlign: 'center',
+  },
+  walletConfirmModalCard: {
+    gap: Spacing.md,
+  },
+  walletConfirmTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: C.ink,
+  },
+  walletConfirmDescription: {
+    color: C.gray600,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  walletConfirmWarning: {
+    color: C.danger,
+    fontWeight: '700',
+    marginTop: Spacing.sm,
+  },
+  walletPaymentError: {
+    marginTop: Spacing.xs,
+    color: C.danger,
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  walletConfirmButton: {
+    marginTop: Spacing.md,
+  },
+  walletConfirmButtonContent: {
+    gap: 12,
   },
   modalTitle: {
     color: C.ink,
