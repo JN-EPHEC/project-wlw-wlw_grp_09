@@ -1,13 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Image, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Image,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 
 import { AppBackground } from '@/components/ui/app-background';
+import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { getAvatarUrl } from '@/app/ui/avatar';
-import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
+import {
+  listBookingsByPassenger,
+  subscribeBookingsByPassenger,
+  type Booking,
+} from '@/app/services/booking-store';
 
 const C = Colors;
 
@@ -15,100 +28,171 @@ export default function TripsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ initialTab?: 'upcoming' | 'history' }>();
   const session = useAuthSession();
-  const [rides, setRides] = useState<Ride[]>(() => getRides());
   const [activeTab, setActiveTab] = useState<'upcoming' | 'history'>('upcoming');
+  const [bookings, setBookings] = useState<Booking[]>(() =>
+    session.email ? listBookingsByPassenger(session.email) : []
+  );
+
+  const handleBookingsUpdate = useCallback((nextBookings: Booking[]) => {
+    console.debug('[Trips] raw bookings', nextBookings);
+    setBookings(nextBookings);
+  }, []);
 
   useEffect(() => {
-    const unsubscribe = subscribeRides(setRides);
+    if (!session.email) {
+      setBookings([]);
+      return;
+    }
+    const unsubscribe = subscribeBookingsByPassenger(session.email, handleBookingsUpdate);
     return unsubscribe;
-  }, []);
+  }, [session.email, handleBookingsUpdate]);
 
   useEffect(() => {
     if (!params.initialTab) return;
     setActiveTab(params.initialTab === 'history' ? 'history' : 'upcoming');
   }, [params.initialTab]);
 
-  const myTrips = useMemo(() => {
-    if (!session.email) return [];
-    return rides.filter((ride) => ride.passengers.includes(session.email));
-  }, [rides, session.email]);
-
-  const upcomingTrips = useMemo(() => myTrips.filter((ride) => !hasRideDeparted(ride)), [myTrips]);
-  const historyTrips = useMemo(() => myTrips.filter((ride) => hasRideDeparted(ride)), [myTrips]);
+  const getDepartureTime = useCallback(
+    (booking: Booking) => booking.departureAt ?? booking.createdAt ?? 0,
+    []
+  );
+  const bookingSortValue = useCallback((booking: Booking) => getDepartureTime(booking), [getDepartureTime]);
+  const upcomingBookings = useMemo(
+    () =>
+      bookings
+        .filter(
+          (booking) =>
+            booking.passengerEmail === session.email &&
+            booking.paid &&
+            booking.status !== 'completed'
+        )
+        .sort((a, b) => bookingSortValue(a) - bookingSortValue(b)),
+    [bookings, session.email, bookingSortValue]
+  );
+  const historyBookings = useMemo(
+    () =>
+      bookings
+        .filter(
+          (booking) =>
+            booking.passengerEmail === session.email &&
+            booking.paid &&
+            booking.status === 'completed'
+        )
+        .sort((a, b) => bookingSortValue(b) - bookingSortValue(a)),
+    [bookings, session.email, bookingSortValue]
+  );
+  useEffect(() => {
+    console.debug('[Trips] bookings updated count', bookings.length);
+  }, [bookings.length]);
+  useEffect(() => {
+    console.debug('[Trips] upcoming count', upcomingBookings.length);
+  }, [upcomingBookings.length]);
+  useEffect(() => {
+    console.debug('[Trips] history count', historyBookings.length);
+  }, [historyBookings.length]);
 
   const sections = useMemo(
     () => [
-      { key: 'upcoming', label: 'À venir', count: upcomingTrips.length },
-      { key: 'history', label: 'Historique', count: historyTrips.length },
+      { key: 'upcoming', label: 'À venir', count: upcomingBookings.length },
+      { key: 'history', label: 'Historique', count: historyBookings.length },
     ],
-    [upcomingTrips.length, historyTrips.length]
+    [historyBookings.length, upcomingBookings.length]
   );
 
-  const currentList = activeTab === 'upcoming' ? upcomingTrips : historyTrips;
+  const currentList = activeTab === 'upcoming' ? upcomingBookings : historyBookings;
   const emptyCopy = activeTab === 'upcoming'
     ? 'Tu n’as aucun trajet confirmé pour le moment.'
     : 'Tu n’as pas encore d’historique de trajets.';
 
-  const formatDeparture = (ride: Ride) => {
-    const departure = new Date(ride.departureAt);
-    return departure.toLocaleString('fr-BE', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
-
-  const openRideDetails = useCallback(
-    (rideId: string) => {
-      router.push(`/ride/${rideId}`);
+  const openTripDetails = useCallback(
+    (bookingId: string) => {
+      router.push({ pathname: '/trip/[id]', params: { id: bookingId } });
     },
     [router]
   );
+  const openTripRating = useCallback(
+    (bookingId: string) => {
+      router.push({ pathname: '/trip/rate', params: { bookingId } });
+    },
+    [router]
+  );
+  const handleTripComplete = useCallback(
+    (bookingId: string) => {
+      openTripRating(bookingId);
+    },
+    [openTripRating]
+  );
 
   const renderCard = useCallback(
-    (ride: Ride) => (
-      <Pressable key={ride.id} style={styles.card} onPress={() => openRideDetails(ride.id)}>
-        <View style={styles.cardHeader}>
-          <Image source={{ uri: getAvatarUrl(ride.ownerEmail, 96) }} style={styles.cardAvatar} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.cardDriver}>{ride.driver}</Text>
-            <Text style={styles.cardMeta}>
-              {ride.depart} → {ride.destination}
-            </Text>
-          </View>
-          <View
-            style={[
-              styles.badge,
-              hasRideDeparted(ride) ? styles.badgeHistory : styles.badgeUpcoming,
-            ]}
-          >
-            <Text style={styles.badgeText}>{hasRideDeparted(ride) ? 'Terminé' : 'Confirmé'}</Text>
-          </View>
-        </View>
-        <View style={styles.cardFooter}>
-          <View style={styles.cardFooterRow}>
-            <IconSymbol name="clock" size={16} color={C.gray500} />
-            <Text style={styles.cardFooterText}>{formatDeparture(ride)}</Text>
-          </View>
-          <View style={styles.cardFooterRow}>
-            <IconSymbol name="creditcard.fill" size={16} color={C.gray500} />
-            <Text style={styles.cardFooterText}>{ride.price.toFixed(2)} €</Text>
-          </View>
-        </View>
+    (booking: Booking) => {
+      const displayAmount = booking.pricePaid ?? booking.amount;
+      const departureDate = new Date(getDepartureTime(booking));
+      const formattedDeparture = departureDate.toLocaleString('fr-BE', {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      return (
         <Pressable
-          style={styles.viewButton}
-          onPress={(event) => {
-            event.stopPropagation();
-            openRideDetails(ride.id);
-          }}
+          key={booking.id}
+          style={styles.card}
+            onPress={() => openTripDetails(booking.id)}
         >
-          <Text style={styles.viewButtonText}>Voir le trajet</Text>
+          <View style={styles.cardHeader}>
+            <Image source={{ uri: getAvatarUrl(booking.passengerEmail, 96) }} style={styles.cardAvatar} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardDriver}>{booking.driver}</Text>
+              <Text style={styles.cardMeta}>
+                {booking.depart} → {booking.destination}
+              </Text>
+            </View>
+            <View style={[styles.badge, styles.badgeUpcoming]}>
+              <Text style={styles.badgeText}>Confirmé</Text>
+            </View>
+          </View>
+          <View style={styles.cardFooter}>
+            <View style={styles.cardFooterRow}>
+              <IconSymbol name="clock" size={16} color={C.gray500} />
+              <Text style={styles.cardFooterText}>{formattedDeparture}</Text>
+            </View>
+            <View style={styles.cardFooterRow}>
+              <IconSymbol name="creditcard.fill" size={16} color={C.gray500} />
+              <Text style={styles.cardFooterText}>{displayAmount.toFixed(2)} €</Text>
+            </View>
+          </View>
+          {activeTab === 'upcoming' ? (
+            <View style={styles.actionRow}>
+              <Pressable
+                style={styles.viewButton}
+                onPress={(event) => {
+                  event.stopPropagation();
+                  openTripDetails(booking.id);
+                }}
+              >
+                <Text style={styles.viewButtonText}>Voir le trajet</Text>
+              </Pressable>
+              {booking.status !== 'completed' ? (
+                <GradientButton
+                  title="Trajet terminé"
+                  variant="cta"
+                  size="sm"
+                  fullWidth
+                  style={styles.completeButton}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    handleTripComplete(booking.id);
+                  }}
+                  accessibilityRole="button"
+                />
+              ) : null}
+            </View>
+          ) : null}
         </Pressable>
-      </Pressable>
-    ),
-    [openRideDetails]
+      );
+    },
+    [getDepartureTime, openTripDetails, handleTripComplete]
   );
 
   return (
@@ -142,7 +226,7 @@ export default function TripsScreen() {
               <Text style={styles.emptySubtitle}>{emptyCopy}</Text>
             </View>
           ) : (
-            currentList.map((ride) => renderCard(ride))
+            currentList.map((booking) => renderCard(booking))
           )}
         </ScrollView>
       </SafeAreaView>
@@ -261,6 +345,15 @@ const styles = StyleSheet.create({
   viewButtonText: {
     color: C.white,
     fontWeight: '700',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    flexWrap: 'wrap',
+  },
+  completeButton: {
+    flex: 1,
   },
   emptyState: {
     backgroundColor: C.white,

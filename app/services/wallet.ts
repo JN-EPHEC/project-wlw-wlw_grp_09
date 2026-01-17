@@ -1,10 +1,8 @@
 // app/services/wallet.ts
 
 import { pushNotification } from './notifications';
-import {
-  persistWalletSnapshot,
-  type WalletSnapshotRecord,
-} from '@/src/firestoreWallets';
+import { loadStoredWallet, persistStoredWallet } from './local-wallet-store';
+import type { WalletStoreRecord } from './local-wallet-store';
 
 type TransactionType = 'credit' | 'debit' | 'info';
 
@@ -107,8 +105,38 @@ const DEFAULT_CHECKLIST: ChecklistItem[] = [
   },
 ];
 
-const cloneChecklist = (items: ChecklistItem[]) =>
-  items.map((item) => ({ ...item }));
+const cloneChecklist = (items: ChecklistItem[]) => items.map((item) => ({ ...item }));
+
+const walletRecordToWallet = (record: WalletStoreRecord): Wallet => ({
+  balance: record.balance ?? 0,
+  lastWithdrawalAt: record.lastWithdrawalAt ?? null,
+  transactions: record.transactions?.map((transaction) => ({ ...transaction })) ?? [],
+  withdrawalDelayDays: record.withdrawalDelayDays ?? DEFAULT_WITHDRAWAL_DELAY_DAYS,
+  points: record.points ?? 0,
+  rideCredits: record.rideCredits ?? 0,
+  payoutMethod: record.payoutMethod ?? null,
+  paymentMethods: record.paymentMethods ?? [],
+  defaultPaymentMethodId: record.defaultPaymentMethodId ?? null,
+  payoutAccount: record.payoutAccount ?? null,
+  checklist: cloneChecklist(record.checklist ?? DEFAULT_CHECKLIST),
+  seeded: true,
+});
+
+const walletToRecord = (wallet: Wallet): WalletStoreRecord => ({
+  balance: wallet.balance,
+  lastWithdrawalAt: wallet.lastWithdrawalAt,
+  transactions: wallet.transactions.map((transaction) => ({ ...transaction })),
+  withdrawalDelayDays: wallet.withdrawalDelayDays,
+  points: wallet.points,
+  rideCredits: wallet.rideCredits,
+  payoutMethod: wallet.payoutMethod,
+  paymentMethods: wallet.paymentMethods,
+  defaultPaymentMethodId: wallet.defaultPaymentMethodId,
+  payoutAccount: wallet.payoutAccount,
+  checklist: wallet.checklist,
+});
+
+import type { WalletStoreRecord } from './local-wallet-store';
 
 const clone = (wallet: Wallet): WalletSnapshot => ({
   balance: wallet.balance,
@@ -127,20 +155,25 @@ const clone = (wallet: Wallet): WalletSnapshot => ({
 const ensureWallet = (email: string) => {
   const key = normalizeEmail(email);
   if (!wallets[key]) {
-    wallets[key] = {
-      balance: 0,
-      lastWithdrawalAt: null,
-      transactions: [],
-      withdrawalDelayDays: DEFAULT_WITHDRAWAL_DELAY_DAYS,
-      points: 0,
-      rideCredits: 0,
-      payoutMethod: null,
-      paymentMethods: [],
-      defaultPaymentMethodId: null,
-      payoutAccount: null,
-      checklist: cloneChecklist(DEFAULT_CHECKLIST),
-      seeded: false,
-    };
+    const stored = loadStoredWallet(email);
+    if (stored) {
+      wallets[key] = walletRecordToWallet(stored);
+    } else {
+      wallets[key] = {
+        balance: 0,
+        lastWithdrawalAt: null,
+        transactions: [],
+        withdrawalDelayDays: DEFAULT_WITHDRAWAL_DELAY_DAYS,
+        points: 0,
+        rideCredits: 0,
+        payoutMethod: null,
+        paymentMethods: [],
+        defaultPaymentMethodId: null,
+        payoutAccount: null,
+        checklist: cloneChecklist(DEFAULT_CHECKLIST),
+        seeded: false,
+      };
+    }
   }
   if (!listeners[key]) listeners[key] = [];
   if (!wallets[key].seeded) {
@@ -149,19 +182,11 @@ const ensureWallet = (email: string) => {
   return key;
 };
 
-const persistWalletAsync = (email: string) => {
-  const key = ensureWallet(email);
-  const snapshot = clone(wallets[key]) as WalletSnapshotRecord;
-  void persistWalletSnapshot(email, snapshot).catch((error) => {
-    console.warn('[wallet][firestore] sync failed', error);
-  });
-};
-
 const notify = (email: string) => {
   const key = ensureWallet(email);
   const snapshot = clone(wallets[key]);
   listeners[key].forEach((listener) => listener(snapshot));
-  persistWalletAsync(email);
+  persistStoredWallet(email, walletToRecord(wallets[key]));
 };
 
 const pushTransaction = (wallet: Wallet, transaction: WalletTransaction) => {
@@ -200,13 +225,12 @@ export const debitWallet = (
   if (!email || amount <= 0) return null;
   const key = ensureWallet(email);
   const wallet = wallets[key];
-  const debitAmount = Math.min(amount, wallet.balance);
-  if (debitAmount <= 0) return null;
-  wallet.balance -= debitAmount;
+  if (wallet.balance < amount) return null;
+  wallet.balance -= amount;
   const transaction: WalletTransaction = {
     id: randomId(),
     type: 'debit',
-    amount: debitAmount,
+    amount,
     description,
     createdAt: Date.now(),
     balanceAfter: wallet.balance,

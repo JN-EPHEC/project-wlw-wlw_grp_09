@@ -721,7 +721,7 @@ function DriverDashboard({ session }: DriverDashboardProps) {
         key: 'trips',
         label: 'Mes trajets',
         icon: 'car.fill' as const,
-        onPress: () => router.push('/driver-published'),
+        onPress: () => router.push('/driver-my-rides?tab=published'),
       },
     ],
     [router]

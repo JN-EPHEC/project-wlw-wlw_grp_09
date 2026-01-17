@@ -7,6 +7,7 @@ const isBelgianLatLng = (lat: number, lng: number) =>
 export type ResolvedPreviewLocation = LatLng & {
   label?: string;
   placeId?: string;
+  formattedAddress?: string;
 };
 
 export const resolveInputToLatLng = async (
@@ -41,7 +42,7 @@ export const resolveInputToLatLng = async (
   const detailService = new google.maps.places.PlacesService(document.createElement('div'));
   const details = await new Promise<google.maps.places.PlaceResult | null>((resolve) => {
     detailService.getDetails(
-      { placeId: first.place_id, fields: ['geometry'] },
+      { placeId: first.place_id, fields: ['geometry', 'formatted_address'] },
       (result, status) => {
         resolve(status === 'OK' ? result : null);
       }
@@ -61,5 +62,6 @@ export const resolveInputToLatLng = async (
     lng,
     label: first.description,
     placeId: first.place_id,
+    formattedAddress: details?.formatted_address?.trim() ?? null,
   };
 };

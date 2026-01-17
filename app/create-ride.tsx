@@ -128,6 +128,9 @@ export default function CreateRideScreen() {
     const hours = selectedTime.getHours();
     const minutes = selectedTime.getMinutes();
     const time = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    const departureAtDate = new Date(selectedDate ?? Date.now());
+    departureAtDate.setHours(hours, minutes, 0, 0);
+    const departureAt = departureAtDate.getTime();
     const rideId = `ride-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     setIsPublishingRide(true);
@@ -143,6 +146,8 @@ export default function CreateRideScreen() {
         price: priceValue,
         ownerEmail: session.email,
         pricingMode: 'single',
+        tripType: 'one_way',
+        departureAt,
       });
       Alert.alert('Trajet publié', 'Ton trajet est en ligne et peut être réservé.');
       router.back();
