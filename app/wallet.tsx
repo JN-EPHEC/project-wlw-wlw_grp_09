@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   KeyboardAvoidingView,
@@ -31,6 +32,7 @@ import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { pushNotification } from '@/app/services/notifications';
+import { useAuthSession } from '@/hooks/use-auth-session';
 
 const C = Colors;
 
@@ -53,13 +55,33 @@ const buildBankFormState = () => ({
 });
 type CardFormState = ReturnType<typeof buildCardFormState>;
 type BankFormState = ReturnType<typeof buildBankFormState>;
+type CardFormErrors = {
+  holder: string | null;
+  number: string | null;
+  expMonth: string | null;
+  expYear: string | null;
+  expiration: string | null;
+  cvc: string | null;
+};
+const buildCardTouchedState = (): Record<keyof CardFormState, boolean> => ({
+  holder: false,
+  number: false,
+  expMonth: false,
+  expYear: false,
+  cvc: false,
+});
+const CARD_SAVE_DELAY_MS = 250;
+
+const formatCardNumberInput = (value: string) => {
+  const digits = value.replace(/\D+/g, '').slice(0, 16);
+  return digits.replace(/(.{4})/g, '$1 ').trim();
+};
 
 export default function WalletScreen() {
   const router = useRouter();
   const session = useAuthSession();
   const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
   const [view, setView] = useState<WalletView>('home');
-  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [addAmount, setAddAmount] = useState('20');
   const [withdrawValue, setWithdrawValue] = useState('0');
   const [processing, setProcessing] = useState(false);
@@ -67,6 +89,8 @@ export default function WalletScreen() {
   const [cardModalVisible, setCardModalVisible] = useState(false);
   const [bankModalVisible, setBankModalVisible] = useState(false);
   const [cardForm, setCardForm] = useState(buildCardFormState);
+  const [cardTouched, setCardTouched] = useState(buildCardTouchedState);
+  const [isSavingCard, setIsSavingCard] = useState(false);
   const [bankForm, setBankForm] = useState(buildBankFormState);
 
   const updateCardForm = useCallback((patch: Partial<CardFormState>) => {
@@ -79,11 +103,98 @@ export default function WalletScreen() {
 
   const resetCardForm = useCallback(() => {
     setCardForm(buildCardFormState());
+    setCardTouched(buildCardTouchedState());
   }, []);
 
   const resetBankForm = useCallback(() => {
     setBankForm(buildBankFormState());
   }, []);
+
+  const markCardFieldTouched = useCallback((field: keyof CardFormState) => {
+    setCardTouched((previous) => ({ ...previous, [field]: true }));
+  }, []);
+
+  const cardErrors = useMemo<CardFormErrors>(() => {
+    const errors: CardFormErrors = {
+      holder: null,
+      number: null,
+      expMonth: null,
+      expYear: null,
+      expiration: null,
+      cvc: null,
+    };
+    const holderValue = cardForm.holder.trim();
+    if (!holderValue) {
+      errors.holder = 'Nom du titulaire requis.';
+    } else if (!/^[\p{L}\s-]+$/u.test(holderValue)) {
+      errors.holder = 'Utilise uniquement des lettres, espaces et tirets.';
+    }
+
+    const numberDigits = cardForm.number.replace(/\D+/g, '');
+    if (!numberDigits) {
+      errors.number = 'Numéro de carte requis.';
+    } else if (numberDigits.length !== 16) {
+      errors.number = 'Le numéro doit contenir 16 chiffres.';
+    }
+
+    const monthDigits = cardForm.expMonth.replace(/\D+/g, '');
+    const yearDigits = cardForm.expYear.replace(/\D+/g, '');
+    const monthValue = Number.parseInt(monthDigits, 10);
+    const yearValue = Number.parseInt(yearDigits, 10);
+
+    if (!monthDigits) {
+      errors.expMonth = 'MM requis.';
+    } else if (!/^\d{1,2}$/.test(monthDigits) || monthValue < 1 || monthValue > 12) {
+      errors.expMonth = 'MM invalide (01-12).';
+    }
+
+    if (!yearDigits) {
+      errors.expYear = 'AA requis.';
+    } else if (!/^\d{2}$/.test(yearDigits)) {
+      errors.expYear = 'AA invalide (2 chiffres).';
+    }
+
+    if (!errors.expMonth && !errors.expYear) {
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth() + 1;
+      const fullYear = 2000 + yearValue;
+      if (
+        Number.isFinite(monthValue) &&
+        Number.isFinite(yearValue) &&
+        (fullYear < currentYear || (fullYear === currentYear && monthValue < currentMonth))
+      ) {
+        errors.expiration = 'La date doit être supérieure ou égale au mois en cours.';
+      }
+    }
+
+    if (!cardForm.cvc) {
+      errors.cvc = 'CVC requis.';
+    } else if (!/^\d{3}$/.test(cardForm.cvc.trim())) {
+      errors.cvc = 'Le CVC doit contenir 3 chiffres.';
+    }
+
+    return errors;
+  }, [cardForm]);
+
+  const cardFormIsValid = useMemo(
+    () => Object.values(cardErrors).every((value) => !value),
+    [cardErrors]
+  );
+
+  const shouldDisplayFieldError = useCallback(
+    (field: keyof CardFormState) =>
+      Boolean(cardErrors[field] && (cardTouched[field] || cardForm[field].length > 0)),
+    [cardErrors, cardForm, cardTouched]
+  );
+
+  const shouldShowExpirationError =
+    Boolean(
+      cardErrors.expiration &&
+        (cardTouched.expMonth ||
+          cardTouched.expYear ||
+          (cardForm.expMonth.length > 0 && cardForm.expYear.length > 0))
+    );
 
   useEffect(() => {
     if (!session.email) return setWallet(null);
@@ -116,77 +227,14 @@ export default function WalletScreen() {
     setView('home');
   }, [router, view]);
 
-type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
-
-  const nativePayOptions = useMemo<NativePayOption[]>(() => {
-    const options: NativePayOption[] = [];
-    if (Platform.OS === 'ios') {
-      options.push({ label: 'Apple Pay', type: 'apple-pay' });
-    }
-    options.push({ label: 'Google Pay', type: 'google-pay' });
-    return options;
-  }, []);
-  const primaryNativePayOption = nativePayOptions[0] ?? null;
-  const secondaryNativePayOption = nativePayOptions[1] ?? null;
-
-  const handleRegisterNativePay = useCallback(
-    (option: NativePayOption) => {
-      if (!session.email) return;
-      registerNativePayMethod(session.email, option);
-      Alert.alert(
-        `${option.label} activé`,
-        `${option.label} est prêt pour tes paiements CampusRide.`
-      );
-      setMethodPickerVisible(false);
-      setCardModalVisible(false);
-    },
-    [session.email]
-  );
-
-  const handleUseNativePay = useCallback(
-    (option: NativePayOption) => {
-      if (!session.email) return;
-      const existing = paymentMethods.find((method) => method.type === option.type);
-      if (existing) {
-        selectPaymentMethod(session.email, existing.id);
-        Alert.alert(
-          `${option.label} sélectionné`,
-          `${option.label} est défini pour cette recharge.`
-        );
-        return;
-      }
-      registerNativePayMethod(session.email, option);
-      Alert.alert(
-        `${option.label} activé`,
-        `${option.label} est prêt pour tes paiements CampusRide.`
-      );
-    },
-    [paymentMethods, session.email]
-  );
-
   const promptAddPaymentMethod = useCallback(() => {
     if (!session.email) {
       Alert.alert('Connexion requise', 'Connecte-toi pour gérer tes cartes.');
       return;
     }
-    if (nativePayOptions.length) {
-      Alert.alert(
-        'Ajouter un moyen de paiement',
-        'Choisis comment tu souhaites payer sur CampusRide.',
-        [
-          { text: 'Annuler', style: 'cancel' },
-          ...nativePayOptions.map((option) => ({
-            text: option.label,
-            onPress: () => handleRegisterNativePay(option),
-          })),
-          { text: 'Ajouter une carte', onPress: () => setCardModalVisible(true) },
-        ],
-        { cancelable: true }
-      );
-      return;
-    }
+    resetCardForm();
     setCardModalVisible(true);
-  }, [handleRegisterNativePay, nativePayOptions, session.email]);
+  }, [resetCardForm, session.email]);
 
   const openPaymentMethodPicker = useCallback(() => {
     if (!session.email) {
@@ -218,43 +266,37 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
   );
 
   const handleSaveCard = useCallback(() => {
-    if (!session.email) return;
+    const email = session.email;
+    if (!email || isSavingCard) return;
+    if (!cardFormIsValid) {
+      setCardTouched({
+        holder: true,
+        number: true,
+        expMonth: true,
+        expYear: true,
+        cvc: true,
+      });
+      return;
+    }
+    setIsSavingCard(true);
     const holder = cardForm.holder.trim();
-    const sanitizedNumber = cardForm.number.replace(/\s+/g, '');
-    const expMonth = parseInt(cardForm.expMonth, 10);
-    const expYear = parseInt(cardForm.expYear, 10);
-    const cvc = cardForm.cvc.trim();
-    if (!holder) {
-      Alert.alert('Nom du titulaire requis', 'Entre le nom figurant sur la carte.');
-      return;
-    }
-    if (!/^\d{12,19}$/.test(sanitizedNumber)) {
-      Alert.alert('Numéro invalide', 'Entre un numéro de carte valide.');
-      return;
-    }
-    if (!Number.isFinite(expMonth) || expMonth < 1 || expMonth > 12) {
-      Alert.alert('Expiration invalide', 'Renseigne un mois valide (01-12).');
-      return;
-    }
-    if (!Number.isFinite(expYear) || expYear < 24) {
-      Alert.alert('Expiration invalide', 'Renseigne une année valide (>= 24).');
-      return;
-    }
-    if (!/^\d{3,4}$/.test(cvc)) {
-      Alert.alert('CVC invalide', 'Vérifie le cryptogramme au dos de la carte.');
-      return;
-    }
-    registerCardMethod(session.email, {
-      holderName: holder,
-      number: sanitizedNumber,
-      expMonth,
-      expYear,
-    });
-    Alert.alert('Carte enregistrée', 'Ton moyen de paiement est prêt à être utilisé.');
-    setCardModalVisible(false);
-    setMethodPickerVisible(false);
-    resetCardForm();
-  }, [cardForm, resetCardForm, session.email]);
+    const sanitizedNumber = cardForm.number.replace(/\D+/g, '');
+    const expMonth = Number.parseInt(cardForm.expMonth, 10);
+    const expYear = Number.parseInt(cardForm.expYear, 10);
+    setTimeout(() => {
+      registerCardMethod(email, {
+        holderName: holder,
+        number: sanitizedNumber,
+        expMonth,
+        expYear,
+      });
+      Alert.alert('Carte enregistrée', 'Ton moyen de paiement est prêt à être utilisé.');
+      setIsSavingCard(false);
+      setCardModalVisible(false);
+      setMethodPickerVisible(false);
+      resetCardForm();
+    }, CARD_SAVE_DELAY_MS);
+  }, [cardForm, cardFormIsValid, isSavingCard, resetCardForm, session.email]);
 
   const handleSaveBankAccount = useCallback(() => {
     if (!session.email) return;
@@ -283,14 +325,8 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
         [
           { text: 'Annuler', style: 'cancel' },
           {
-            text: primaryNativePayOption?.label ?? 'Ajouter une carte',
-            onPress: () => {
-              if (primaryNativePayOption) {
-                handleRegisterNativePay(primaryNativePayOption);
-              } else {
-                setCardModalVisible(true);
-              }
-            },
+            text: 'Ajouter une carte',
+            onPress: () => setCardModalVisible(true),
           },
         ]
       );
@@ -316,7 +352,7 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
     } finally {
       setProcessing(false);
     }
-  }, [addAmount, handleRegisterNativePay, primaryNativePayOption, payoutMethod, session.email]);
+  }, [addAmount, payoutMethod, session.email]);
 
   const onWithdrawFunds = useCallback(() => {
     if (!session.email) return;
@@ -421,47 +457,21 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
     <View style={styles.paymentCard}>
       <Text style={styles.paymentTitle}>Méthode de paiement</Text>
       {payoutMethod ? (
-        <>
-          <View style={styles.paymentDetail}>
-            <IconSymbol name="creditcard.fill" size={28} color={C.primary} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.paymentName}>{payoutMethod.brand}</Text>
-              <Text style={styles.paymentHint}>{describeMethodHint(payoutMethod)}</Text>
-            </View>
-            <Pressable onPress={openPaymentMethodPicker}>
-              <Text style={styles.paymentAction}>Modifier</Text>
-            </Pressable>
+        <View style={styles.paymentDetail}>
+          <IconSymbol name="creditcard.fill" size={28} color={C.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.paymentName}>{payoutMethod.brand}</Text>
+            <Text style={styles.paymentHint}>{describeMethodHint(payoutMethod)}</Text>
           </View>
-          {primaryNativePayOption && payoutMethod.type !== primaryNativePayOption.type ? (
-            <Pressable
-              style={styles.nativePayButton}
-              onPress={() => handleRegisterNativePay(primaryNativePayOption)}
-            >
-              <IconSymbol name="wave.3.forward" size={18} color="#fff" />
-              <Text style={styles.nativePayButtonText}>
-                Activer {primaryNativePayOption.label}
-              </Text>
-            </Pressable>
-          ) : null}
-        </>
-      ) : (
-        <>
-          <Pressable style={styles.paymentSelector} onPress={promptAddPaymentMethod}>
-            <View style={styles.paymentSelectorIcon} />
-            <Text style={styles.paymentSelectorText}>{actionLabel}</Text>
+          <Pressable onPress={openPaymentMethodPicker}>
+            <Text style={styles.paymentAction}>Modifier</Text>
           </Pressable>
-          {primaryNativePayOption ? (
-            <Pressable
-              style={styles.nativePayButton}
-              onPress={() => handleRegisterNativePay(primaryNativePayOption)}
-            >
-              <IconSymbol name="wave.3.forward" size={18} color="#fff" />
-              <Text style={styles.nativePayButtonText}>
-                Activer {primaryNativePayOption.label}
-              </Text>
-            </Pressable>
-          ) : null}
-        </>
+        </View>
+      ) : (
+        <Pressable style={styles.paymentSelector} onPress={promptAddPaymentMethod}>
+          <View style={styles.paymentSelectorIcon} />
+          <Text style={styles.paymentSelectorText}>{actionLabel}</Text>
+        </Pressable>
       )}
     </View>
   );
@@ -523,72 +533,6 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
           );
         })
       )}
-    </View>
-  );
-
-  const roleLabel = useMemo(() => {
-    if (!session.email) return 'membre Campus Ride';
-    if (session.isDriver && session.isPassenger) return 'conducteur et passager';
-    if (session.isDriver) return 'conducteur';
-    if (session.isPassenger) return 'passager';
-    return 'membre Campus Ride';
-  }, [session.email, session.isDriver, session.isPassenger]);
-
-  const handleConfirmDeleteAccount = useCallback(async () => {
-    if (!session.email || isDeletingAccount) return;
-    setIsDeletingAccount(true);
-    try {
-      deleteAccountData(session.email);
-      await Auth.signOut();
-      router.replace('/welcome');
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Impossible de supprimer ton compte pour le moment.';
-      Alert.alert('Erreur', message);
-    } finally {
-      setIsDeletingAccount(false);
-    }
-  }, [isDeletingAccount, router, session.email]);
-
-  const promptDeleteAccount = useCallback(() => {
-    if (!session.email || isDeletingAccount) return;
-    Alert.alert(
-      'Supprimer mon compte',
-      'Tous tes trajets, messages, avis, wallet et préférences seront effacés. Cette action est irréversible.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Supprimer',
-          style: 'destructive',
-          onPress: () => {
-            void handleConfirmDeleteAccount();
-          },
-        },
-      ],
-      { cancelable: true }
-    );
-  }, [handleConfirmDeleteAccount, isDeletingAccount, session.email]);
-
-  const renderDeleteAccountSection = () => (
-    <View style={styles.deleteSection}>
-      <Text style={styles.deleteTitle}>Supprimer mon compte {roleLabel}</Text>
-      <Text style={styles.deleteDescription}>
-        Toutes tes données de {roleLabel} (trajets, messages, avis, wallet) seront retirées de CampusRide.
-      </Text>
-      <Pressable
-        style={[
-          styles.deleteButton,
-          (!session.email || isDeletingAccount) && styles.deleteButtonDisabled,
-        ]}
-        onPress={promptDeleteAccount}
-        disabled={!session.email || isDeletingAccount}
-      >
-        <Text style={styles.deleteButtonText}>
-          {isDeletingAccount ? 'Suppression en cours…' : 'Supprimer mon compte'}
-        </Text>
-      </Pressable>
     </View>
   );
 
@@ -667,27 +611,12 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
             onPress={promptAddPaymentMethod}
             accessibilityRole="button"
           >
-            <Text style={styles.methodEmptyText}>
-              {primaryNativePayOption ? `Activer ${primaryNativePayOption.label}` : 'Ajouter une carte'}
-            </Text>
+            <Text style={styles.methodEmptyText}>Ajouter une carte</Text>
           </Pressable>
         )}
-        {primaryNativePayOption &&
-        !paymentMethods.some((m) => m.type === primaryNativePayOption.type) ? (
-          <Pressable
-            style={[styles.nativePayButton, styles.nativePayButtonOutline]}
-            onPress={() => handleRegisterNativePay(primaryNativePayOption)}
-          >
-            <IconSymbol name="wave.3.forward" size={18} color={C.primary} />
-            <Text style={[styles.nativePayButtonText, { color: C.primary }]}>
-              Activer {primaryNativePayOption.label}
-            </Text>
-          </Pressable>
-        ) : null}
       </View>
 
       {renderTransactions()}
-      {renderDeleteAccountSection()}
     </>
   );
 
@@ -703,35 +632,7 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
         <Text style={styles.flowSubtitle}>Rechargez votre wallet CampusRide</Text>
       </GradientBackground>
       {renderAmountInput('Montant à ajouter', addAmount, setAddAmount, ADD_PRESETS)}
-      {renderPaymentMethodCard(
-        primaryNativePayOption
-          ? `Activer ${primaryNativePayOption.label}`
-          : 'Sélectionner une méthode de paiement'
-      )}
-      {primaryNativePayOption ? (
-        <Pressable
-          style={styles.nativePayCTA}
-          onPress={() => handleUseNativePay(primaryNativePayOption)}
-        >
-          <IconSymbol name="wave.3.forward" size={20} color="#fff" />
-          <Text style={styles.nativePayCTAPlay}>
-            Utiliser {primaryNativePayOption.label} pour cette recharge
-          </Text>
-        </Pressable>
-      ) : null}
-      {secondaryNativePayOption ? (
-        <Pressable
-          style={[styles.nativePayCTA, styles.nativePaySecondaryCTA]}
-          onPress={() => handleUseNativePay(secondaryNativePayOption)}
-        >
-          <View style={styles.nativePaySecondaryLogo}>
-            <Text style={styles.nativePaySecondaryLogoText}>G</Text>
-          </View>
-          <Text style={[styles.nativePayCTAPlay, styles.nativePaySecondaryCTAPlay]}>
-            Utiliser {secondaryNativePayOption.label} pour cette recharge
-          </Text>
-        </Pressable>
-      ) : null}
+      {renderPaymentMethodCard('Sélectionner une méthode de paiement')}
       {renderSummary('Montant', parseFloat(addAmount.replace(',', '.')) || 0, 'Total à payer')}
       <Pressable
         style={styles.primaryButton}
@@ -851,16 +752,6 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
             ))
           )}
           <View style={styles.modalActionsColumn}>
-            {primaryNativePayOption ? (
-              <Pressable
-                style={styles.modalSecondaryButton}
-                onPress={() => handleRegisterNativePay(primaryNativePayOption)}
-              >
-                <Text style={styles.modalSecondaryButtonText}>
-                  Activer {primaryNativePayOption.label}
-                </Text>
-              </Pressable>
-            ) : null}
             <Pressable
               style={styles.modalSecondaryButton}
               onPress={() => {
@@ -884,7 +775,10 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
       visible={cardModalVisible}
       transparent
       animationType="fade"
-      onRequestClose={() => setCardModalVisible(false)}
+      onRequestClose={() => {
+        setCardModalVisible(false);
+        resetCardForm();
+      }}
     >
       <View style={styles.modalOverlay}>
         <KeyboardAvoidingView
@@ -897,45 +791,84 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
             placeholder="Nom du titulaire"
             placeholderTextColor={C.gray400}
             value={cardForm.holder}
-            onChangeText={(value) => updateCardForm({ holder: value })}
+            onChangeText={(value) =>
+              updateCardForm({
+                holder: value.replace(/[^\p{L}\s-]/gu, ''),
+              })
+            }
+            onBlur={() => markCardFieldTouched('holder')}
           />
+          {shouldDisplayFieldError('holder') ? (
+            <Text style={styles.fieldError}>{cardErrors.holder}</Text>
+          ) : null}
           <TextInput
             style={styles.modalInput}
             placeholder="Numéro de carte"
             placeholderTextColor={C.gray400}
             keyboardType="number-pad"
             value={cardForm.number}
-            onChangeText={(value) => updateCardForm({ number: value })}
+            onChangeText={(value) => updateCardForm({ number: formatCardNumberInput(value) })}
+            onBlur={() => markCardFieldTouched('number')}
             maxLength={19}
           />
-          <View style={styles.modalRow}>
-            <TextInput
-              style={[styles.modalInput, styles.modalInputHalf]}
-              placeholder="MM"
-              placeholderTextColor={C.gray400}
-              keyboardType="number-pad"
-              value={cardForm.expMonth}
-              onChangeText={(value) => updateCardForm({ expMonth: value })}
-              maxLength={2}
-            />
-            <TextInput
-              style={[styles.modalInput, styles.modalInputHalf]}
-              placeholder="AA"
-              placeholderTextColor={C.gray400}
-              keyboardType="number-pad"
-              value={cardForm.expYear}
-              onChangeText={(value) => updateCardForm({ expYear: value })}
-              maxLength={2}
-            />
+          {shouldDisplayFieldError('number') ? (
+            <Text style={styles.fieldError}>{cardErrors.number}</Text>
+          ) : null}
+          <View style={styles.expirationBlock}>
+            <Text style={styles.expirationLabel}>Date d’expiration</Text>
+            <View style={styles.expirationRow}>
+              <View style={styles.expirationColumn}>
+                <TextInput
+                  style={[styles.modalInput, styles.modalInputHalf]}
+                  placeholder="MM"
+                  placeholderTextColor={C.gray400}
+                  keyboardType="number-pad"
+                  value={cardForm.expMonth}
+                  onChangeText={(value) =>
+                    updateCardForm({ expMonth: value.replace(/\D+/g, '') })
+                  }
+                  onBlur={() => markCardFieldTouched('expMonth')}
+                  maxLength={2}
+                />
+                {shouldDisplayFieldError('expMonth') ? (
+                  <Text style={styles.fieldError}>{cardErrors.expMonth}</Text>
+                ) : null}
+              </View>
+              <View style={styles.expirationColumn}>
+                <TextInput
+                  style={[styles.modalInput, styles.modalInputHalf]}
+                  placeholder="AA"
+                  placeholderTextColor={C.gray400}
+                  keyboardType="number-pad"
+                  value={cardForm.expYear}
+                  onChangeText={(value) => updateCardForm({ expYear: value.replace(/\D+/g, '') })}
+                  onBlur={() => markCardFieldTouched('expYear')}
+                  maxLength={2}
+                />
+                {shouldDisplayFieldError('expYear') ? (
+                  <Text style={styles.fieldError}>{cardErrors.expYear}</Text>
+                ) : null}
+              </View>
+            </View>
+            {shouldShowExpirationError ? (
+              <Text style={styles.fieldError}>{cardErrors.expiration}</Text>
+            ) : null}
+          </View>
+          <View style={styles.expirationBlock}>
+            <Text style={styles.expirationLabel}>CVC</Text>
             <TextInput
               style={[styles.modalInput, styles.modalInputHalf]}
               placeholder="CVC"
               placeholderTextColor={C.gray400}
               keyboardType="number-pad"
               value={cardForm.cvc}
-              onChangeText={(value) => updateCardForm({ cvc: value })}
-              maxLength={4}
+              onChangeText={(value) => updateCardForm({ cvc: value.replace(/\D+/g, '') })}
+              onBlur={() => markCardFieldTouched('cvc')}
+              maxLength={3}
             />
+            {shouldDisplayFieldError('cvc') ? (
+              <Text style={styles.fieldError}>{cardErrors.cvc}</Text>
+            ) : null}
           </View>
           <View style={styles.modalActions}>
             <Pressable
@@ -947,8 +880,19 @@ type NativePayOption = { label: string; type: 'apple-pay' | 'google-pay' };
             >
               <Text style={styles.modalSecondaryButtonText}>Annuler</Text>
             </Pressable>
-            <Pressable style={styles.modalPrimaryButton} onPress={handleSaveCard}>
-              <Text style={styles.modalPrimaryButtonText}>Enregistrer</Text>
+            <Pressable
+              style={[
+                styles.modalPrimaryButton,
+                (!cardFormIsValid || isSavingCard) && styles.modalPrimaryButtonDisabled,
+              ]}
+              onPress={handleSaveCard}
+              disabled={!cardFormIsValid || isSavingCard}
+            >
+              {isSavingCard ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.modalPrimaryButtonText}>Enregistrer</Text>
+              )}
             </Pressable>
           </View>
         </KeyboardAvoidingView>
@@ -1036,19 +980,6 @@ const registerCardMethod = (
     holderName: card.holderName,
     expMonth: card.expMonth,
     expYear: card.expYear,
-    addedAt: Date.now(),
-  });
-};
-
-const registerNativePayMethod = (
-  email: string,
-  option: { label: string; type: 'apple-pay' | 'google-pay' }
-) => {
-  const fallbackLast4 = option.type === 'apple-pay' ? 'APAY' : 'GPAY';
-  setPayoutMethod(email, {
-    brand: option.label,
-    last4: fallbackLast4,
-    type: option.type,
     addedAt: Date.now(),
   });
 };
@@ -1382,8 +1313,11 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     color: C.gray900,
   },
-  modalRow: { flexDirection: 'row', gap: Spacing.sm },
   modalInputHalf: { flex: 1 },
+  expirationBlock: { gap: Spacing.xs },
+  expirationLabel: { color: C.gray700, fontSize: 12, fontWeight: '600' },
+  expirationRow: { flexDirection: 'row', gap: Spacing.sm },
+  expirationColumn: { flex: 1 },
   modalActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -1397,6 +1331,13 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
   },
   modalPrimaryButtonText: { color: '#fff', fontWeight: '700' },
+  modalPrimaryButtonDisabled: { opacity: 0.65 },
+  fieldError: {
+    color: Colors.danger,
+    fontSize: 12,
+    marginTop: Spacing.xs,
+  },
+  modalPrimaryButtonDisabled: { opacity: 0.65 },
   modalSecondaryButton: {
     borderRadius: Radius.md,
     paddingHorizontal: Spacing.lg,
@@ -1425,50 +1366,5 @@ const styles = StyleSheet.create({
   selectorLabel: { fontWeight: '600', color: C.gray900 },
   selectorHint: { color: C.gray500, fontSize: 12 },
   selectorBadge: { color: C.primary, fontWeight: '700', fontSize: 12 },
-  nativePayButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.xs,
-    backgroundColor: C.primary,
-    borderRadius: Radius.pill,
-    paddingVertical: Spacing.sm,
-    marginTop: Spacing.sm,
-  },
-  nativePayButtonOutline: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: C.primary,
-  },
-  nativePayButtonText: { color: '#fff', fontWeight: '700' },
   methodSelect: { color: C.primary, fontWeight: '700' },
-  nativePayCTA: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    backgroundColor: '#000',
-    borderRadius: Radius.pill,
-    paddingVertical: Spacing.sm,
-    marginVertical: Spacing.sm,
-  },
-  nativePayCTAPlay: { color: '#fff', fontWeight: '700' },
-  nativePaySecondaryCTA: {
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.2)',
-  },
-  nativePaySecondaryCTAPlay: { color: '#1F1F1F' },
-  nativePaySecondaryLogo: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#1A73E8',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  nativePaySecondaryLogoText: {
-    color: '#fff',
-    fontWeight: '800',
-  },
 });

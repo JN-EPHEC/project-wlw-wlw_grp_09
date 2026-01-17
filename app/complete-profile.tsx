@@ -24,6 +24,7 @@ import { AppBackground } from '@/components/ui/app-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
+import { useDocumentStore } from '@/hooks/use-document-store';
 import { updatePassengerProfile } from '@/src/firestoreUsers';
 import { uploadProfileSelfie, uploadStudentCard } from '@/src/storageUploads';
 
@@ -57,6 +58,7 @@ const isRemoteUri = (uri: string | null | undefined) =>
 
 export default function CompleteProfile() {
   const session = useAuthSession();
+  const backgroundColors = session.isDriver ? Gradients.driver : Gradients.twilight;
   const { width, height } = useWindowDimensions();
   const isCompact = width < 360;
   const showUploadGrid = width >= 420;
@@ -90,6 +92,7 @@ export default function CompleteProfile() {
   const selfieAttemptRef = useRef(0);
   const [submitting, setSubmitting] = useState(false);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const { setDocumentEntry } = useDocumentStore();
 
   const phoneValid = useMemo(() => /^(\+?\d{8,15})$/.test(phone.trim()), [phone]);
   const infoValid =
@@ -108,6 +111,7 @@ export default function CompleteProfile() {
     studentCardAttemptRef.current += 1;
     setStudentCardLoading(false);
     setStudentCardUri(null);
+    setDocumentEntry('studentCard', null);
   };
 
   const resetSelfieSelection = () => {
@@ -128,6 +132,7 @@ export default function CompleteProfile() {
             : await pickKycImage('gallery', 'student-card');
         if (uri && studentCardAttemptRef.current === attempt) {
           setStudentCardUri(uri);
+          setDocumentEntry('studentCard', { uri, name: 'Carte étudiant' });
         }
       } finally {
         if (studentCardAttemptRef.current === attempt) {
@@ -293,9 +298,9 @@ export default function CompleteProfile() {
       });
 
       setUploadMessage('Téléversement de tes documents…');
-      void finalizeDocuments();
+      await finalizeDocuments();
 
-      router.replace('/profile-welcome');
+      router.replace('/account-complete');
     } catch (error) {
       const message =
         error instanceof Error
@@ -323,7 +328,7 @@ export default function CompleteProfile() {
   const primaryActionLabel = step === 1 ? 'Continuer' : submitting ? 'Enregistrement…' : 'Valider';
 
   return (
-    <AppBackground colors={Gradients.twilight}>
+    <AppBackground colors={backgroundColors}>
       <KeyboardAvoidingView
         style={styles.keyboard}
         behavior={Platform.select({ ios: 'padding', android: undefined })}

@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Pressable,
@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 
+import { HeaderBackButton } from '@/components/ui/header-back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { Colors, Gradients, Radius, Shadows, Spacing, Typography } from '@/app/ui/theme';
@@ -20,45 +21,40 @@ import {
   getNotificationPreferences,
   subscribeNotificationPreferences,
   updateNotificationPreferences,
-  type NotificationPreferences,
 } from '@/app/services/notifications';
 import { useBlockedUsers } from '@/hooks/use-blocked-users';
+import { useLanguage, useTranslation } from '@/hooks/use-language';
 
 const C = Colors;
-
-const useSettingSwitch = (initial: boolean): [boolean, (value: boolean) => void] => {
-  const [value, setValue] = useState(initial);
-  const toggle = (next: boolean) => setValue(next);
-  return [value, toggle];
-};
 
 export default function SettingsScreen() {
   const session = useAuthSession();
   const email = session.email;
-  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPreferences | null>(null);
+  const [pushEnabledLocal, setPushEnabledLocal] = useState(true);
   const [soundEnabledLocal, setSoundEnabledLocal] = useState(true);
   const [remindersEnabledLocal, setRemindersEnabledLocal] = useState(true);
+  const { locale } = useLanguage();
+  const t = useTranslation();
 
   useEffect(() => {
     if (!email) {
-      setNotificationPrefs(null);
       setSoundEnabledLocal(true);
       setRemindersEnabledLocal(true);
+      setPushEnabledLocal(true);
       return;
     }
     const current = getNotificationPreferences(email);
-    setNotificationPrefs(current);
+    setPushEnabledLocal(current.pushEnabled);
     setSoundEnabledLocal(current.soundEnabled);
     setRemindersEnabledLocal(current.remindersEnabled);
     const unsubscribe = subscribeNotificationPreferences(email, (prefs) => {
-      setNotificationPrefs(prefs);
+      setPushEnabledLocal(prefs.pushEnabled);
       setSoundEnabledLocal(prefs.soundEnabled);
       setRemindersEnabledLocal(prefs.remindersEnabled);
     });
     return unsubscribe;
   }, [email]);
 
-  const [locationSharing, setLocationSharing] = useSettingSwitch(true);
   const [privacyVisible, setPrivacyVisible] = useState(false);
   const blockedUsers = useBlockedUsers(session.email);
 
@@ -73,17 +69,17 @@ export default function SettingsScreen() {
   const openPrivacyPolicy = () => setPrivacyVisible(true);
   const closePrivacyPolicy = () => setPrivacyVisible(false);
 
-  const openLanguageSelector = () =>
-    Alert.alert('Langue', 'Les autres langues arrivent prochainement.');
+  const openLanguageSelector = () => router.push('/settings/language');
 
   const openTerms = () =>
-    Alert.alert('Conditions d’utilisation', 'Document disponible prochainement.');
+    router.push('/settings/terms');
 
   const handlePushChange = (value: boolean) => {
     if (!email) {
       Alert.alert('Connexion requise', 'Connecte-toi pour modifier les notifications.');
       return;
     }
+    setPushEnabledLocal(value);
     updateNotificationPreferences(email, { pushEnabled: value });
   };
 
@@ -105,11 +101,11 @@ export default function SettingsScreen() {
     updateNotificationPreferences(email, { remindersEnabled: value });
   };
 
-  const pushEnabled = notificationPrefs?.pushEnabled ?? false;
-  const remindersEnabled = notificationPrefs?.remindersEnabled ?? remindersEnabledLocal;
+  const pushEnabled = pushEnabledLocal;
+  const backgroundColors = session.isDriver ? Gradients.driver : Gradients.twilight;
 
   return (
-    <GradientBackground colors={Gradients.background} style={styles.gradient}>
+    <GradientBackground colors={backgroundColors} style={styles.gradient}>
       <SafeAreaView style={styles.safe}>
         <ScrollView
           contentContainerStyle={styles.scroll}
@@ -117,28 +113,21 @@ export default function SettingsScreen() {
           bounces={false}
         >
           <View style={styles.header}>
-            <Pressable style={styles.backButton} onPress={() => router.back()}>
-              <IconSymbol name="chevron.left" size={22} color="#fff" />
-            </Pressable>
-            <Text style={styles.headerTitle}>Paramètres</Text>
+            <HeaderBackButton onPress={() => router.back()} />
+            <Text style={styles.headerTitle}>{t('settingsTitle')}</Text>
           </View>
 
-          {blockedUsers.length === 0 ? (
-            <Text style={styles.blockedStatus}>Tu n’as bloqué personne pour le moment.</Text>
-          ) : null}
           <View style={styles.card}>
             <SettingsSection
-              title="Notifications"
+              title={t('settingsNotifications')}
               icon="bell.fill"
               iconTint="#FF9D5C"
             >
               <ToggleCard
                 icon="bell.fill"
-                title="Notifications push"
+                title={t('settingsNotificationsPush')}
                 subtitle={
-                  email
-                    ? 'Recevoir les alertes de trajets'
-                    : 'Connecte-toi pour activer'
+                  email ? t('settingsNotificationsPushSubtitle') : t('settingsLoginPrompt')
                 }
                 value={pushEnabled}
                 onChange={handlePushChange}
@@ -146,48 +135,50 @@ export default function SettingsScreen() {
               />
               <ToggleCard
                 icon="clock"
-                title="Rappels de trajet"
-                subtitle="Notification 30 min avant le départ"
-                value={remindersEnabled && pushEnabled}
+                title={t('settingsReminders')}
+                subtitle={t('settingsRemindersSubtitle')}
+                value={remindersEnabledLocal}
                 onChange={handleReminderChange}
-                disabled={!email || !pushEnabled}
+                disabled={!email}
               />
               <ToggleCard
                 icon="speaker.wave.2.fill"
-                title="Sons"
-                subtitle="Sons des notifications"
-                value={soundEnabledLocal && pushEnabled}
+                title={t('settingsSounds')}
+                subtitle={t('settingsSoundsSubtitle')}
+                value={soundEnabledLocal}
                 onChange={handleSoundChange}
-                disabled={!email || !pushEnabled}
+                disabled={!email}
               />
             </SettingsSection>
 
             <SettingsSection
-              title="Confidentialité et sécurité"
+              title={t('settingsConfidentiality')}
               icon="shield.fill"
               iconTint="#FF8B78"
             >
               <NavigationRow
                 icon="lock.fill"
-                title="Changer le mot de passe"
+                title={t('settingsChangePassword')}
                 onPress={openChangePassword}
               />
               <ToggleCard
                 icon="eye.fill"
-                title="Partage de localisation"
-                subtitle="Pendant les trajets actifs"
-                value={locationSharing}
-                onChange={setLocationSharing}
+                title={t('settingsLocationSharing')}
+                subtitle={t('settingsLocationSharingSubtitle')}
+                note={t('featureComingSoon')}
+                value={false}
+                onChange={() => null}
+                disabled
               />
               <NavigationRow
                 icon="shield.fill"
-                title="Politique de confidentialité"
+                title={t('settingsPrivacyPolicy')}
                 onPress={openPrivacyPolicy}
               />
               <NavigationRow
                 icon="slash.circle"
                 iconColor={C.danger}
-                title="Utilisateurs bloqués"
+                title={t('settingsBlockedUsers')}
                 value={
                   blockedUsers.length
                     ? `${blockedUsers.length} bloqué${blockedUsers.length > 1 ? 's' : ''}`
@@ -197,27 +188,27 @@ export default function SettingsScreen() {
               />
             </SettingsSection>
 
-            <SettingsSection title="Apparence" icon="iphone" iconTint="#FF9D5C">
+            <SettingsSection title={t('settingsAppearance')} icon="iphone" iconTint="#FF9D5C">
               <ToggleCard
                 icon="moon.stars.fill"
-                title="Mode sombre"
-                subtitle="Bientôt disponible"
+                title={t('settingsDarkMode')}
+                subtitle={t('settingsDarkModeSubtitle')}
                 value={false}
                 onChange={() => null}
                 disabled
               />
               <NavigationRow
                 icon="globe"
-                title="Langue"
-                value="Français"
+                title={t('settingsLanguage')}
+                value={locale.toUpperCase()}
                 onPress={openLanguageSelector}
               />
             </SettingsSection>
 
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>À propos</Text>
-              <StaticRow label="Version de l'application" value={aboutVersion} />
-              <NavigationRow title="Conditions d'utilisation" onPress={openTerms} />
+              <Text style={styles.sectionTitle}>{t('settingsAbout')}</Text>
+              <StaticRow label={t('settingsAppVersionLabel')} value={aboutVersion} />
+              <NavigationRow title={t('settingsTerms')} onPress={openTerms} />
             </View>
           </View>
           <PrivacyPolicyModal visible={privacyVisible} onClose={closePrivacyPolicy} />
@@ -251,6 +242,7 @@ const ToggleCard = ({
   icon,
   title,
   subtitle,
+  note,
   value,
   onChange,
   disabled,
@@ -258,16 +250,18 @@ const ToggleCard = ({
   icon: Parameters<typeof IconSymbol>[0]['name'];
   title: string;
   subtitle: string;
+  note?: string;
   value: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
 }) => (
-  <View style={styles.toggleCard}>
+  <View style={[styles.toggleCard, disabled && styles.toggleCardDisabled]}>
     <View style={styles.toggleContent}>
       <IconSymbol name={icon} size={20} color={C.gray600} />
       <View style={styles.toggleText}>
         <Text style={styles.toggleTitle}>{title}</Text>
         <Text style={styles.toggleSubtitle}>{subtitle}</Text>
+        {note ? <Text style={styles.toggleNote}>{note}</Text> : null}
       </View>
     </View>
     <Switch
@@ -330,15 +324,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
     gap: Spacing.sm,
   },
-  backButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.4)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   headerTitle: {
     color: '#fff',
     fontSize: 20,
@@ -383,6 +368,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  toggleCardDisabled: {
+    opacity: 0.6,
+  },
   toggleContent: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -400,6 +388,11 @@ const styles = StyleSheet.create({
   toggleSubtitle: {
     color: C.gray500,
     fontSize: 12,
+  },
+  toggleNote: {
+    color: C.gray500,
+    fontSize: 12,
+    marginTop: Spacing.xs / 2,
   },
   navRow: {
     flexDirection: 'row',

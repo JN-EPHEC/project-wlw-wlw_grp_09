@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   query,
   serverTimestamp,
   setDoc,
@@ -168,7 +169,10 @@ export async function updatePassengerProfile({
     updatedAt: serverTimestamp(),
   };
 
-  if (studentCardUrl) payload.studentCardUrl = studentCardUrl;
+  if (studentCardUrl) {
+    payload.studentCardUrl = studentCardUrl;
+    payload["documents.studentCard"] = studentCardUrl;
+  }
   if (selfieUrl) payload.selfieUrl = selfieUrl;
 
   await updateDoc(existing.ref, payload);
@@ -266,4 +270,107 @@ export async function updateUserRoles(email, { driver, passenger }) {
   }
   await updateDoc(existing.ref, payload);
   return existing.id;
+}
+
+const DOCUMENT_FIELD_MAP = {
+  studentCard: "documents.studentCard",
+  driverLicenseRecto: "documents.driverLicenseRecto",
+  driverLicenseVerso: "documents.driverLicenseVerso",
+};
+
+export async function updateUserDocuments(email, changes) {
+  const existing = await findUserDocByEmail(email);
+  if (!existing) {
+    throw new Error("Utilisateur introuvable pour les documents.");
+  }
+
+  const ensureValueObject = (value) => {
+    if (!value) return null;
+    return { url: value };
+  };
+
+  const updates = {};
+
+  if (Object.prototype.hasOwnProperty.call(changes, "studentCard")) {
+    updates[DOCUMENT_FIELD_MAP.studentCard] = ensureValueObject(changes.studentCard ?? null);
+    updates.studentCardUrl = changes.studentCard ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, "driverLicenseRecto")) {
+    updates[DOCUMENT_FIELD_MAP.driverLicenseRecto] = ensureValueObject(
+      changes.driverLicenseRecto ?? null
+    );
+    updates.driverLicenseFrontUrl = changes.driverLicenseRecto ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, "driverLicenseVerso")) {
+    updates[DOCUMENT_FIELD_MAP.driverLicenseVerso] = ensureValueObject(
+      changes.driverLicenseVerso ?? null
+    );
+    updates.driverLicenseBackUrl = changes.driverLicenseVerso ?? null;
+  }
+
+  if (!Object.keys(updates).length) {
+    return existing.id;
+  }
+
+  await updateDoc(existing.ref, {
+    ...updates,
+    updatedAt: serverTimestamp(),
+  });
+
+  return existing.id;
+}
+
+const resolveDocumentUrl = (value) => {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object' && value.url) return value.url;
+  return null;
+};
+
+const normalizeDocuments = (payload) => {
+  if (!payload) return null;
+  return {
+    driverLicenseRecto: resolveDocumentUrl(payload.driverLicenseRecto),
+    driverLicenseVerso: resolveDocumentUrl(payload.driverLicenseVerso),
+    studentCard: resolveDocumentUrl(payload.studentCard),
+  };
+};
+
+export async function getUserDocuments(email) {
+  const existing = await findUserDocByEmail(email);
+  if (!existing) return null;
+  const data = existing.data();
+  return normalizeDocuments(data.documents ?? null);
+}
+
+export function subscribeUserDocuments(email, listener) {
+  let unsubscribe = () => {};
+  let cancelled = false;
+
+  (async () => {
+    try {
+      const existing = await findUserDocByEmail(email);
+      if (!existing || cancelled) {
+        listener(null);
+        return;
+      }
+      unsubscribe = onSnapshot(
+        existing.ref,
+        (snapshot) => {
+          listener(normalizeDocuments(snapshot.data()?.documents ?? null));
+        },
+        (error) => {
+          console.warn("Failed to subscribe to user documents", error);
+        }
+      );
+    } catch (error) {
+      console.warn("Failed to subscribe to user documents", error);
+      listener(null);
+    }
+  })();
+
+  return () => {
+    cancelled = true;
+    unsubscribe();
+  };
 }

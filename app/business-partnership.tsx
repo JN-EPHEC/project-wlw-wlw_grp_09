@@ -14,11 +14,6 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 
 const C = Colors;
 
-const heroStats = [
-  { label: 'Utilisateurs actifs', value: '15K+', accent: C.primary },
-  { label: 'Impressions/mois', value: '45K+', accent: C.secondaryDark },
-];
-
 const benefitPoints = [
   { title: 'Audience ciblée', detail: 'Étudiants et professeurs actifs quotidiennement' },
   { title: 'Visibilité maximale', detail: "Vos annonces affichées dans toute l'application" },
@@ -80,7 +75,9 @@ export default function BusinessPartnershipScreen() {
       <SafeAreaView style={styles.safe}>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <Pressable onPress={goBack} style={styles.backRow} accessibilityRole="button" hitSlop={12}>
-            <IconSymbol name="arrow.up.left" size={24} color={C.white} />
+            <View style={styles.backIconCircle}>
+              <IconSymbol name="chevron.left" size={20} color={C.white} />
+            </View>
             <Text style={styles.backLabel}>Retour</Text>
           </Pressable>
 
@@ -97,21 +94,6 @@ export default function BusinessPartnershipScreen() {
             <Text style={styles.heroBody}>
               Faites connaître votre entreprise auprès de milliers d'étudiants et professeurs chaque jour.
             </Text>
-            <View style={styles.heroBadgeRow}>
-              <View style={styles.heroBadge}>
-                <IconSymbol name="iphone" size={16} color={C.white} />
-                <Text style={styles.heroBadgeText}>+15,000 utilisateurs actifs</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.statsRow}>
-            {heroStats.map((stat) => (
-              <View key={stat.label} style={styles.statCard}>
-                <Text style={[styles.statValue, { color: stat.accent }]}>{stat.value}</Text>
-                <Text style={styles.statLabel}>{stat.label}</Text>
-              </View>
-            ))}
           </View>
 
           <View style={styles.infoCard}>
@@ -189,6 +171,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  backIconCircle: {
+    width: 42,
+    height: 42,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.6)',
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   headerBlock: {
     marginTop: Spacing.sm,
   },
@@ -226,47 +217,6 @@ const styles = StyleSheet.create({
   heroBody: {
     color: C.white,
     fontSize: 16,
-  },
-  heroBadgeRow: {
-    flexDirection: 'row',
-    marginTop: Spacing.sm,
-  },
-  heroBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingVertical: Spacing.xs,
-    paddingHorizontal: Spacing.md,
-    borderRadius: Spacing.xxl,
-  },
-  heroBadgeText: {
-    color: C.white,
-    fontWeight: '600',
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-  },
-  statCard: {
-    flex: 1,
-    backgroundColor: C.white,
-    borderRadius: 24,
-    padding: Spacing.lg,
-    alignItems: 'center',
-    gap: Spacing.xs,
-    shadowColor: '#0B2545',
-    shadowOpacity: 0.08,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 16,
-    elevation: 4,
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: '800',
-  },
-  statLabel: {
-    color: C.gray600,
   },
   infoCard: {
     backgroundColor: '#FFFFFF',

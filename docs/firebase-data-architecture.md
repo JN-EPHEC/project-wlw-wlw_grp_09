@@ -204,3 +204,43 @@ Les notifications temps-réel reposent désormais sur trois collections Firestor
 - `pushNotification` → `persistNotificationEventRecord` ajoute une entrée immuable pour chaque notification envoyée (titre, corps, `metadata`, `scheduleAt`, `scheduleKey`).
 
 Cela couvre la Definition of Done : le « serveur de notifications » repose sur Firestore, et les tokens push sont enregistrés/mis à jour dès qu’ils changent. Des Cloud Functions pourront ensuite se brancher sur ces collections (`notifications` pour envoyer, `notificationTokens` pour cibler les appareils) sans modifier le front.
+
+## 11. Collection `businessQuotes` (Cloud Firestore)
+
+- **Emplacement** : `firestore.collection('businessQuotes')`, alimenté par `src/firestoreBusinessQuotes.ts`.
+- **Rôle** : stocker chaque demande de devis entreprise provenant du formulaire `/business-quote` afin que l’équipe admin récupère un historique des leads sans toucher à `users`, `wallets`, ou d’autres collections métier.
+- **Clé fonctionnelle** : identifiant auto généré `quoteId`, toujours écrit dans le document (`quoteId` + `createdAt`).
+
+| Champ                   | Type              | Description |
+|------------------------|--------------------|-------------|
+| `quoteId`              | string             | Identifiant auto généré du document. |
+| `createdAt`            | `Timestamp`        | Marqueur `serverTimestamp()` pour ordonner les leads. |
+| `status`               | string             | `new` par défaut afin de filtrer les demandes non traitées. |
+| `source`               | string             | Toujours `business-quote`. |
+| `appVersion`           | string \| null     | Version de l’app (via `expo-constants`). |
+| `platform`             | string \| null     | `ios`, `android` ou `web` provenant de `Platform.OS`. |
+| `userId`               | string \| null     | `auth.currentUser.uid` si l’utilisateur est connecté. |
+| `userEmail`            | string \| null     | E-mail du profil Firebase Auth/`AuthSession`. |
+| `role`                 | string \| null     | `passenger` ou `driver` quand disponible, sinon `null`. |
+| `originRoute`          | string             | Chemin frontend (`/business-quote`). |
+| `clientTimestamp`      | number             | Horodatage `Date.now()` côté client pour tracer les sessions. |
+| `companyName`          | string             | Nom de l’entreprise demandant un devis. |
+| `contactName`          | string             | Responsable contact. |
+| `contactEmail`         | string             | E-mail du contact (normalisé). |
+| `contactPhone`         | string \| null     | Téléphone (optionnel, format BE). |
+| `website`              | string \| null     | Site web complet (`https://` ajouté automatiquement si absent). |
+| `desiredFormat`        | string             | Format souhaité sélectionné dans le formulaire (ex. `Banner horizontal`). |
+| `estimatedMonthlyBudget` | string           | Option de budget sélectionnée par l’utilisateur. |
+| `messageObjectives`    | string             | Description des objectifs / message publicitaire. |
+| `consent`              | boolean            | `true` par défaut pour l’enregistrement RGPD. |
+| `note`                 | string \| null     | Champ libre réservé aux admins. |
+
+**Alimentation**
+- `app/business-quote.tsx` baptise `persistBusinessQuote` après validation stricte du formulaire (e-mail, téléphone BE léger, site web, champs obligatoires).
+- `src/firestoreBusinessQuotes.ts` encapsule la création Firestore (`quoteId`, `createdAt`, `status = 'new'`, `source = 'business-quote'`).
+- Les champs métier sont nettoyés (trim, e-mail en minuscules, `Platform.OS`, `Constants.expoConfig.version`).
+- Le payload est enregistré une fois (`persistBusinessQuote`), puis le mailto reste optionnel : l’ouverture du client mail n’influence pas l’écriture Firestore.
+
+**Règles Firestore**
+- `allow create: if request.auth != null` (utile pour éviter le spam non authentifié tout en conservant le mailto d’admin).
+- Lecture/mise à jour supprimée pour les clients ; seuls les admins (requête côté console ou Cloud Functions avec claim `admin`) peuvent lire/écrire avec `request.auth.token.admin == true`.
