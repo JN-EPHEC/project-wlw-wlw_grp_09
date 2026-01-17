@@ -1,5 +1,5 @@
-import { Redirect, router } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { Redirect, router, useLocalSearchParams } from 'expo-router';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -27,6 +27,18 @@ export default function SignInScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const params = useLocalSearchParams();
+  const reasonDelete = params.reason === 'delete-account';
+  const [showDeleteNotice, setShowDeleteNotice] = useState(false);
+  const noticeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (noticeTimeout.current) {
+        clearTimeout(noticeTimeout.current);
+      }
+    };
+  }, []);
 
   const email = useMemo(() => sanitizeEmail(emailRaw), [emailRaw]);
 
@@ -46,6 +58,15 @@ export default function SignInScreen() {
       const snapshot = await Auth.authenticate(email, password);
       if (!snapshot.verified) {
         router.replace({ pathname: '/verify-email', params: { email } } as any);
+        return;
+      }
+      if (reasonDelete) {
+        setShowDeleteNotice(true);
+        setLoading(false);
+        noticeTimeout.current = setTimeout(() => {
+          Auth.signOut().catch(() => null);
+          router.replace('/account-deleted');
+        }, 1500);
         return;
       }
       router.replace('/');
@@ -141,6 +162,11 @@ export default function SignInScreen() {
             >
               {loading ? <ActivityIndicator color="#fff" /> : null}
             </GradientButton>
+            {showDeleteNotice ? (
+              <Text style={styles.deleteNotice}>
+                Ton compte a bien été supprimé. Tu seras redirigé vers l’accueil public.
+              </Text>
+            ) : null}
 
             <Pressable
               onPress={() => router.push('/sign-up')}
@@ -189,4 +215,10 @@ const styles = StyleSheet.create({
   toggleText: { color: Colors.primary, fontWeight: '700', fontSize: 13 },
   footerLink: { alignItems: 'center', marginTop: 4 },
   footerText: { color: Colors.primaryDark, fontWeight: '700' },
+  deleteNotice: {
+    color: Colors.danger,
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: 6,
+  },
 });

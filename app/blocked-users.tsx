@@ -12,9 +12,11 @@ import {
 import { unblockUser } from '@/app/services/blocked-users';
 import { Colors, Gradients, Radius, Shadows, Spacing, Typography } from '@/app/ui/theme';
 import { GradientBackground } from '@/components/ui/gradient-background';
+import { HeaderBackButton } from '@/components/ui/header-back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { useBlockedUsers } from '@/hooks/use-blocked-users';
+import { useTranslation } from '@/hooks/use-language';
 
 const C = Colors;
 
@@ -22,6 +24,8 @@ export default function BlockedUsersScreen() {
   const router = useRouter();
   const session = useAuthSession();
   const blockedUsers = useBlockedUsers(session.email);
+  const t = useTranslation();
+  const backgroundColors = session.isDriver ? Gradients.driver : Gradients.twilight;
 
   const handleUnblock = useCallback(
     (email: string) => {
@@ -32,13 +36,11 @@ export default function BlockedUsersScreen() {
   );
 
   return (
-    <GradientBackground colors={Gradients.background} style={styles.gradient}>
+    <GradientBackground colors={backgroundColors} style={styles.gradient}>
       <SafeAreaView style={styles.safe}>
         <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={() => router.back()}>
-            <IconSymbol name="chevron.left" size={22} color="#fff" />
-          </Pressable>
-          <Text style={styles.headerTitle}>Utilisateurs bloqués</Text>
+          <HeaderBackButton onPress={() => router.back()} />
+          <Text style={styles.headerTitle}>{t('blockedUsersTitle')}</Text>
         </View>
         <ScrollView
           contentContainerStyle={styles.scroll}
@@ -46,9 +48,7 @@ export default function BlockedUsersScreen() {
           bounces={false}
         >
           {blockedUsers.length === 0 ? (
-            <Text style={styles.empty}>
-              Bloque un utilisateur depuis la messagerie pour le retrouver ici.
-            </Text>
+            <Text style={styles.empty}>{t('blockedUsersEmpty')}</Text>
           ) : (
             blockedUsers.map((email) => (
               <View key={email} style={styles.row}>
@@ -79,15 +79,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
     marginHorizontal: Spacing.xl,
   },
-  backButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.4)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   headerTitle: {
     color: '#fff',
     fontSize: 20,
@@ -100,7 +91,7 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   empty: {
-    color: C.gray600,
+    color: '#FFFFFF',
     fontSize: 14,
     marginTop: Spacing.xl,
   },

@@ -18,8 +18,10 @@ import * as Auth from '@/app/services/auth';
 import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
 import { isStrongPassword } from '@/app/validators';
 import { GradientBackground } from '@/components/ui/gradient-background';
+import { HeaderBackButton } from '@/components/ui/header-back-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
+import { useTranslation } from '@/hooks/use-language';
 
 const C = Colors;
 
@@ -36,6 +38,8 @@ export default function ChangePasswordScreen() {
   const [nextTouched, setNextTouched] = useState(false);
   const [confirmTouched, setConfirmTouched] = useState(false);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
+  const t = useTranslation();
+  const backgroundColors = session.isDriver ? Gradients.driver : Gradients.twilight;
 
   const errors = useMemo(() => {
     const map: Partial<Record<'current' | 'next' | 'confirm', string>> = {};
@@ -98,7 +102,7 @@ export default function ChangePasswordScreen() {
   };
 
   return (
-    <GradientBackground colors={Gradients.background} style={{ flex: 1 }}>
+    <GradientBackground colors={backgroundColors} style={{ flex: 1 }}>
       <SafeAreaView style={styles.safe}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
@@ -106,24 +110,19 @@ export default function ChangePasswordScreen() {
         >
           <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
             <View style={styles.header}>
-              <Pressable style={styles.backButton} onPress={goBack}>
-                <IconSymbol name="chevron.left" size={22} color={C.white} />
-              </Pressable>
-              <Text style={styles.headerTitle}>Modifier mon mot de passe</Text>
+              <HeaderBackButton onPress={goBack} />
+              <Text style={styles.headerTitle}>{t('changePasswordTitle')}</Text>
             </View>
             <View style={styles.card}>
-              <Text style={styles.helperText}>
-                Pour protéger ton compte, entre ton mot de passe actuel puis choisis un nouveau mot de passe
-                fort.
-              </Text>
+              <Text style={styles.helperText}>{t('changePasswordHelper')}</Text>
               <View style={styles.criteriaList}>
-                <Text style={styles.criteriaTitle}>Ton nouveau mot de passe doit contenir :</Text>
-                <Text style={styles.criteriaItem}>• 8 caractères minimum</Text>
-                <Text style={styles.criteriaItem}>• au moins 1 lettre majuscule</Text>
-                <Text style={styles.criteriaItem}>• au moins 1 chiffre</Text>
+                <Text style={styles.criteriaTitle}>{t('changePasswordCriteriaTitle')}</Text>
+                <Text style={styles.criteriaItem}>{t('changePasswordCriteriaChar')}</Text>
+                <Text style={styles.criteriaItem}>{t('changePasswordCriteriaUpper')}</Text>
+                <Text style={styles.criteriaItem}>{t('changePasswordCriteriaNumber')}</Text>
               </View>
               <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Mot de passe actuel</Text>
+                <Text style={styles.label}>{t('changePasswordCurrentLabel')}</Text>
                 <View style={styles.passwordWrapper}>
                   <TextInput
                     value={currentPassword}
@@ -148,7 +147,7 @@ export default function ChangePasswordScreen() {
                 {showCurrentError ? <Text style={styles.errorText}>{errors.current}</Text> : null}
               </View>
               <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Nouveau mot de passe</Text>
+                <Text style={styles.label}>{t('changePasswordNextLabel')}</Text>
                 <View style={styles.passwordWrapper}>
                   <TextInput
                     value={nextPassword}
@@ -173,7 +172,7 @@ export default function ChangePasswordScreen() {
                 {showNextError ? <Text style={styles.errorText}>{errors.next}</Text> : null}
               </View>
               <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Confirmer le mot de passe</Text>
+                <Text style={styles.label}>{t('changePasswordConfirmLabel')}</Text>
                 <View style={styles.passwordWrapper}>
                   <TextInput
                     value={confirmPassword}
@@ -233,15 +232,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
     marginTop: Spacing.md,
-  },
-  backButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.4)',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   headerTitle: {
     fontSize: 24,

@@ -17,7 +17,6 @@ import {
   View,
 } from 'react-native';
 
-import { deleteAccountData } from '@/app/services/account';
 import * as Auth from '@/app/services/auth';
 import { subscribePassengerFeedback, type PassengerFeedback } from '@/app/services/passenger-feedback';
 import { createReport } from '@/app/services/reports';
@@ -64,6 +63,12 @@ const C = Colors;
 const R = Radius;
 const isRemoteUri = (uri: string | null | undefined) =>
   typeof uri === 'string' && /^https?:\/\//.test(uri);
+const buildAvatarUri = (uri: string, version: number) => {
+  if (!uri) return uri;
+  if (!version) return uri;
+  const separator = uri.includes('?') ? '&' : '?';
+  return `${uri}${separator}v=${version}`;
+};
 const MISSING_DOCUMENT_STATES: DocumentReviewState[] = ['missing', 'rejected'];
 
 export default function ProfileScreen() {
@@ -82,6 +87,7 @@ export default function ProfileScreen() {
   const [passengerFeedback, setPassengerFeedback] = useState<PassengerFeedback[]>([]);
   const [updatingAvatar, setUpdatingAvatar] = useState(false);
   const driverSecurity = useDriverSecurity(session.email);
+  const driverModeActive = session.roleMode === 'driver' && session.isDriver;
   const {
     isDesktop,
     isTablet,
@@ -128,55 +134,30 @@ export default function ProfileScreen() {
     setActiveFaq((prev) => (prev === id ? null : id));
   }, []);
 
-  const openDriverVerification = useCallback(() => {
-    router.push('/driver-verification');
+  const handleOpenDocuments = useCallback(() => {
+    router.push('/my-documents');
   }, [router]);
 
   const enableDriverMode = useCallback(() => {
     if (!session.email) return;
-    if (session.isDriver) {
-      router.push('/');
+    if (driverModeActive) {
+      router.replace('/');
       return;
     }
-    if (
-      !driverSecurity ||
-      driverSecurity.blockers.requiresLicense ||
-      driverSecurity.blockers.requiresVehicle ||
-      needsFreshSelfie(driverSecurity)
-    ) {
-      openDriverVerification();
-      return;
-    }
-    Alert.alert(
-      'Passe côté conducteur',
-      'Publie ton trajet en 2 minutes, fixe ton prix et finance tes déplacements.',
-      [
-        { text: 'Plus tard', style: 'cancel' },
-        {
-          text: 'Activer maintenant',
-          style: 'default',
-          onPress: () => updateRoles({ driver: true }),
-        },
-      ]
-    );
-  }, [
-    session.email,
-    session.isDriver,
-    driverSecurity,
-    openDriverVerification,
-    updateRoles,
-    router,
-  ]);
+    router.replace('/driver-verification');
+  }, [driverModeActive, router, session.email]);
 
   const disableDriverMode = useCallback(() => {
     if (!session.isDriver) return;
+    Auth.applySessionRoleChanges({ driver: false, passenger: true });
+    Auth.setRoleMode('passenger');
+    router.replace('/');
     (async () => {
       const success = await updateRoles({ driver: false, passenger: true });
-      if (success) {
-        router.replace({
-          pathname: '/',
-          params: { mode: 'passenger' },
-        });
+      if (!success) {
+        Auth.applySessionRoleChanges({ driver: true, passenger: false });
+        Auth.setRoleMode('driver');
+        Alert.alert('Erreur', 'Impossible de revenir en mode passager pour le moment.');
       }
     })();
   }, [session.isDriver, updateRoles, router]);
@@ -184,6 +165,7 @@ export default function ProfileScreen() {
   const [previewAvatarUri, setPreviewAvatarUri] = useState<string | null>(null);
   const [cropSourceUri, setCropSourceUri] = useState<string | null>(null);
   const [isSavingAvatar, setIsSavingAvatar] = useState(false);
+  const [avatarVersion, setAvatarVersion] = useState(0);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   const applyAvatar = useCallback(
@@ -196,14 +178,13 @@ export default function ProfileScreen() {
           nextUri = await uploadProfileSelfie({ email: session.email, uri });
         }
         await Auth.updateProfile(session.email, { avatarUrl: nextUri ?? '' });
-        Alert.alert(
-          'Photo de profil',
-          nextUri ? 'Ton avatar a été mis à jour.' : 'Ta photo a été supprimée.'
-        );
+        setAvatarVersion((prev) => prev + 1);
+        Alert.alert('Photo de profil', 'Ton avatar a été mis à jour.');
         return true;
       } catch (error) {
         console.warn('avatar update failed', error);
-        Alert.alert('Erreur', 'Impossible de mettre à jour la photo de profil.');
+        Alert.alert('Upload échoué', 'Upload échoué, réessaie.');
+        setPreviewAvatarUri(null);
         return false;
       } finally {
         setIsSavingAvatar(false);
@@ -271,24 +252,6 @@ export default function ProfileScreen() {
     );
   }, [session.email, updatingAvatar, isSavingAvatar, startAvatarSelection]);
 
-  const onRemoveAvatar = useCallback(() => {
-    if (!session.email || isSavingAvatar) return;
-    Alert.alert(
-      'Supprimer ta photo ?',
-      'Ton avatar redeviendra l’illustration par défaut.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Supprimer',
-          style: 'destructive',
-          onPress: () => {
-            void applyAvatar(null);
-          },
-        },
-      ]
-    );
-  }, [session.email, isSavingAvatar, applyAvatar]);
-
   const confirmAvatarPreview = useCallback(async () => {
     if (!previewAvatarUri) return;
     const ok = await applyAvatar(previewAvatarUri);
@@ -334,10 +297,6 @@ export default function ProfileScreen() {
     router.push('/wallet');
   }, [router]);
 
-  const handleOpenDocuments = useCallback(() => {
-    router.push('/driver-verification');
-  }, [router]);
-
   const handleOpenHelp = useCallback(() => {
     router.push('/help');
   }, [router]);
@@ -350,43 +309,15 @@ export default function ProfileScreen() {
     router.push('/business-partnership');
   }, [router]);
 
-  const handleConfirmDeleteAccount = useCallback(async () => {
-    if (!session.email || isDeletingAccount) return;
-    const userEmail = session.email;
-    setIsDeletingAccount(true);
-    try {
-      deleteAccountData(userEmail);
-      await Auth.signOut();
-      router.replace('/welcome');
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Impossible de supprimer ton compte pour le moment.';
-      Alert.alert('Erreur', message);
-    } finally {
-      setIsDeletingAccount(false);
-    }
-  }, [session.email, isDeletingAccount, router]);
+  const handleConfirmDeleteAccount = useCallback(() => {
+    if (!session.email) return;
+    router.push('/confirm-delete-account');
+  }, [router, session.email]);
 
   const promptDeleteAccount = useCallback(() => {
-    if (!session.email || isDeletingAccount) return;
-    Alert.alert(
-      'Supprimer mon compte',
-      'Tous tes trajets, messages, avis, wallet et préférences seront effacés/de-anonymisés et ta visibilité publique supprimée. Cette action est irréversible.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Supprimer',
-          style: 'destructive',
-          onPress: () => {
-            void handleConfirmDeleteAccount();
-          },
-        },
-      ],
-      { cancelable: true }
-    );
-  }, [session.email, isDeletingAccount, handleConfirmDeleteAccount]);
+    if (isDeletingAccount) return;
+    handleConfirmDeleteAccount();
+  }, [handleConfirmDeleteAccount, isDeletingAccount]);
 
   const driverSecurityStatus = useMemo(() => {
     if (!driverSecurity) {
@@ -491,9 +422,15 @@ export default function ProfileScreen() {
     return unsubscribe;
   }, [session.email]);
 
-  const avatarSource = session.avatarUrl
-    ? { uri: session.avatarUrl }
-    : { uri: getAvatarUrl(session.email ?? session.name ?? 'driver', 128) };
+  const fallbackAvatarSource = useMemo(
+    () => ({ uri: getAvatarUrl(session.email ?? session.name ?? 'driver', 128) }),
+    [session.email, session.name]
+  );
+  const avatarSource = previewAvatarUri
+    ? { uri: previewAvatarUri }
+    : session.avatarUrl
+      ? { uri: buildAvatarUri(session.avatarUrl, avatarVersion) }
+      : fallbackAvatarSource;
   const profileDisplayName = useMemo(() => {
     if (session.name && session.name.trim().length > 0) {
       return session.name.toUpperCase();
@@ -505,7 +442,6 @@ export default function ProfileScreen() {
     return 'CAMPUSRIDE';
   }, [session.name, session.email]);
   const avatarActionsDisabled = updatingAvatar || isSavingAvatar;
-  const canRemoveAvatar = !!session.avatarUrl;
   const identityName = session.name?.trim()?.length ? session.name : profileDisplayName;
   const campusLabel = session.address?.trim() ?? 'Campus non renseigné';
   const roleDetail =
@@ -517,16 +453,6 @@ export default function ProfileScreen() {
           ? 'Passager'
           : 'Profil inactif';
   const emailLabel = session.email ?? 'E-mail indisponible';
-  const documentsValidated =
-    !!driverSecurity &&
-    !driverSecurity.blockers.requiresLicense &&
-    !driverSecurity.blockers.requiresVehicle &&
-    !needsFreshSelfie(driverSecurity);
-  const documentBadgeLabel = !driverSecurity
-    ? 'Validation en cours…'
-    : documentsValidated
-      ? 'Documents validés'
-      : 'Vérification requise';
   const personalInfo = useMemo(
     () => [
       { key: 'name', label: 'Nom & prénom', value: identityName },
@@ -687,9 +613,7 @@ export default function ProfileScreen() {
       {
         key: 'edit',
         label: 'Modifier le profil',
-        icon: 'pencil.tip.crop.circle',
-        image: require('@/assets/images/crayon.png'),
-        tint: 'rgba(255,131,71,0.15)',
+        icon: 'pencil',
         iconColor: Colors.primary,
         onPress: handleEditProfile,
       },
@@ -697,8 +621,6 @@ export default function ProfileScreen() {
         key: 'settings',
         label: 'Paramètres',
         icon: 'gearshape.fill',
-        image: require('@/assets/images/Parametres.png'),
-        tint: 'rgba(58,76,110,0.12)',
         iconColor: Colors.gray600,
         onPress: handleOpenSettings,
       },
@@ -706,7 +628,6 @@ export default function ProfileScreen() {
         key: 'documents',
         label: 'Mes documents',
         icon: 'doc.text',
-        tint: 'rgba(122,95,255,0.18)',
         iconColor: Colors.accent,
         onPress: handleOpenDocuments,
       },
@@ -714,8 +635,6 @@ export default function ProfileScreen() {
         key: 'wallet',
         label: 'Wallet',
         icon: 'wallet.pass.fill',
-        image: require('@/assets/images/Wallet.png'),
-        tint: 'rgba(191,157,117,0.18)',
         iconColor: '#B48A61',
         onPress: handleOpenWallet,
       },
@@ -723,7 +642,6 @@ export default function ProfileScreen() {
         key: 'support',
         label: 'Contact support',
         icon: 'questionmark.circle',
-        tint: 'rgba(241,107,107,0.15)',
         iconColor: Colors.danger,
         onPress: handleOpenHelp,
       },
@@ -837,10 +755,9 @@ export default function ProfileScreen() {
           <View style={styles.profileAvatarSection}>
             <Pressable
               style={styles.profileAvatarPressable}
-                onPress={changeAvatar}
-                onLongPress={session.avatarUrl ? onRemoveAvatar : undefined}
-                accessibilityRole="button"
-              >
+              onPress={changeAvatar}
+              accessibilityRole="button"
+            >
                 <Image source={avatarSource} style={styles.profileAvatarImage} />
                 <View style={styles.profileAvatarBadge}>
                   {updatingAvatar || isSavingAvatar ? (
@@ -873,26 +790,6 @@ export default function ProfileScreen() {
                     Mettre à jour ma photo
                   </Text>
                 </Pressable>
-                <Pressable
-                  style={styles.photoDeleteLink}
-                  onPress={onRemoveAvatar}
-                  disabled={!canRemoveAvatar || avatarActionsDisabled}
-                  accessibilityRole="button"
-                >
-                  <IconSymbol
-                    name="trash"
-                    size={14}
-                    color={!canRemoveAvatar || avatarActionsDisabled ? C.gray400 : C.danger}
-                  />
-                  <Text
-                    style={[
-                      styles.photoDeleteText,
-                      (!canRemoveAvatar || avatarActionsDisabled) && styles.photoDeleteTextDisabled,
-                    ]}
-                  >
-                    Supprimer la photo
-                  </Text>
-                </Pressable>
               </View>
             {showActionRequiredBanner ? (
               <Pressable
@@ -912,19 +809,6 @@ export default function ProfileScreen() {
                   <IconSymbol name="chevron.right" size={18} color={driverSecurityStatus.color} />
                 </Pressable>
               ) : null}
-              <View
-                style={[
-                  styles.documentsBadge,
-                  documentsValidated ? styles.documentsBadgeSuccess : styles.documentsBadgePending,
-                ]}
-              >
-                <IconSymbol
-                  name={documentsValidated ? 'checkmark.seal.fill' : 'exclamationmark.triangle'}
-                  size={14}
-                  color={documentsValidated ? Colors.success : Colors.warning}
-                />
-                <Text style={styles.documentsBadgeText}>{documentBadgeLabel}</Text>
-              </View>
             </View>
             <View style={styles.profileActionsList}>
               {profileActions.map((action, index) => (
@@ -934,28 +818,24 @@ export default function ProfileScreen() {
                     onPress={action.onPress}
                     accessibilityRole="button"
                   >
-                    <View style={[styles.profileActionIcon, { backgroundColor: action.tint }]}>
-                      {action.image ? (
-                        <Image source={action.image} style={styles.profileActionImage} />
-                      ) : (
-                        <IconSymbol name={action.icon} size={18} color={action.iconColor} />
-                      )}
+                    <View style={styles.profileActionIcon}>
+                      <IconSymbol name={action.icon} size={18} color={action.iconColor} />
                     </View>
                     <Text style={styles.profileActionLabel}>{action.label}</Text>
                   </Pressable>
                   {index === 0 ? (
                     <Pressable
-                      style={[styles.profileActionRow, styles.infoRow]}
+                      style={styles.profileActionRow}
                       onPress={handleViewInfo}
                       accessibilityRole="button"
                       android_ripple={{ color: Colors.gray200 }}
                     >
-                    <View style={[styles.profileActionIcon, styles.infoIconCircle]}>
-                      <Image
-                        source={require('@/assets/images/Personne.png')}
-                        style={styles.infoIcon}
-                      />
-                    </View>
+                      <View style={styles.profileActionIcon}>
+                        <Image
+                          source={require('@/assets/images/Personne.png')}
+                          style={styles.infoIcon}
+                        />
+                      </View>
                       <Text style={styles.profileActionLabel}>Mes informations</Text>
                     </Pressable>
                   ) : null}
@@ -981,31 +861,31 @@ export default function ProfileScreen() {
             <Pressable
               style={[
                 styles.driverModeButton,
-                session.isDriver ? styles.driverModeButtonDriver : styles.driverModeButtonPassenger,
+                driverModeActive ? styles.driverModeButtonDriver : styles.driverModeButtonPassenger,
               ]}
-              onPress={session.isDriver ? disableDriverMode : enableDriverMode}
+              onPress={driverModeActive ? disableDriverMode : enableDriverMode}
               accessibilityRole="button"
             >
               <View style={styles.driverModeLabelRow}>
                 <IconSymbol
-                  name={session.isDriver ? 'person.crop.circle.fill' : 'steeringwheel'}
+                  name={driverModeActive ? 'person.crop.circle.fill' : 'steeringwheel'}
                   size={18}
                   color="#FFFFFF"
                 />
                 <Text style={styles.driverModeText}>
-                  {session.isDriver ? 'Passer en mode passager' : 'Passer en mode conducteur'}
+                  {driverModeActive ? 'Passer en mode passager' : 'Passer en mode conducteur'}
                 </Text>
               </View>
               <View
                 style={[
                   styles.driverModeIcon,
-                  session.isDriver ? styles.driverModeIconActive : styles.driverModeIconInactive,
+                  driverModeActive ? styles.driverModeIconActive : styles.driverModeIconInactive,
                 ]}
               >
                 <IconSymbol
-                  name={session.isDriver ? 'person.fill' : 'steeringwheel'}
+                  name={driverModeActive ? 'person.fill' : 'car'}
                   size={18}
-                  color={session.isDriver ? C.accent : '#FFFFFF'}
+                  color={driverModeActive ? C.accent : '#FFFFFF'}
                 />
               </View>
             </Pressable>
@@ -1049,7 +929,6 @@ export default function ProfileScreen() {
         onCancel={onCropperCancel}
         onConfirm={onCropperConfirm}
       />
-
       <Modal
         visible={!!previewAvatarUri}
         transparent
@@ -1316,48 +1195,12 @@ const styles = StyleSheet.create({
     color: Colors.gray700,
     marginTop: 2,
   },
-  infoRow: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#E8EAF4',
-  },
-  infoIconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFEDEC',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   infoIcon: {
     width: 22,
     height: 22,
     resizeMode: 'contain',
   },
-  documentsBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    alignSelf: 'center',
-    marginTop: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.pill,
-  },
-  documentsBadgeSuccess: {
-    backgroundColor: Colors.successLight,
-  },
-  documentsBadgePending: {
-    backgroundColor: Colors.warningLight,
-  },
-  documentsBadgeText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: C.gray700,
-  },
-  profileActionsList: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: '#E8EAF4',
-  },
+  profileActionsList: {},
   profileActionRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1368,13 +1211,9 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  profileActionImage: {
-    width: 20,
-    height: 20,
-    resizeMode: 'contain',
   },
   profileActionLabel: {
     flex: 1,
@@ -1468,7 +1307,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   driverModeIconInactive: {
-    backgroundColor: 'rgba(255,255,255,0.25)',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.6)',
   },
   driverModeIconActive: {
     backgroundColor: '#FFFFFF',

@@ -1,8 +1,10 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Linking,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -12,12 +14,29 @@ import {
   View,
 } from 'react-native';
 
+import Constants from 'expo-constants';
+
 import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
 import { AppBackground } from '@/components/ui/app-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { budgetOptions, formatOptions, steps } from '@/app/business-quote/constants';
+import { auth } from '@/src/firebase';
+import { persistBusinessQuote } from '@/src/firestoreBusinessQuotes';
+import { useAuthSession } from '@/hooks/use-auth-session';
 
 const C = Colors;
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PHONE_DIGITS = 8;
+
+const ensureWebsiteUrl = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  return `https://${trimmed}`;
+};
 
 export default function BusinessQuoteScreen() {
   const [company, setCompany] = useState('');
@@ -32,12 +51,31 @@ export default function BusinessQuoteScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [formatDropdownOpen, setFormatDropdownOpen] = useState(false);
   const [budgetDropdownOpen, setBudgetDropdownOpen] = useState(false);
+  const session = useAuthSession();
+  const platformLabel = Platform.OS;
+  const appVersion =
+    Constants.expoConfig?.version ?? Constants.manifest?.version ?? null;
+  const userId = auth.currentUser?.uid ?? null;
+  const userEmail = session.email ?? null;
+  const role = session.isDriver ? "driver" : session.isPassenger ? "passenger" : null;
   const isFormComplete =
     company.trim().length > 0 &&
     contactName.trim().length > 0 &&
     message.trim().length > 0 &&
     email.trim().length > 0 &&
-    email.includes('@');
+    EMAIL_PATTERN.test(email.trim());
+
+  const resetForm = () => {
+    setCompany('');
+    setContactName('');
+    setEmail('');
+    setPhone('');
+    setWebsite('');
+    setMessage('');
+    setFormatChoice(formatOptions[0]);
+    setBudgetChoice(budgetOptions[0]);
+    setErrors({});
+  };
 
   const goBack = () => {
     try {
@@ -53,32 +91,80 @@ export default function BusinessQuoteScreen() {
     setter(options[nextIndex]);
   };
 
-  const onSend = () => {
+  const onSend = async () => {
+    if (submitting) return;
+    const trimmedCompany = company.trim();
+    const trimmedContactName = contactName.trim();
+    const trimmedMessage = message.trim();
+    const trimmedEmail = email.trim();
+    const normalizedEmail = trimmedEmail.toLowerCase();
+    const trimmedPhone = phone.trim();
+    const digitOnlyPhone = trimmedPhone ? trimmedPhone.replace(/\D/g, '') : '';
+    const sanitizedPhone = trimmedPhone ? trimmedPhone.replace(/\s+/g, '') : null;
     const nextErrors: Record<string, string> = {};
-    if (!company.trim()) nextErrors.company = 'Ajoute le nom de ton entreprise.';
-    if (!contactName.trim()) nextErrors.contactName = 'Ajoute ton nom.';
-    if (!email.trim() || !email.includes('@')) nextErrors.email = 'Ajoute un e-mail valide.';
-    if (!message.trim()) nextErrors.message = 'Décris tes objectifs.';
+
+    if (!trimmedCompany) nextErrors.company = 'Ajoute le nom de ton entreprise.';
+    if (!trimmedContactName) nextErrors.contactName = 'Ajoute ton nom.';
+    if (!trimmedMessage) nextErrors.message = 'Décris tes objectifs.';
+    if (!trimmedEmail || !EMAIL_PATTERN.test(trimmedEmail)) {
+      nextErrors.email = 'Ajoute un e-mail valide.';
+    }
+    if (trimmedPhone && digitOnlyPhone.length < MIN_PHONE_DIGITS) {
+      nextErrors.phone = 'Ajoute un numéro belge d’au moins 8 chiffres.';
+    }
+
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
       Alert.alert('Formulaire incomplet', 'Merci de remplir les champs obligatoires.');
       return;
     }
+
     setSubmitting(true);
+    const formattedWebsite = ensureWebsiteUrl(website);
     const subject = encodeURIComponent('Demande de devis CampusRide');
     const body = encodeURIComponent(
-      `Nom entreprise : ${company}\nContact : ${contactName}\nEmail : ${email}\nTéléphone : ${phone || 'N/A'}\nSite web : ${website || 'N/A'}\nFormat : ${formatChoice}\nBudget : ${budgetChoice}\n\n${message}`
+      `Nom entreprise : ${trimmedCompany}\nContact : ${trimmedContactName}\nEmail : ${normalizedEmail}\nTéléphone : ${trimmedPhone || 'N/A'}\nSite web : ${formattedWebsite || 'N/A'}\nFormat : ${formatChoice}\nBudget : ${budgetChoice}\n\n${trimmedMessage}`
     );
     const mailto = `mailto:business@campusride.app?subject=${subject}&body=${body}`;
-    Linking.openURL(mailto)
-      .then(() => router.push('/business-quote/confirmation'))
-      .catch(() =>
+
+    try {
+      await persistBusinessQuote({
+        companyName: trimmedCompany,
+        contactName: trimmedContactName,
+        contactEmail: normalizedEmail,
+        contactPhone: sanitizedPhone,
+        website: formattedWebsite,
+        desiredFormat: formatChoice,
+        estimatedMonthlyBudget: budgetChoice,
+        messageObjectives: trimmedMessage,
+        appVersion,
+        platform: platformLabel,
+        userId,
+        userEmail,
+        role,
+        consent: true,
+        originRoute: '/business-quote',
+        clientTimestamp: Date.now(),
+      });
+
+      setErrors({});
+      resetForm();
+      router.push('/business-quote/confirmation');
+      void Linking.openURL(mailto).catch(() =>
         Alert.alert(
           'Envoi impossible',
-          'Ton application mail est indisponible, écris-nous sur business@campusride.app.'
+          'Ton application mail est indisponible, ta demande a bien été enregistrée.'
         )
-      )
-      .finally(() => setSubmitting(false));
+      );
+    } catch (error) {
+      console.warn('[business-quote] persist failed', error);
+      Alert.alert(
+        'Erreur',
+        'Impossible d’enregistrer ta demande pour le moment. Réessaye dans quelques instants.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -145,6 +231,7 @@ export default function BusinessQuoteScreen() {
                     keyboardType="phone-pad"
                   />
                 </View>
+                {errors.phone ? <Text style={styles.errorText}>{errors.phone}</Text> : null}
                 <Text style={styles.fieldLabel}>Site web</Text>
                 <View style={styles.inputWithIcon}>
                   <IconSymbol name="globe" size={18} color={C.gray500} />
@@ -255,14 +342,21 @@ export default function BusinessQuoteScreen() {
                 disabled={!isFormComplete || submitting}
                 accessibilityRole="button"
               >
-                <Text
-                  style={[
-                    styles.sendButtonText,
-                    (!isFormComplete || submitting) && styles.sendButtonTextDisabled,
-                  ]}
-                >
-                  {submitting ? 'Envoi en cours…' : 'Envoyer ma demande'}
-                </Text>
+                {submitting ? (
+                  <View style={styles.loadingRow}>
+                    <ActivityIndicator size="small" color={C.white} />
+                    <Text style={styles.sendButtonText}>Envoi en cours…</Text>
+                  </View>
+                ) : (
+                  <Text
+                    style={[
+                      styles.sendButtonText,
+                      !isFormComplete && styles.sendButtonTextDisabled,
+                    ]}
+                  >
+                    Envoyer ma demande
+                  </Text>
+                )}
               </Pressable>
               {!isFormComplete && (
                 <Text style={styles.formHint}>
@@ -439,6 +533,11 @@ const styles = StyleSheet.create({
     color: C.white,
     fontWeight: '700',
     fontSize: 16,
+  },
+  loadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
   ctaDisabled: {
     opacity: 0.6,

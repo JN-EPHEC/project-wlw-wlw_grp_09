@@ -153,19 +153,11 @@ const DRIVER_RULES = [
 
 export default function Home() {
   const session = useAuthSession();
-  const params = useLocalSearchParams<{ mode?: string; section?: string }>();
-  const [previewPassenger, setPreviewPassenger] = useState(params.mode === 'passenger');
+  const params = useLocalSearchParams<{ section?: string }>();
   const initialSection = Array.isArray(params.section) ? params.section[0] : params.section;
   const [focusSection, setFocusSection] = useState<SectionFocus | null>(() =>
     isSectionKey(initialSection) ? { key: initialSection, token: Date.now() } : null
   );
-
-  useEffect(() => {
-    if (params.mode === 'passenger') {
-      setPreviewPassenger(true);
-      router.replace('/');
-    }
-  }, [params.mode, router]);
 
   useEffect(() => {
     const nextSection = Array.isArray(params.section) ? params.section[0] : params.section;
@@ -175,13 +167,8 @@ export default function Home() {
     }
   }, [params.section, router]);
 
-  useEffect(() => {
-    if (!session.isDriver && previewPassenger) {
-      setPreviewPassenger(false);
-    }
-  }, [session.isDriver, previewPassenger]);
-
-  const showPassenger = previewPassenger || !session.isDriver;
+  const driverModeActive = session.roleMode === 'driver' && session.isDriver;
+  const showPassenger = !driverModeActive;
   return showPassenger ? (
     <PassengerHome session={session} focusSection={focusSection} />
   ) : (
