@@ -5,6 +5,40 @@ export type CampusLocation = {
   label?: string;
 };
 
+export type CampusOption = {
+  key: string;
+  label: string;
+  placeId: string;
+};
+
+export const EPHEC_CAMPUSES: CampusOption[] = [
+  {
+    key: 'EPHEC Woluwe',
+    label: 'EPHEC Woluwe',
+    placeId: 'ChIJXbJkmoTcw0cRjNjGnWN2Avw',
+  },
+  {
+    key: 'EPHEC Delta',
+    label: 'EPHEC Delta',
+    placeId: 'ChIJvRIGsU3Fw0cRFMjnS0FcS-w',
+  },
+  {
+    key: 'EPHEC Louvain-la-Neuve',
+    label: 'EPHEC Louvain-la-Neuve',
+    placeId: 'ChIJLZTQOHF-wUcRcH1QzhpyQYE',
+  },
+  {
+    key: 'EPHEC Schaerbeek',
+    label: 'EPHEC Schaerbeek',
+    placeId: 'ChIJfUSR5BHDw0cR0_EQHxQvxA0',
+  },
+  {
+    key: 'EPHEC Schuman',
+    label: 'EPHEC Schuman',
+    placeId: 'ChIJO43p60bFw0cR7QVeczXIHqg',
+  },
+];
+
 export const CAMPUS_LOCATIONS: CampusLocation[] = [
   {
     name: 'EPHEC Woluwe',
@@ -29,6 +63,12 @@ export const CAMPUS_LOCATIONS: CampusLocation[] = [
     label: 'Place de la Reine 1, 1030 Schaerbeek',
     latitude: 50.8726,
     longitude: 4.3816,
+  },
+  {
+    name: 'EPHEC Schuman',
+    label: 'Avenue des Nerviens 183, 1040 Bruxelles',
+    latitude: 50.841000,
+    longitude: 4.383200,
   },
   {
     name: 'ULB Solbosch',
@@ -68,4 +108,10 @@ export const findCampusLocation = (name: string | null | undefined) => {
   return (
     CAMPUS_LOCATIONS.find((campus) => campus.name.trim().toLowerCase() === normalized) ?? null
   );
+};
+
+export const findEphecCampus = (key: string | null | undefined) => {
+  if (!key) return null;
+  const normalized = key.trim().toLowerCase();
+  return EPHEC_CAMPUSES.find((campus) => campus.key.trim().toLowerCase() === normalized) ?? null;
 };

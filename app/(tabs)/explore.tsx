@@ -1,6 +1,8 @@
 // app/(tabs)/explore.tsx
+import Constants from 'expo-constants';
+import * as Location from 'expo-location';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -20,31 +22,39 @@ import {
 } from 'react-native';
 import { PinchGestureHandler, State } from 'react-native-gesture-handler';
 
+import CampusRideMap from '@/components/maps/CampusRideMap';
+import type { AuthSnapshot } from '@/app/services/auth';
+import { maskPlate } from '@/app/utils/plate';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { EPHEC_CAMPUSES, findCampusLocation, findEphecCampus } from '@/constants/campuses';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { useDriverSecurity } from '@/hooks/use-driver-security';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
-import type { AuthSnapshot } from '@/app/services/auth';
+import { getCoordinates, getDistanceKm, getDurationMinutes } from '../services/distance';
 import {
+  formatLocationAddress,
+  getCurrentCommune,
+  LocationPermissionError,
+  toLatLng,
+} from '../services/location';
+import type { LatLng } from '../services/location';
+import { resolveInputToLatLng } from '@/utils/autoCompletePreview';
+import { getPlaceLatLng } from '@/utils/googlePlaces';
+import type { PaymentMethod } from '../services/payments';
+import {
+  addRide,
   hasRideDeparted,
   reserveSeat,
   subscribeRides,
-  addRide,
   type Ride,
 } from '../services/rides';
-import type { PaymentMethod } from '../services/payments';
-import { getCoordinates, getDistanceKm, getDurationMinutes } from '../services/distance';
-import { loadGoogleMapsApi } from '../services/google-maps-loader';
-import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
-import { getAvatarUrl } from '../ui/avatar';
-import { BRUSSELS_COMMUNES } from '@/constants/communes';
-import { CAMPUS_LOCATIONS, findCampusLocation } from '@/constants/campuses';
-import { getCurrentCommune, LocationPermissionError } from '../services/location';
-import { maskPlate } from '@/app/utils/plate';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '../services/wallet';
+import { getAvatarUrl } from '../ui/avatar';
+import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
+import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
 
 const DefaultColors = {
   primary: '#E63946',
@@ -72,6 +82,10 @@ const C = (Colors ?? DefaultColors) as typeof DefaultColors;
 const S = (Shadows ?? { card: {} }) as typeof Shadows;
 const R = ThemeRadius;
 const Spacing = ThemeSpacing;
+const isAppleCleanMap = Platform.OS === 'ios' && Constants.appOwnership === 'expo';
+const LOCATION_SUGGESTION_OPTION = 'Utiliser ma position';
+const LOCATION_SUGGESTION_OPTIONS = [LOCATION_SUGGESTION_OPTION];
+const LOCAL_LOCATION_LABEL = 'Ma localisation';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -114,13 +128,32 @@ const defaultRouteVisual = {
   startDot: Colors.primary,
   endDot: Colors.secondary,
 };
-const HERO_MAP_IMAGE = require('../../assets/images/publish-map.png');
+const DRIVER_PRICE_PER_KM = 0.4;
+const DRIVER_MIN_FARE = 1.5;
+const DRIVER_COMMISSION_RATE = 0.2;
+const DEFAULT_TRAVEL_TIME = '09:00';
+const TRIP_TYPE_ACTIVE_COLOR = '#7C3AED';
+const TRIP_TYPE_OPTIONS = [
+  { value: 'one_way', label: 'Aller' },
+  { value: 'round_trip', label: 'Aller-retour' },
+] as const;
 
-const PRICE_MIN = 2;
-const PRICE_MAX = 12;
-const PRICE_STEP = 0.5;
+const formatCurrency = (value: number) =>
+  value.toLocaleString('fr-BE', {
+    style: 'currency',
+    currency: 'EUR',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 
-type ExploreParams = { edit?: string; depart?: string; campus?: string; requireSchedule?: string };
+type ExploreParams = {
+  edit?: string;
+  depart?: string;
+  campus?: string;
+  requireSchedule?: string;
+  driverMeeting?: string;
+  driverDestination?: string;
+};
 
 const derivePseudoRating = (ride: Ride) => {
   const seed = ride.driver.length + ride.destination.length;
@@ -135,9 +168,6 @@ type PassengerExplorePersistedState = {
   travelTime: string;
   hasConfirmedDate: boolean;
   hasConfirmedTime: boolean;
-  priceLimit: number;
-  draftPriceLimit: number;
-  moreFiltersVisible: boolean;
   searchResults: Ride[];
   searchPerformed: boolean;
   validationTouched: boolean;
@@ -172,6 +202,10 @@ export default function ExplorePublish() {
   const passengerOnly = session.isPassenger && !session.isDriver;
   const initialDepart = typeof params.depart === 'string' ? params.depart : undefined;
   const initialDestination = typeof params.campus === 'string' ? params.campus : undefined;
+  const initialDriverMeeting =
+    typeof params.driverMeeting === 'string' ? params.driverMeeting : undefined;
+  const initialDriverDestination =
+    typeof params.driverDestination === 'string' ? params.driverDestination : undefined;
   const requireScheduleConfirmation = params.requireSchedule === '1';
   if (passengerOnly) {
     return (
@@ -183,10 +217,28 @@ export default function ExplorePublish() {
       />
     );
   }
-  return <DriverPublishScreen />;
+  return (
+    <DriverPublishScreen
+      initialMeetingPoint={initialDriverMeeting}
+      initialDestination={initialDriverDestination}
+    />
+  );
 }
 
-function DriverPublishScreen() {
+type LocationSelection = {
+  type: 'address' | 'current_location';
+  label: string;
+  coords: Coordinates;
+  latLng: LatLng;
+};
+
+function DriverPublishScreen({
+  initialMeetingPoint,
+  initialDestination,
+}: {
+  initialMeetingPoint?: string;
+  initialDestination?: string;
+}) {
   const session = useAuthSession();
   const pinchScale = useRef(new Animated.Value(1)).current;
   const baseScale = useRef(new Animated.Value(1)).current;
@@ -238,17 +290,57 @@ function DriverPublishScreen() {
     [tabBarInset]
   );
 
-  const [meetingPoint, setMeetingPoint] = useState('');
-  const [destination, setDestination] = useState('');
+  const [meetingPointInput, setMeetingPointInput] = useState(initialMeetingPoint ?? '');
+  const meetingPoint = meetingPointInput;
+  const [meetingPointSelected, setMeetingPointSelected] = useState<string | null>(null);
+  const [destination, setDestination] = useState(initialDestination ?? '');
+  const [originSelection, setOriginSelection] = useState<LocationSelection | null>(null);
+  const [originLatLng, setOriginLatLng] = useState<LatLng | null>(null);
+  const [destinationLatLng, setDestinationLatLng] = useState<LatLng | null>(null);
+  const originGeocodeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const originGeocodeRequestId = useRef(0);
+  const meetingPrefillConsumed = useRef(false);
+  const destinationPrefillConsumed = useRef(false);
+
+  const logSelectedPoint = useCallback(
+    (role: 'origin' | 'destination', label: string, latLng: LatLng) => {
+      if (typeof window === 'undefined') {
+        return;
+      }
+      const inBelgium =
+        latLng.lat >= 50 && latLng.lat <= 51.5 && latLng.lng >= 4 && latLng.lng <= 5.5;
+      console.debug(`[Explore][${role}] selected`, { label, latLng, inBelgium });
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!initialMeetingPoint || meetingPrefillConsumed.current) {
+      return;
+    }
+    setDetectedMeetingCommune(initialMeetingPoint);
+    meetingPrefillConsumed.current = true;
+  }, [initialMeetingPoint]);
+
+  useEffect(() => {
+    if (!initialDestination || destinationPrefillConsumed.current) {
+      return;
+    }
+    destinationPrefillConsumed.current = true;
+  }, [initialDestination]);
   const [places, setPlaces] = useState(1);
   const [selectedDate, setSelectedDate] = useState(defaultTomorrow);
-  const [travelTime, setTravelTime] = useState('09:00');
+  const [travelTime, setTravelTime] = useState(DEFAULT_TRAVEL_TIME);
   const [hasConfirmedDate, setHasConfirmedDate] = useState(false);
   const [hasConfirmedTime, setHasConfirmedTime] = useState(false);
   const [showMeetingList, setShowMeetingList] = useState(false);
   const [showDestinationList, setShowDestinationList] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+  const [timePickerTarget, setTimePickerTarget] = useState<'departure' | 'return'>('departure');
+  const [returnTime, setReturnTime] = useState(DEFAULT_TRAVEL_TIME);
+  const [hasConfirmedReturnTime, setHasConfirmedReturnTime] = useState(false);
+  const [tripType, setTripType] = useState<'one_way' | 'round_trip'>('one_way');
   const [calendarMonth, setCalendarMonth] = useState(defaultTomorrow.getMonth());
   const [calendarYear, setCalendarYear] = useState(defaultTomorrow.getFullYear());
   const [detectedMeetingCommune, setDetectedMeetingCommune] = useState<string | null>(null);
@@ -272,7 +364,7 @@ function DriverPublishScreen() {
     );
   }, []);
 
-  const campusOptions = ['EPHEC Woluwe', 'EPHEC Delta', 'EPHEC Louvain-la-Neuve', 'EPHEC Schaerbeek'];
+  const campusOptions = EPHEC_CAMPUSES.map((campus) => campus.key);
 
   const availableTimeOptions = useMemo(() => {
     const now = new Date();
@@ -333,23 +425,25 @@ function DriverPublishScreen() {
     );
   }, []);
 
-  const communeSuggestions = useMemo(() => {
-    const query = meetingPoint.trim().toLowerCase();
-    const base =
-      query.length === 0
-        ? BRUSSELS_COMMUNES.slice(0, 6)
-        : BRUSSELS_COMMUNES.filter((commune) =>
-            commune.toLowerCase().includes(query)
-          ).slice(0, 10);
-    const unique = Array.from(new Set(base));
-    return ['Utiliser ma position', ...unique];
-  }, [meetingPoint]);
-
   const closeDropdowns = useCallback(() => {
     animateDropdown();
     setShowMeetingList(false);
     setShowDestinationList(false);
   }, [animateDropdown]);
+
+  const clearMeetingPoint = useCallback(() => {
+    setMeetingPointInput('');
+    setMeetingPointSelected(null);
+    setDetectedMeetingCommune(null);
+    setOriginSelection(null);
+    setOriginLatLng(null);
+    closeDropdowns();
+  }, [closeDropdowns, setOriginSelection]);
+
+  const clearDestination = useCallback(() => {
+    setDestination('');
+    closeDropdowns();
+  }, [closeDropdowns]);
 
   const handleMeetingFocus = useCallback(() => {
     if (meetingBlurTimeout.current) {
@@ -369,9 +463,25 @@ function DriverPublishScreen() {
 
   const handleUseMeetingLocation = useCallback(async () => {
     try {
-      const { commune } = await getCurrentCommune();
-      setMeetingPoint(commune);
+      const placeholder = LOCAL_LOCATION_LABEL;
+      setMeetingPointInput(placeholder);
+      setMeetingPointSelected(null);
+      const { commune, coords, address, latLng } = await getCurrentCommune();
+      const label = address || placeholder;
       setDetectedMeetingCommune(commune);
+      setMeetingPointInput(label);
+      setMeetingPointSelected(label);
+      logSelectedPoint('origin', label, latLng);
+      setOriginSelection({
+        type: 'current_location',
+        label,
+        coords: {
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+        },
+        latLng,
+      });
+      setOriginLatLng(latLng);
       setShowMeetingList(false);
     } catch (error) {
       if (error instanceof LocationPermissionError) {
@@ -383,15 +493,137 @@ function DriverPublishScreen() {
         );
       }
     }
-  }, []);
+  }, [setOriginSelection, logSelectedPoint]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+    if (originGeocodeTimeout.current) {
+      clearTimeout(originGeocodeTimeout.current);
+      originGeocodeTimeout.current = null;
+    }
+    const trimmed = meetingPoint.trim();
+    console.debug('[DriverMap] input', trimmed || '<empty>');
+    if (!trimmed) {
+      setMeetingPointSelected(null);
+      setOriginSelection(null);
+      setOriginLatLng(null);
+      return;
+    }
+    if (trimmed === LOCAL_LOCATION_LABEL) {
+      return;
+    }
+    if (trimmed.length < 3) {
+      setMeetingPointSelected(null);
+      setOriginSelection(null);
+      setOriginLatLng(null);
+      return;
+    }
+    const requestId = ++originGeocodeRequestId.current;
+    let active = true;
+    originGeocodeTimeout.current = setTimeout(() => {
+      (async () => {
+        try {
+          const preview = await resolveInputToLatLng(trimmed);
+          if (!active || requestId !== originGeocodeRequestId.current) {
+            return;
+          }
+          if (!preview) {
+            setMeetingPointSelected(null);
+            setOriginSelection(null);
+            setOriginLatLng(null);
+            return;
+          }
+          const { lat, lng, label } = preview;
+          const coords = { latitude: lat, longitude: lng };
+          const latLng = toLatLng(coords);
+          if (!latLng) {
+            setMeetingPointSelected(null);
+            setOriginSelection(null);
+            setOriginLatLng(null);
+            return;
+          }
+          const labelValue = label?.trim() || trimmed;
+          setMeetingPointSelected(labelValue);
+          logSelectedPoint('origin', labelValue, latLng);
+          setOriginSelection({
+            type: 'address',
+            label: labelValue,
+            coords,
+            latLng,
+          });
+          setOriginLatLng(latLng);
+        } catch {
+          if (active && requestId === originGeocodeRequestId.current) {
+            setMeetingPointSelected(null);
+            setOriginSelection(null);
+            setOriginLatLng(null);
+          }
+        } finally {
+          if (originGeocodeTimeout.current) {
+            originGeocodeTimeout.current = null;
+          }
+        }
+      })();
+    }, 360);
+
+    return () => {
+      active = false;
+      if (originGeocodeTimeout.current) {
+        clearTimeout(originGeocodeTimeout.current);
+        originGeocodeTimeout.current = null;
+      }
+    };
+  }, [meetingPoint, setOriginSelection, logSelectedPoint]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+    console.debug('[DriverMap] origin', originLatLng, 'meetingPoint:', meetingPoint);
+  }, [originLatLng, meetingPoint]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+    const trimmed = destination.trim();
+    if (!trimmed) {
+      setDestinationLatLng(null);
+      return;
+    }
+    const campus = findEphecCampus(trimmed);
+    if (!campus) {
+      setDestinationLatLng(null);
+      return;
+    }
+    let active = true;
+    (async () => {
+      const coords = await getPlaceLatLng(campus.placeId);
+      if (!active) return;
+      setDestinationLatLng(coords);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [destination]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+    console.debug('[DriverMap] destination', destinationLatLng, 'destination:', destination);
+  }, [destinationLatLng, destination]);
 
   const selectMeetingPoint = useCallback(
     (commune: string) => {
-      if (commune === 'Utiliser ma position') {
+      if (commune === LOCATION_SUGGESTION_OPTION) {
         handleUseMeetingLocation();
         return;
       }
-      setMeetingPoint(commune);
+      setMeetingPointInput(commune);
+      setMeetingPointSelected(commune);
       setDetectedMeetingCommune(null);
       animateDropdown();
       setShowMeetingList(false);
@@ -418,6 +650,9 @@ function DriverPublishScreen() {
       return next;
     });
   }, [animateDropdown]);
+
+  const meetingPointHasValue = meetingPoint.trim().length > 0;
+  const destinationHasValue = destination.trim().length > 0;
 
   const goToPrevMonth = useCallback(() => {
     setCalendarMonth((prev) => {
@@ -467,12 +702,37 @@ function DriverPublishScreen() {
       if (selection.getTime() < now.getTime()) {
         return;
       }
-      setTravelTime(slot);
-      setHasConfirmedTime(true);
+      if (timePickerTarget === 'departure') {
+        setTravelTime(slot);
+        setHasConfirmedTime(true);
+      } else {
+        setReturnTime(slot);
+        setHasConfirmedReturnTime(true);
+      }
       setShowTimePicker(false);
     },
-    [selectedDate]
+    [selectedDate, timePickerTarget]
   );
+  const clearSelectedDate = useCallback(() => {
+    setHasConfirmedDate(false);
+    setSelectedDate(defaultTomorrow);
+    setShowDatePicker(false);
+  }, [defaultTomorrow]);
+  const clearSelectedTime = useCallback(() => {
+    setHasConfirmedTime(false);
+    setTravelTime(DEFAULT_TRAVEL_TIME);
+    setShowTimePicker(false);
+  }, []);
+  const clearReturnTime = useCallback(() => {
+    setHasConfirmedReturnTime(false);
+    setReturnTime(DEFAULT_TRAVEL_TIME);
+    setShowTimePicker(false);
+  }, []);
+  useEffect(() => {
+    if (tripType === 'one_way') {
+      clearReturnTime();
+    }
+  }, [clearReturnTime, tripType]);
 
   const travelDateLabel = useMemo(
     () =>
@@ -487,6 +747,35 @@ function DriverPublishScreen() {
   const dropdownOpen = showMeetingList || showDestinationList;
 
   const destinationLabel = destination && destination.trim() ? destination : 'Sélectionnez un campus';
+
+  const distanceKm = useMemo(() => {
+    const origin = meetingPoint.trim();
+    const target = destination.trim();
+    if (!origin || !target) return null;
+    const value = getDistanceKm(origin, target);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return value;
+  }, [meetingPoint, destination]);
+
+  const finalFare = useMemo(() => {
+    if (distanceKm == null) return null;
+    return Math.max(distanceKm * DRIVER_PRICE_PER_KM, DRIVER_MIN_FARE);
+  }, [distanceKm]);
+
+  const driverGain = useMemo(() => {
+    if (finalFare == null) return null;
+    return finalFare * (1 - DRIVER_COMMISSION_RATE);
+  }, [finalFare]);
+
+  const returnTimeReady = tripType === 'round_trip' ? hasConfirmedReturnTime : true;
+  const driverTripReady =
+    meetingPoint.trim().length > 0 &&
+    destination.trim().length > 0 &&
+    hasConfirmedDate &&
+    hasConfirmedTime &&
+    places > 0 &&
+    returnTimeReady;
+  const summaryReady = distanceKm != null && finalFare != null && driverGain != null;
 
   const estimatedMinutes = useMemo(() => {
     if (!meetingPoint.trim() || !destination.trim()) return null;
@@ -504,7 +793,7 @@ function DriverPublishScreen() {
     const key = destination.toLowerCase();
     const match = ROUTE_VISUALS.find((item) => key.includes(item.key));
     return match ?? defaultRouteVisual;
-  }, [destination]);
+  }, [destination, findCampusLocation, getCoordinates]);
 
   const validationMessage = useMemo(() => {
     if (!validationTouched) return null;
@@ -517,6 +806,9 @@ function DriverPublishScreen() {
     if (!hasConfirmedTime) {
       return 'Choisissez une heure valide.';
     }
+    if (tripType === 'round_trip' && !hasConfirmedReturnTime) {
+      return 'Choisissez une heure de retour.';
+    }
     if (places <= 0) {
       return 'Indiquez le nombre de places disponibles.';
     }
@@ -527,7 +819,9 @@ function DriverPublishScreen() {
     destination,
     hasConfirmedDate,
     hasConfirmedTime,
+    hasConfirmedReturnTime,
     places,
+    tripType,
   ]);
 
   const canPublish =
@@ -535,7 +829,8 @@ function DriverPublishScreen() {
     !!destination.trim() &&
     hasConfirmedDate &&
     hasConfirmedTime &&
-    places > 0;
+    places > 0 &&
+    returnTimeReady;
 
   const handlePublish = useCallback(() => {
     if (isPublishingRide) return;
@@ -593,7 +888,7 @@ function DriverPublishScreen() {
     travelTime,
   ]);
 
-  const meetingOptions = communeSuggestions;
+  const meetingOptions = LOCATION_SUGGESTION_OPTIONS;
 
   const increasePlaces = useCallback(() => {
     setPlaces((prev) => Math.min(prev + 1, 5));
@@ -618,33 +913,49 @@ function DriverPublishScreen() {
             dropdownOpen && passengerStyles.dropdownRaised,
           ]}
         >
-          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperTop]}>
-            <Text style={passengerStyles.dropdownLabel}>POINT DE RENCONTRE</Text>
-            <View style={passengerStyles.inputWrapper}>
-              <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
-              <TextInput
-                style={passengerStyles.dropdownTextInput}
-                value={meetingPoint}
-                onChangeText={(value) => {
-                  setMeetingPoint(value);
-                  setDetectedMeetingCommune(null);
-                  if (!showMeetingList) {
-                    animateDropdown();
-                    setShowMeetingList(true);
-                  }
-                }}
-                placeholder="Saisir votre adresse"
-                placeholderTextColor={Colors.gray400}
-                onFocus={handleMeetingFocus}
-                onBlur={handleMeetingBlur}
-                autoCapitalize="words"
-                autoCorrect={false}
-                returnKeyType="done"
-              />
-            </View>
+              <View style={[passengerStyles.dropdownWrapper, passengerStyles.dropdownWrapperTop]}>
+                <Text style={passengerStyles.dropdownLabel}>POINT DE RENCONTRE</Text>
+                <View style={passengerStyles.inputWrapper}>
+                  <IconSymbol name="location.fill" size={18} color={Colors.gray500} />
+                <TextInput
+                  style={passengerStyles.dropdownTextInput}
+                  value={meetingPoint}
+                  onChangeText={(value) => {
+                    setMeetingPointInput(value);
+                    setMeetingPointSelected(null);
+                    setDetectedMeetingCommune(null);
+                    if (!showMeetingList) {
+                      animateDropdown();
+                      setShowMeetingList(true);
+                    }
+                  }}
+                    placeholder="Saisir votre adresse"
+                    placeholderTextColor={Colors.gray400}
+                    onFocus={handleMeetingFocus}
+                    onBlur={handleMeetingBlur}
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                    returnKeyType="done"
+                  />
+                  {meetingPointHasValue ? (
+                    <Pressable
+                      style={passengerStyles.clearButton}
+                      onPress={clearMeetingPoint}
+                      accessibilityLabel="Effacer le point de rencontre"
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                    </Pressable>
+                  ) : null}
+                </View>
             {detectedMeetingCommune ? (
               <Text style={passengerStyles.locationDetectedText}>
                 Commune détectée : {detectedMeetingCommune}
+              </Text>
+            ) : null}
+            {meetingPointSelected ? (
+              <Text style={passengerStyles.locationDetectedText}>
+                Adresse détectée : {meetingPointSelected}
               </Text>
             ) : null}
             {showMeetingList ? (
@@ -665,21 +976,33 @@ function DriverPublishScreen() {
             <Text style={passengerStyles.dropdownLabel}>DESTINATION</Text>
             <View style={[passengerStyles.inputWrapper, passengerStyles.toInput]}>
               <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
-              <Pressable
-                style={passengerStyles.dropdownTrigger}
-                onPress={toggleDestinationList}
-                accessibilityRole="button"
-                accessibilityLabel="Choisir un campus de destination"
-              >
-                <Text
-                  style={[
-                    passengerStyles.dropdownText,
-                    !destination && passengerStyles.dropdownTextPlaceholder,
-                  ]}
+              <View style={passengerStyles.dropdownValueWithClear}>
+                <Pressable
+                  style={passengerStyles.dropdownTrigger}
+                  onPress={toggleDestinationList}
+                  accessibilityRole="button"
+                  accessibilityLabel="Choisir un campus de destination"
                 >
-                  {destinationLabel}
-                </Text>
-              </Pressable>
+                  <Text
+                    style={[
+                      passengerStyles.dropdownText,
+                      !destinationHasValue && passengerStyles.dropdownTextPlaceholder,
+                    ]}
+                  >
+                    {destinationLabel}
+                  </Text>
+                </Pressable>
+                {destinationHasValue ? (
+                  <Pressable
+                    style={passengerStyles.clearButton}
+                    onPress={clearDestination}
+                    accessibilityLabel="Effacer la destination"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                  </Pressable>
+                ) : null}
+              </View>
             </View>
             {showDestinationList ? (
               <View style={passengerStyles.dropdownList}>
@@ -697,17 +1020,26 @@ function DriverPublishScreen() {
           </View>
         </View>
         <View style={passengerStyles.actionsColumn}>
-          <Pressable
-            style={passengerStyles.swapButton}
-            accessibilityRole="button"
-            accessibilityLabel="Inverser les points de trajet"
+              <Pressable
+                style={passengerStyles.swapButton}
+                accessibilityRole="button"
+                accessibilityLabel="Inverser les points de trajet"
             onPress={() => {
               closeDropdowns();
-              setMeetingPoint(destination);
-              setDestination(meetingPoint);
+              const nextFrom = destination;
+              const nextTo = meetingPoint;
+              const nextOrigin = destinationLatLng;
+              const nextDest = originLatLng;
+              console.debug('[SWAP] from->', nextFrom, 'to->', nextTo);
+              console.debug('[SWAP] origin->', nextOrigin, 'dest->', nextDest);
+              setMeetingPointInput(nextFrom);
+              setMeetingPointSelected(nextFrom);
+              setDestination(nextTo);
+              setOriginLatLng(nextOrigin ?? null);
+              setDestinationLatLng(nextDest ?? null);
               setDetectedMeetingCommune(null);
             }}
-          >
+              >
             <IconSymbol name="chevron.up" size={18} color="#7A7A98" />
             <IconSymbol name="chevron.down" size={18} color="#7A7A98" />
           </Pressable>
@@ -715,91 +1047,224 @@ function DriverPublishScreen() {
       </View>
       <View style={passengerStyles.dateSection}>
         <View style={passengerStyles.dateRow} pointerEvents={dropdownOpen ? 'none' : 'auto'}>
-          <Pressable
-            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-            onPress={() => {
-              closeDropdowns();
-              openDatePicker();
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Sélectionner une date"
-          >
-            <IconSymbol name="calendar" size={18} color={Colors.gray500} />
-            <Text
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+            <Text style={passengerStyles.dropdownLabel}>DATE</Text>
+            <View
               style={[
-                passengerStyles.dropdownText,
-                !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+                passengerStyles.inputWrapper,
+                passengerStyles.smallInput,
+                passengerStyles.pickerTrigger,
               ]}
             >
-              {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-            onPress={() => {
-              closeDropdowns();
-              setShowTimePicker(true);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Sélectionner une heure"
-          >
-            <IconSymbol name="clock" size={18} color={Colors.gray500} />
-            <Text
+              <Pressable
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+                onPress={() => {
+                  closeDropdowns();
+                  openDatePicker();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Sélectionner une date"
+              >
+                <IconSymbol name="calendar" size={18} color={Colors.gray500} />
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+                    { marginLeft: Spacing.xs },
+                  ]}
+                >
+                  {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
+                </Text>
+              </Pressable>
+              {hasConfirmedDate ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearSelectedDate}
+                  accessibilityLabel="Effacer la date"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+            <Text style={passengerStyles.dropdownLabel}>HEURE</Text>
+            <View
               style={[
-                passengerStyles.dropdownText,
-                !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+                passengerStyles.inputWrapper,
+                passengerStyles.smallInput,
+                passengerStyles.pickerTrigger,
               ]}
             >
-              {hasConfirmedTime ? travelTime : 'Choisir une heure'}
-            </Text>
-          </Pressable>
+              <Pressable
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+                onPress={() => {
+                  closeDropdowns();
+                  setTimePickerTarget('departure');
+                  setShowTimePicker(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Sélectionner une heure"
+              >
+                <IconSymbol name="clock" size={18} color={Colors.gray500} />
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+                    { marginLeft: Spacing.xs },
+                  ]}
+                >
+                  {hasConfirmedTime ? travelTime : 'Choisir une heure'}
+                </Text>
+              </Pressable>
+              {hasConfirmedTime ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearSelectedTime}
+                  accessibilityLabel="Effacer l'heure"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
         </View>
         {validationMessage ? <Text style={passengerStyles.dateError}>{validationMessage}</Text> : null}
       </View>
-      <View style={{ gap: Spacing.xs }}>
-        <Text style={passengerStyles.dropdownLabel}>PLACES DISPONIBLES</Text>
-        <View
-          style={[
-            passengerStyles.inputWrapper,
-            passengerStyles.smallInput,
-            { justifyContent: 'space-between', paddingVertical: Spacing.sm },
-          ]}
-        >
-          <IconSymbol name="person.fill" size={18} color={Colors.gray500} />
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
-            <Pressable
-              style={{ padding: Spacing.md }}
-              onPress={decreasePlaces}
-              accessibilityRole="button"
-              accessibilityLabel="Réduire le nombre de places"
-            >
-              <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>−</Text>
-            </Pressable>
-            <Text style={{ fontWeight: '700', color: Colors.ink, fontSize: 16 }}>{places}</Text>
-            <Pressable
-              style={{ padding: Spacing.md }}
-              onPress={increasePlaces}
-              accessibilityRole="button"
-              accessibilityLabel="Augmenter le nombre de places"
-            >
-              <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>+</Text>
-            </Pressable>
+      <View style={passengerStyles.dateRow}>
+        <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+          <Text style={passengerStyles.dropdownLabel}>PLACES DISPONIBLES</Text>
+          <View
+            style={[
+              passengerStyles.inputWrapper,
+              passengerStyles.smallInput,
+              passengerStyles.placesInput,
+            ]}
+          >
+            <IconSymbol name="person.fill" size={18} color={Colors.gray500} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }}>
+              <Pressable
+                style={passengerStyles.placesButton}
+                onPress={decreasePlaces}
+                accessibilityRole="button"
+                accessibilityLabel="Réduire le nombre de places"
+              >
+                <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>−</Text>
+              </Pressable>
+              <Text style={{ fontWeight: '700', color: Colors.ink, fontSize: 16 }}>{places}</Text>
+              <Pressable
+                style={passengerStyles.placesButton}
+                onPress={increasePlaces}
+                accessibilityRole="button"
+                accessibilityLabel="Augmenter le nombre de places"
+              >
+                <Text style={{ fontSize: 18, fontWeight: '700', color: Colors.gray500 }}>+</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+        <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+          <Text style={passengerStyles.dropdownLabel}>TYPE DE TRAJET</Text>
+          <View style={passengerStyles.tripTypeControl}>
+            {TRIP_TYPE_OPTIONS.map((option, index) => (
+              <Pressable
+                key={option.value}
+                style={[
+                  passengerStyles.tripTypeOption,
+                  index > 0 && passengerStyles.tripTypeOptionSeparator,
+                ]}
+                onPress={() => setTripType(option.value)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: tripType === option.value }}
+              >
+                <Text
+                  style={[
+                    passengerStyles.tripTypeOptionText,
+                    tripType === option.value && passengerStyles.tripTypeOptionTextActive,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+            ))}
           </View>
         </View>
       </View>
-      <Pressable style={passengerStyles.moreFiltersButton}>
-        <Text style={passengerStyles.moreFiltersButtonText}>Plus de filtres</Text>
-      </Pressable>
+      {tripType === 'round_trip' ? (
+        <View style={[passengerStyles.dropdownWrapper, passengerStyles.returnField]}>
+          <Text style={passengerStyles.dropdownLabel}>HEURE RETOUR</Text>
+          <View
+            style={[
+              passengerStyles.inputWrapper,
+              passengerStyles.smallInput,
+              passengerStyles.pickerTrigger,
+            ]}
+          >
+            <Pressable
+              style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+              onPress={() => {
+                setTimePickerTarget('return');
+                setShowTimePicker(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Sélectionner une heure de retour"
+            >
+              <IconSymbol name="clock" size={18} color={Colors.gray500} />
+              <Text
+                style={[
+                  passengerStyles.dropdownText,
+                  !hasConfirmedReturnTime && passengerStyles.dropdownTextPlaceholder,
+                  { marginLeft: Spacing.xs },
+                ]}
+              >
+                {hasConfirmedReturnTime ? returnTime : 'Choisir une heure'}
+              </Text>
+            </Pressable>
+            {hasConfirmedReturnTime ? (
+              <Pressable
+                style={passengerStyles.clearButton}
+                onPress={clearReturnTime}
+                accessibilityLabel="Effacer l'heure de retour"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+      {summaryReady && driverTripReady ? (
+        <View style={passengerStyles.fareSummaryWrapper}>
+          <View style={passengerStyles.fareSummaryCard}>
+            <Text style={passengerStyles.fareSummaryGain}>
+              Tu gagneras {formatCurrency(driverGain!)}
+            </Text>
+            <Text style={passengerStyles.fareSummarySubtext}>après la commission de 20 %</Text>
+            <View style={passengerStyles.fareSummaryDetails}>
+              <Text style={passengerStyles.fareSummaryDetail}>
+                Prix payé par le passager : {formatCurrency(finalFare!)}
+              </Text>
+              <Text style={passengerStyles.fareSummaryDetailSecondary}>
+                (0,40 € par km, minimum 1,50 € par trajet)
+              </Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
       <View style={passengerStyles.searchButtonWrapper}>
         <View style={passengerStyles.searchButtonShield} />
         <GradientButton
           title="Publier un trajet"
           onPress={handlePublish}
           size="sm"
-          variant="cta"
+          variant="twilight"
           fullWidth
-          style={passengerStyles.fullSearchButton}
-          contentStyle={{ gap: isPublishingRide ? Spacing.sm : 8 }}
+          style={[passengerStyles.fullSearchButton, passengerStyles.driverCTA]}
+          contentStyle={{
+            paddingVertical: Spacing.lg,
+          }}
           accessibilityRole="button"
           disabled={!canPublish || isPublishingRide}
         >
@@ -872,45 +1337,96 @@ function DriverPublishScreen() {
     </Modal>
   );
 
-  const renderTimePickerModal = () => (
-    <Modal visible={showTimePicker} transparent animationType="fade" onRequestClose={() => setShowTimePicker(false)}>
-      <View style={passengerStyles.pickerOverlay}>
-        <Pressable style={passengerStyles.pickerBackdrop} onPress={() => setShowTimePicker(false)} />
-        <View style={passengerStyles.pickerCard}>
-          <Text style={passengerStyles.pickerTitle}>Choisir une heure</Text>
-          <ScrollView contentContainerStyle={passengerStyles.pickerGrid}>
-            {availableTimeOptions.map((slot) => (
-              <Pressable
-                key={slot}
-                style={[
-                  passengerStyles.pickerOption,
-                  travelTime === slot && passengerStyles.pickerOptionActive,
-                ]}
-                onPress={() => handleSelectTime(slot)}
-              >
-                <Text
+  const renderTimePickerModal = () => {
+    const currentTimeSelection = timePickerTarget === 'return' ? returnTime : travelTime;
+    return (
+      <Modal visible={showTimePicker} transparent animationType="fade" onRequestClose={() => setShowTimePicker(false)}>
+        <View style={passengerStyles.pickerOverlay}>
+          <Pressable style={passengerStyles.pickerBackdrop} onPress={() => setShowTimePicker(false)} />
+          <View style={passengerStyles.pickerCard}>
+            <Text style={passengerStyles.pickerTitle}>Choisir une heure</Text>
+            <ScrollView contentContainerStyle={passengerStyles.pickerGrid}>
+              {availableTimeOptions.map((slot) => (
+                <Pressable
+                  key={slot}
                   style={[
-                    passengerStyles.pickerOptionText,
-                    travelTime === slot && passengerStyles.pickerOptionTextActive,
+                    passengerStyles.pickerOption,
+                    currentTimeSelection === slot && passengerStyles.pickerOptionActive,
                   ]}
+                  onPress={() => handleSelectTime(slot)}
                 >
-                  {slot}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
+                  <Text
+                    style={[
+                      passengerStyles.pickerOptionText,
+                      currentTimeSelection === slot && passengerStyles.pickerOptionTextActive,
+                    ]}
+                  >
+                    {slot}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
         </View>
-      </View>
-    </Modal>
-  );
+      </Modal>
+    );
+  };
+
+  const destinationCoords = useMemo<Coordinates | null>(() => {
+    const trimmed = destination.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const campus = findCampusLocation(trimmed);
+    if (campus) {
+      return { latitude: campus.latitude, longitude: campus.longitude };
+    }
+    return null;
+  }, [destination, findCampusLocation]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+    const trimmed = destination.trim();
+    if (!trimmed) {
+      setDestinationLatLng(null);
+      return;
+    }
+    const campus = findEphecCampus(trimmed);
+    if (!campus) {
+      setDestinationLatLng(null);
+      return;
+    }
+    let active = true;
+    (async () => {
+      const coords = await getPlaceLatLng(campus.placeId);
+      if (!active) return;
+      setDestinationLatLng(coords);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [destination]);
+
+  useEffect(() => {
+    if (!destinationLatLng) return;
+    logSelectedPoint('destination', destination, destinationLatLng);
+  }, [destination, destinationLatLng, logSelectedPoint]);
+
 
   const mapNode =
     Platform.OS === 'web' ? (
-      <HeroWebMap
-        rides={[]}
-        depart={meetingPoint.trim() ? meetingPoint : undefined}
-        destination={destination.trim() ? destination : undefined}
-      />
+        <CampusRideMap
+          rides={[]}
+          depart={meetingPoint.trim() ? meetingPoint : undefined}
+          destination={destination.trim() ? destination : undefined}
+          originCoords={originSelection?.coords ?? null}
+          destinationCoords={destinationCoords}
+          originLatLng={originLatLng}
+          destinationLatLng={destinationLatLng}
+          fallbackSegmentsEnabled={false}
+        />
     ) : (
       <PinchGestureHandler
         onGestureEvent={pinchGestureHandler}
@@ -922,61 +1438,70 @@ function DriverPublishScreen() {
             { transform: [{ scale: mapScale }] },
           ]}
         >
-          <Image
-            source={HERO_MAP_IMAGE}
-            style={passengerStyles.mapImage}
-            resizeMode="cover"
+                    <CampusRideMap
+                      rides={[]}
+                      depart={meetingPoint.trim() ? meetingPoint : undefined}
+                      destination={destination.trim() ? destination : undefined}
+                      originCoords={originSelection?.coords ?? null}
+                      destinationCoords={destinationCoords}
+                      originLatLng={originLatLng}
+                      destinationLatLng={destinationLatLng}
+                      fallbackSegmentsEnabled={false}
+                      variant="bare"
+                      style={passengerStyles.mapImage}
           />
-          <View pointerEvents="none" style={passengerStyles.mapTitleCard}>
-            <Text style={passengerStyles.mapTitle}>Trouver un trajet</Text>
-          </View>
-          <View style={passengerStyles.routeBadge}>
-            <Text style={passengerStyles.routeTitle}>{heroArrivalLabel}</Text>
-            <Text style={passengerStyles.routeDuration}>
-              {heroDurationLabel}
-            </Text>
-          </View>
-          <View style={passengerStyles.mapBubbleStart}>
-            <View
-              style={[
-                passengerStyles.mapBubbleDot,
-                { backgroundColor: routeVisual.startDot },
-              ]}
-            />
-            <View>
-              <Text style={passengerStyles.mapBubbleLabel}>Départ</Text>
-              <Text style={passengerStyles.mapBubbleValue}>
-                {heroDepartLabel}
-              </Text>
-            </View>
-          </View>
-          <View style={passengerStyles.mapBubbleDestination}>
-            <View
-              style={[
-                passengerStyles.mapBubbleDot,
-                passengerStyles.mapBubbleDotDestination,
-                { backgroundColor: routeVisual.endDot },
-              ]}
-            />
-            <View>
-              <Text
-                style={[
-                  passengerStyles.mapBubbleLabel,
-                  passengerStyles.mapBubbleLabelOnDark,
-                ]}
-              >
-                Destination
-              </Text>
-              <Text
-                style={[
-                  passengerStyles.mapBubbleValue,
-                  passengerStyles.mapBubbleValueOnDark,
-                ]}
-              >
-                {heroArrivalLabel}
-              </Text>
-            </View>
-          </View>
+          {!isAppleCleanMap && (
+            <>
+              <View pointerEvents="none" style={passengerStyles.mapTitleCard}>
+                <Text style={passengerStyles.mapTitle}>Trouver un trajet</Text>
+              </View>
+              <View style={passengerStyles.routeBadge}>
+                <Text style={passengerStyles.routeTitle}>{heroArrivalLabel}</Text>
+                <Text style={passengerStyles.routeDuration}>{heroDurationLabel}</Text>
+              </View>
+              <View style={passengerStyles.mapBubbleStart}>
+                <View
+                  style={[
+                    passengerStyles.mapBubbleDot,
+                    { backgroundColor: routeVisual.startDot },
+                  ]}
+                />
+                <View>
+                  <Text style={passengerStyles.mapBubbleLabel}>Départ</Text>
+                  <Text style={passengerStyles.mapBubbleValue}>
+                    {heroDepartLabel}
+                  </Text>
+                </View>
+              </View>
+              <View style={passengerStyles.mapBubbleDestination}>
+                <View
+                  style={[
+                    passengerStyles.mapBubbleDot,
+                    passengerStyles.mapBubbleDotDestination,
+                    { backgroundColor: routeVisual.endDot },
+                  ]}
+                />
+                <View>
+                  <Text
+                    style={[
+                      passengerStyles.mapBubbleLabel,
+                      passengerStyles.mapBubbleLabelOnDark,
+                    ]}
+                  >
+                    Destination
+                  </Text>
+                  <Text
+                    style={[
+                      passengerStyles.mapBubbleValue,
+                      passengerStyles.mapBubbleValueOnDark,
+                    ]}
+                  >
+                    {heroArrivalLabel}
+                  </Text>
+                </View>
+              </View>
+            </>
+          )}
         </Animated.View>
       </PinchGestureHandler>
     );
@@ -1089,7 +1614,7 @@ function PassengerPublishScreen({
     }
     return defaultTomorrow;
   });
-  const [travelTime, setTravelTime] = useState(restoredState?.travelTime ?? '09:00');
+  const [travelTime, setTravelTime] = useState(restoredState?.travelTime ?? DEFAULT_TRAVEL_TIME);
   const [hasConfirmedDate, setHasConfirmedDate] = useState(restoredState?.hasConfirmedDate ?? false);
   const [hasConfirmedTime, setHasConfirmedTime] = useState(restoredState?.hasConfirmedTime ?? false);
   const [showDestList, setShowDestList] = useState(false);
@@ -1098,28 +1623,32 @@ function PassengerPublishScreen({
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(selectedDate.getMonth());
   const [calendarYear, setCalendarYear] = useState(selectedDate.getFullYear());
-  const campusOptions = ['EPHEC Woluwe', 'EPHEC Delta', 'EPHEC Louvain-la-Neuve', 'EPHEC Schaerbeek'];
+  const campusOptions = [
+    'EPHEC Woluwe',
+    'EPHEC Delta',
+    'EPHEC Louvain-la-Neuve',
+    'EPHEC Schaerbeek',
+    'EPHEC Schuman',
+  ];
   const [rides, setRides] = useState<Ride[]>([]);
   const [ridesReady, setRidesReady] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
   const [detectedCommune, setDetectedCommune] = useState<string | null>(null);
+  const [originLatLng, setOriginLatLng] = useState<LatLng | null>(null);
+  const [destinationLatLng, setDestinationLatLng] = useState<LatLng | null>(null);
   const [searchResults, setSearchResults] = useState<Ride[]>(() =>
     restoredState?.searchResults ? cloneRideList(restoredState.searchResults) : []
   );
   const [wallet, setWallet] = useState<WalletSnapshot | null>(() =>
     session.email ? getWallet(session.email) : null
   );
-  const [moreFiltersVisible, setMoreFiltersVisible] = useState(restoredState?.moreFiltersVisible ?? false);
-  const restoredPriceLimit = restoredState?.priceLimit ?? 8;
-  const restoredDraftPriceLimit = restoredState?.draftPriceLimit ?? restoredPriceLimit;
-  const [priceLimit, setPriceLimit] = useState(restoredPriceLimit);
-  const [draftPriceLimit, setDraftPriceLimit] = useState(restoredDraftPriceLimit);
-  const [priceSliderWidth, setPriceSliderWidth] = useState(1);
   const [searchPerformed, setSearchPerformed] = useState(restoredState?.searchPerformed ?? false);
   const [isSearching, setIsSearching] = useState(false);
   const [searchInstance, setSearchInstance] = useState(restoredState?.searchInstance ?? 0);
   const [resultsOffset, setResultsOffset] = useState<number | null>(null);
   const fromBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const originGeocodeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const originGeocodeRequestId = useRef(0);
   const [validationTouched, setValidationTouched] = useState(restoredState?.validationTouched ?? false);
   const [useManualCardEntry, setUseManualCardEntry] = useState(false);
   const scrollOffsetRef = useRef(restoredState?.scrollOffset ?? 0);
@@ -1161,49 +1690,42 @@ function PassengerPublishScreen({
     const unsubscribe = subscribeWallet(session.email, setWallet);
     return unsubscribe;
   }, [session.email]);
-useEffect(() => {
-  setDraftPriceLimit(priceLimit);
-}, [priceLimit]);
-useEffect(() => {
-  stateSnapshotRef.current = {
+
+  useEffect(() => {
+    stateSnapshotRef.current = {
+      fromCampus,
+      toCampus,
+      selectedDateISO: selectedDate.toISOString(),
+      travelTime,
+      hasConfirmedDate,
+      hasConfirmedTime,
+      searchResults: cloneRideList(searchResults),
+      searchPerformed,
+      validationTouched,
+      searchInstance,
+      scrollOffset: scrollOffsetRef.current,
+    };
+  }, [
     fromCampus,
     toCampus,
-    selectedDateISO: selectedDate.toISOString(),
+    selectedDate,
     travelTime,
     hasConfirmedDate,
     hasConfirmedTime,
-    priceLimit,
-    draftPriceLimit,
-    moreFiltersVisible,
-    searchResults: cloneRideList(searchResults),
+    searchResults,
     searchPerformed,
     validationTouched,
     searchInstance,
-    scrollOffset: scrollOffsetRef.current,
-  };
-}, [
-  fromCampus,
-  toCampus,
-  selectedDate,
-  travelTime,
-  hasConfirmedDate,
-  hasConfirmedTime,
-  priceLimit,
-  draftPriceLimit,
-  moreFiltersVisible,
-  searchResults,
-  searchPerformed,
-  validationTouched,
-  searchInstance,
-]);
-useEffect(() => {
-  return () => {
-    passengerExplorePersistedState = stateSnapshotRef.current;
-  };
-}, []);
-const [reservingRideId, setReservingRideId] = useState<string | null>(null);
-const [paymentRide, setPaymentRide] = useState<Ride | null>(null);
-const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'card' | 'wallet'>('apple-pay');
+  ]);
+
+  useEffect(() => {
+    return () => {
+      passengerExplorePersistedState = stateSnapshotRef.current;
+    };
+  }, []);
+  const [reservingRideId, setReservingRideId] = useState<string | null>(null);
+  const [paymentRide, setPaymentRide] = useState<Ride | null>(null);
+  const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'card' | 'wallet'>('apple-pay');
   const [cardNumber, setCardNumber] = useState('');
   const [cardExpiry, setCardExpiry] = useState('');
   const [cardCvv, setCardCvv] = useState('');
@@ -1259,13 +1781,15 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
   const heroDepartLabel = fromCampus || 'Commune au choix';
   const heroArrivalLabel = toCampus || 'Destination EPHEC';
   const heroDurationLabel = sampledMinutes ? `${sampledMinutes} min estimées` : 'Temps estimé';
-  const scopedResults = searchResults;
+  const sampleSearchResults = useMemo(() => {
+    return ridesReady && rides.length === 0 ? FALLBACK_UPCOMING : [];
+  }, [rides.length, ridesReady]);
+  const scopedResults = searchResults.length > 0 ? searchResults : sampleSearchResults;
   const ridesCardList = useMemo(() => {
     return [...scopedResults]
       .filter((ride) => ride.seats - ride.passengers.length >= 1)
-      .filter((ride) => ride.price <= priceLimit + 0.001)
       .sort((a, b) => a.departureAt - b.departureAt);
-  }, [priceLimit, scopedResults]);
+  }, [scopedResults]);
   const resultsCountLabel = useMemo(() => {
     if (!searchPerformed) return 'Prêt à lancer une recherche';
     if (ridesCardList.length === 0) {
@@ -1363,45 +1887,35 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
     return null;
   }, [validationTouched, allFieldsReady, isScheduleInPast]);
   const showResultsCard = searchPerformed && scheduleReady && isLocationReady;
-  const handlePriceSliderChange = useCallback(
-    (locationX: number) => {
-      const width = priceSliderWidth || 1;
-      const ratio = Math.min(Math.max(locationX / width, 0), 1);
-      const rawValue = PRICE_MIN + ratio * (PRICE_MAX - PRICE_MIN);
-      const stepped = Math.round(rawValue / PRICE_STEP) * PRICE_STEP;
-      setDraftPriceLimit(Number(Math.min(PRICE_MAX, Math.max(PRICE_MIN, stepped)).toFixed(1)));
-    },
-    [priceSliderWidth]
-  );
-  const priceSliderRatio = useMemo(() => {
-    return Math.min(1, Math.max(0, (draftPriceLimit - PRICE_MIN) / (PRICE_MAX - PRICE_MIN)));
-  }, [draftPriceLimit]);
-  const applyPriceFilter = useCallback(() => {
-    setPriceLimit(draftPriceLimit);
-  }, [draftPriceLimit]);
-  const priceApplyDisabled = draftPriceLimit === priceLimit;
+  const fromCampusHasValue = fromCampus.trim().length > 0;
+  const toCampusHasValue = toCampus.trim().length > 0;
   const dropdownOpen = showFromList || showDestList;
   const closeDropdowns = useCallback(() => {
     animateDropdown();
     setShowDestList(false);
     setShowFromList(false);
   }, [animateDropdown]);
-  const communeSuggestions = useMemo(() => {
-    const query = fromCampus.trim().toLowerCase();
-    const base =
-      query.length === 0
-        ? BRUSSELS_COMMUNES.slice(0, 6)
-        : BRUSSELS_COMMUNES.filter((commune) => commune.toLowerCase().includes(query)).slice(0, 10);
-    const unique = Array.from(new Set(base));
-    return ['Ma position actuelle', ...unique];
-  }, [fromCampus]);
 
+  const clearFromCampus = useCallback(() => {
+    setFromCampus('');
+    setDetectedCommune(null);
+    setOriginLatLng(null);
+    closeDropdowns();
+  }, [closeDropdowns]);
+
+  const clearToCampus = useCallback(() => {
+    setToCampus('');
+    closeDropdowns();
+  }, [closeDropdowns]);
   const handleUseLocation = useCallback(async () => {
     try {
       setLocationLoading(true);
-      const { commune } = await getCurrentCommune();
-      setFromCampus(commune);
+      const { commune, address, latLng } = await getCurrentCommune();
+      setFromCampus(address);
       setDetectedCommune(commune);
+      if (latLng) {
+        setOriginLatLng(latLng);
+      }
       setShowFromList(false);
       setShowDestList(false);
     } catch (error) {
@@ -1436,6 +1950,98 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
       setShowFromList(false);
     }, 120);
   }, []);
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+    if (originGeocodeTimeout.current) {
+      clearTimeout(originGeocodeTimeout.current);
+      originGeocodeTimeout.current = null;
+    }
+    const trimmed = fromCampus.trim();
+    console.debug('[PassengerMap] input', trimmed || '<empty>');
+    if (!trimmed) {
+      setOriginLatLng(null);
+      return;
+    }
+    if (trimmed === LOCATION_SUGGESTION_OPTION || trimmed === 'Position actuelle') {
+      return;
+    }
+    if (trimmed.length < 3) {
+      setOriginLatLng(null);
+      return;
+    }
+    const requestId = ++originGeocodeRequestId.current;
+    let active = true;
+    originGeocodeTimeout.current = setTimeout(() => {
+      (async () => {
+        try {
+          const preview = await resolveInputToLatLng(trimmed);
+          if (!active || requestId !== originGeocodeRequestId.current) {
+            return;
+          }
+          if (!preview) {
+            setOriginLatLng(null);
+            return;
+          }
+          setOriginLatLng({ lat: preview.lat, lng: preview.lng });
+        } catch {
+          if (active && requestId === originGeocodeRequestId.current) {
+            setOriginLatLng(null);
+          }
+        } finally {
+          if (originGeocodeTimeout.current) {
+            originGeocodeTimeout.current = null;
+          }
+        }
+      })();
+    }, 380);
+    return () => {
+      active = false;
+      if (originGeocodeTimeout.current) {
+        clearTimeout(originGeocodeTimeout.current);
+        originGeocodeTimeout.current = null;
+      }
+    };
+  }, [fromCampus]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+    const trimmed = toCampus.trim();
+    if (!trimmed) {
+      setDestinationLatLng(null);
+      return;
+    }
+    const campus = findEphecCampus(trimmed);
+    if (!campus) {
+      return;
+    }
+    let active = true;
+    (async () => {
+      const coords = await getPlaceLatLng(campus.placeId);
+      if (!active) return;
+      setDestinationLatLng(coords);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [toCampus]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+    console.debug('[PassengerMap] origin', originLatLng, 'from:', fromCampus);
+  }, [originLatLng, fromCampus]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      return;
+    }
+    console.debug('[PassengerMap] destination', destinationLatLng, 'to:', toCampus);
+  }, [destinationLatLng, toCampus]);
 
   const toggleDestList = useCallback(() => {
     animateDropdown();
@@ -1449,7 +2055,7 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
   }, [animateDropdown]);
   const selectFromCommune = useCallback(
     (commune: string) => {
-      if (commune === 'Ma position actuelle') {
+      if (commune === LOCATION_SUGGESTION_OPTION) {
         handleUseLocation();
         return;
       }
@@ -1506,15 +2112,25 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
                 autoCorrect={false}
                 returnKeyType="done"
               />
+              {fromCampusHasValue ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearFromCampus}
+                  accessibilityLabel="Effacer le point de départ"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
             </View>
             {detectedCommune ? (
               <Text style={passengerStyles.locationDetectedText}>
                 Commune détectée : {detectedCommune}
               </Text>
             ) : null}
-            {showFromList && communeSuggestions.length > 0 ? (
+            {showFromList && LOCATION_SUGGESTION_OPTIONS.length > 0 ? (
               <View style={passengerStyles.dropdownList}>
-                {communeSuggestions.map((commune) => (
+                {LOCATION_SUGGESTION_OPTIONS.map((commune) => (
                   <Pressable
                     key={commune}
                     style={passengerStyles.dropdownItem}
@@ -1530,21 +2146,33 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
             <Text style={passengerStyles.dropdownLabel}>DESTINATION</Text>
             <View style={[passengerStyles.inputWrapper, passengerStyles.toInput]}>
               <IconSymbol name="graduationcap.fill" size={18} color={Colors.gray500} />
-              <Pressable
-                style={passengerStyles.dropdownTrigger}
-                onPress={toggleDestList}
-                accessibilityRole="button"
-                accessibilityLabel="Choisir un campus de destination"
-              >
-                <Text
-                  style={[
-                    passengerStyles.dropdownText,
-                    (!toCampus || !toCampus.trim()) && passengerStyles.dropdownTextPlaceholder,
-                  ]}
+              <View style={passengerStyles.dropdownValueWithClear}>
+                <Pressable
+                  style={passengerStyles.dropdownTrigger}
+                  onPress={toggleDestList}
+                  accessibilityRole="button"
+                  accessibilityLabel="Choisir un campus de destination"
                 >
-                  {toCampus && toCampus.trim() ? toCampus : 'Sélectionnez un campus'}
-                </Text>
-              </Pressable>
+                  <Text
+                    style={[
+                      passengerStyles.dropdownText,
+                      !toCampusHasValue && passengerStyles.dropdownTextPlaceholder,
+                    ]}
+                  >
+                    {toCampusHasValue ? toCampus : 'Sélectionnez un campus'}
+                  </Text>
+                </Pressable>
+                {toCampusHasValue ? (
+                  <Pressable
+                    style={passengerStyles.clearButton}
+                    onPress={clearToCampus}
+                    accessibilityLabel="Effacer la destination"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                  </Pressable>
+                ) : null}
+              </View>
             </View>
             {showDestList ? (
               <View style={passengerStyles.dropdownList}>
@@ -1568,8 +2196,16 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
             accessibilityLabel="Inverser les trajets"
             onPress={() => {
               closeDropdowns();
-              setFromCampus(toCampus);
-              setToCampus(fromCampus);
+              const nextFrom = toCampus;
+              const nextTo = fromCampus;
+              const nextOrigin = destinationLatLng;
+              const nextDest = originLatLng;
+              console.debug('[SWAP] from->', nextFrom, 'to->', nextTo);
+              console.debug('[SWAP] origin->', nextOrigin, 'dest->', nextDest);
+              setFromCampus(nextFrom);
+              setToCampus(nextTo);
+              setOriginLatLng(nextOrigin ?? null);
+              setDestinationLatLng(nextDest ?? null);
               setDetectedCommune(null);
             }}
           >
@@ -1580,112 +2216,91 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
       </View>
       <View style={passengerStyles.dateSection}>
         <View style={passengerStyles.dateRow} pointerEvents={dropdownOpen ? 'none' : 'auto'}>
-          <Pressable
-            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-            onPress={() => {
-              closeDropdowns();
-              openDatePicker();
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Sélectionner une date"
-          >
-            <IconSymbol name="calendar" size={18} color={Colors.gray500} />
-            <Text
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+            <Text style={passengerStyles.dropdownLabel}>DATE</Text>
+            <View
               style={[
-                passengerStyles.dropdownText,
-                !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+                passengerStyles.inputWrapper,
+                passengerStyles.smallInput,
+                passengerStyles.pickerTrigger,
               ]}
             >
-              {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[passengerStyles.inputWrapper, passengerStyles.smallInput, passengerStyles.pickerTrigger]}
-            onPress={() => {
-              closeDropdowns();
-              setShowTimePicker(true);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Sélectionner une heure"
-          >
-            <IconSymbol name="clock" size={18} color={Colors.gray500} />
-            <Text
+              <Pressable
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+                onPress={() => {
+                  closeDropdowns();
+                  openDatePicker();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Sélectionner une date"
+              >
+                <IconSymbol name="calendar" size={18} color={Colors.gray500} />
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    !hasConfirmedDate && passengerStyles.dropdownTextPlaceholder,
+                    { marginLeft: Spacing.xs },
+                  ]}
+                >
+                  {hasConfirmedDate ? travelDateLabel : 'Choisir une date'}
+                </Text>
+              </Pressable>
+              {hasConfirmedDate ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearSheetDate}
+                  accessibilityLabel="Effacer la date"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+          <View style={[passengerStyles.dropdownWrapper, passengerStyles.dateField]}>
+            <Text style={passengerStyles.dropdownLabel}>HEURE</Text>
+            <View
               style={[
-                passengerStyles.dropdownText,
-                !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+                passengerStyles.inputWrapper,
+                passengerStyles.smallInput,
+                passengerStyles.pickerTrigger,
               ]}
             >
-              {hasConfirmedTime ? travelTime : 'Choisir une heure'}
-            </Text>
-          </Pressable>
+              <Pressable
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+                onPress={() => {
+                  closeDropdowns();
+                  setShowTimePicker(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Sélectionner une heure"
+              >
+                <IconSymbol name="clock" size={18} color={Colors.gray500} />
+                <Text
+                  style={[
+                    passengerStyles.dropdownText,
+                    !hasConfirmedTime && passengerStyles.dropdownTextPlaceholder,
+                    { marginLeft: Spacing.xs },
+                  ]}
+                >
+                  {hasConfirmedTime ? travelTime : 'Choisir une heure'}
+                </Text>
+              </Pressable>
+              {hasConfirmedTime ? (
+                <Pressable
+                  style={passengerStyles.clearButton}
+                  onPress={clearSheetTime}
+                  accessibilityLabel="Effacer l'heure"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <IconSymbol name="xmark" size={18} color={Colors.gray500} />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
         </View>
         {validationMessage ? <Text style={passengerStyles.dateError}>{validationMessage}</Text> : null}
       </View>
-      <Pressable
-        style={[passengerStyles.moreFiltersButton, moreFiltersVisible && passengerStyles.moreFiltersButtonActive]}
-        onPress={() => setMoreFiltersVisible((prev) => !prev)}
-        accessibilityRole="button"
-      >
-        <IconSymbol
-          name={moreFiltersVisible ? 'line.horizontal.3.decrease.circle.fill' : 'line.horizontal.3.decrease.circle'}
-          size={20}
-          color={moreFiltersVisible ? Colors.primary : Colors.gray600}
-        />
-        <Text
-          style={[
-            passengerStyles.moreFiltersButtonText,
-            moreFiltersVisible && passengerStyles.moreFiltersButtonTextActive,
-          ]}
-        >
-          Plus de filtres
-        </Text>
-      </Pressable>
-      {moreFiltersVisible ? (
-        <View style={passengerStyles.moreFiltersPanel}>
-          <View style={passengerStyles.filterGroup}>
-            <Text style={passengerStyles.filterGroupLabel}>Prix</Text>
-            <View style={passengerStyles.sliderLabelRow}>
-              <Text style={passengerStyles.sliderValue}>{draftPriceLimit.toFixed(1)} €</Text>
-            </View>
-            <View
-              style={passengerStyles.sliderTrack}
-              onLayout={(event) => setPriceSliderWidth(Math.max(event.nativeEvent.layout.width, 1))}
-              onStartShouldSetResponder={() => true}
-              onMoveShouldSetResponder={() => true}
-              onResponderGrant={(event) => {
-                handlePriceSliderChange(event.nativeEvent.locationX);
-              }}
-              onResponderMove={(event) => {
-                handlePriceSliderChange(event.nativeEvent.locationX);
-              }}
-            >
-              <View style={passengerStyles.sliderTrackBackground} />
-              <View style={[passengerStyles.sliderTrackFill, { width: `${priceSliderRatio * 100}%` }]} />
-              <View
-                style={[
-                  passengerStyles.sliderThumb,
-                  { left: `${priceSliderRatio * 100}%` },
-                ]}
-              />
-            </View>
-            <View style={passengerStyles.sliderScale}>
-              <Text style={passengerStyles.sliderScaleLabel}>{PRICE_MIN} €</Text>
-              <Text style={passengerStyles.sliderScaleLabel}>{PRICE_MAX} €</Text>
-            </View>
-            <Pressable
-              style={[
-                passengerStyles.filterApplyButton,
-                priceApplyDisabled && passengerStyles.filterApplyButtonDisabled,
-              ]}
-              onPress={applyPriceFilter}
-              disabled={priceApplyDisabled}
-              accessibilityRole="button"
-            >
-              <Text style={passengerStyles.filterApplyButtonText}>Appliquer</Text>
-            </Pressable>
-          </View>
-        </View>
-      ) : null}
       <View style={passengerStyles.searchButtonWrapper}>
         <GradientButton
           title="Chercher"
@@ -1792,6 +2407,16 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
     setHasConfirmedDate(true);
     setShowDatePicker(false);
   };
+  const clearSheetDate = useCallback(() => {
+    setHasConfirmedDate(false);
+    setSelectedDate(defaultTomorrow);
+    setShowDatePicker(false);
+  }, [defaultTomorrow]);
+  const clearSheetTime = useCallback(() => {
+    setHasConfirmedTime(false);
+    setTravelTime(DEFAULT_TRAVEL_TIME);
+    setShowTimePicker(false);
+  }, []);
 
   const openRide = useCallback(
     (id: string) => {
@@ -1829,14 +2454,23 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
       }
       if (!response) return false;
       if (response.ok) {
+        const params = {
+          driver: ride.driver,
+          depart: ride.depart,
+          destination: ride.destination,
+          departureAt: String(ride.departureAt),
+          paymentMethod: method,
+        };
+        const route =
+          method === 'wallet' ? '/ride/payment-confirmation' : '/ride/request-confirmation';
         router.push({
-          pathname: '/ride/request-confirmation',
-          params: {
-            driver: ride.driver,
-            depart: ride.depart,
-            destination: ride.destination,
-            paid: '1',
-          },
+          pathname: route,
+          params: method === 'wallet'
+            ? params
+            : {
+                ...params,
+                paid: '1',
+              },
         });
         return true;
       }
@@ -2136,7 +2770,14 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
           {Platform.OS === 'web' ? (
             <View style={passengerStyles.heroColumnWeb}>
               <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardWebMap]}>
-                <HeroWebMap rides={rides} depart={fromCampus} destination={toCampus} />
+                <CampusRideMap
+                  rides={rides}
+                  depart={fromCampus}
+                  destination={toCampus}
+                  fallbackSegmentsEnabled={false}
+                  originLatLng={originLatLng}
+                  destinationLatLng={destinationLatLng}
+                />
               </View>
               <View style={[passengerStyles.heroCardWeb, passengerStyles.heroCardCompact]}>
                 {renderSheetContent()}
@@ -2150,47 +2791,66 @@ const [paymentMethodChoice, setPaymentMethodChoice] = useState<'apple-pay' | 'ca
                   onHandlerStateChange={handlePinchStateChange}
                 >
                   <Animated.View style={[passengerStyles.mapContent, { transform: [{ scale: mapScale }] }]}>
-                    <Image source={HERO_MAP_IMAGE} style={passengerStyles.mapImage} resizeMode="cover" />
-                    <View pointerEvents="none" style={passengerStyles.mapTitleCard}>
-                      <Text style={passengerStyles.mapTitle}>Trouver un trajet</Text>
-                    </View>
-                    <View style={passengerStyles.routeBadge}>
-                      <Text style={passengerStyles.routeTitle}>{heroArrivalLabel}</Text>
-                      <Text style={passengerStyles.routeDuration}>{heroDurationLabel}</Text>
-                    </View>
-                    <View style={passengerStyles.mapBubbleStart}>
-                      <View
-                        style={[
-                          passengerStyles.mapBubbleDot,
-                          { backgroundColor: routeVisual.startDot },
-                        ]}
-                      />
-                      <View>
-                        <Text style={passengerStyles.mapBubbleLabel}>Départ</Text>
-                        <Text style={passengerStyles.mapBubbleValue}>{heroDepartLabel}</Text>
-                      </View>
-                    </View>
-                    <View style={passengerStyles.mapBubbleDestination}>
-                      <View
-                        style={[
-                          passengerStyles.mapBubbleDot,
-                          passengerStyles.mapBubbleDotDestination,
-                          { backgroundColor: routeVisual.endDot },
-                        ]}
-                      />
-                      <View>
-                        <Text
-                          style={[passengerStyles.mapBubbleLabel, passengerStyles.mapBubbleLabelOnDark]}
-                        >
-                          Destination
-                        </Text>
-                        <Text
-                          style={[passengerStyles.mapBubbleValue, passengerStyles.mapBubbleValueOnDark]}
-                        >
-                          {heroArrivalLabel}
-                        </Text>
-                      </View>
-                    </View>
+                    <CampusRideMap
+                      rides={rides}
+                      depart={fromCampus}
+                      destination={toCampus}
+                      fallbackSegmentsEnabled={false}
+                      originLatLng={originLatLng}
+                      destinationLatLng={destinationLatLng}
+                      variant="bare"
+                      style={passengerStyles.mapImage}
+                    />
+                    {!isAppleCleanMap && (
+                      <>
+                        <View pointerEvents="none" style={passengerStyles.mapTitleCard}>
+                          <Text style={passengerStyles.mapTitle}>Trouver un trajet</Text>
+                        </View>
+                        <View style={passengerStyles.routeBadge}>
+                          <Text style={passengerStyles.routeTitle}>{heroArrivalLabel}</Text>
+                          <Text style={passengerStyles.routeDuration}>{heroDurationLabel}</Text>
+                        </View>
+                        <View style={passengerStyles.mapBubbleStart}>
+                          <View
+                            style={[
+                              passengerStyles.mapBubbleDot,
+                              { backgroundColor: routeVisual.startDot },
+                            ]}
+                          />
+                          <View>
+                            <Text style={passengerStyles.mapBubbleLabel}>Départ</Text>
+                            <Text style={passengerStyles.mapBubbleValue}>{heroDepartLabel}</Text>
+                          </View>
+                        </View>
+                        <View style={passengerStyles.mapBubbleDestination}>
+                          <View
+                            style={[
+                              passengerStyles.mapBubbleDot,
+                              passengerStyles.mapBubbleDotDestination,
+                              { backgroundColor: routeVisual.endDot },
+                            ]}
+                          />
+                          <View>
+                            <Text
+                              style={[
+                                passengerStyles.mapBubbleLabel,
+                                passengerStyles.mapBubbleLabelOnDark,
+                              ]}
+                            >
+                              Destination
+                            </Text>
+                            <Text
+                              style={[
+                                passengerStyles.mapBubbleValue,
+                                passengerStyles.mapBubbleValueOnDark,
+                              ]}
+                            >
+                              {heroArrivalLabel}
+                            </Text>
+                          </View>
+                        </View>
+                      </>
+                    )}
                   </Animated.View>
                 </PinchGestureHandler>
               </View>
@@ -2873,6 +3533,12 @@ const passengerStyles = StyleSheet.create({
     zIndex: 5,
     position: 'relative',
   },
+  dateField: {
+    flex: 1,
+  },
+  returnField: {
+    marginTop: Spacing.md,
+  },
   dateError: {
     marginTop: Spacing.xs,
     color: Colors.danger,
@@ -2886,6 +3552,17 @@ const passengerStyles = StyleSheet.create({
     borderRadius: R.lg,
     paddingHorizontal: Spacing.sm,
     backgroundColor: '#F9F9FF',
+  },
+  dropdownValueWithClear: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  clearButton: {
+    marginLeft: Spacing.sm,
+    padding: Spacing.xs,
+    borderRadius: 999,
   },
   input: {
     flex: 1,
@@ -2918,6 +3595,39 @@ const passengerStyles = StyleSheet.create({
   },
   smallInput: {
     flex: 1,
+  },
+  placesInput: {
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    minHeight: 48,
+    alignItems: 'center',
+  },
+  tripTypeControl: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: '#E5E7F2',
+    borderRadius: R.lg,
+    backgroundColor: '#F9F9FF',
+    overflow: 'hidden',
+  },
+  tripTypeOption: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.sm,
+    minHeight: 48,
+  },
+  tripTypeOptionSeparator: {
+    borderLeftWidth: 1,
+    borderLeftColor: '#E5E7F2',
+  },
+  tripTypeOptionText: {
+    fontWeight: '600',
+    color: Colors.gray600,
+  },
+  tripTypeOptionTextActive: {
+    color: TRIP_TYPE_ACTIVE_COLOR,
+    fontWeight: '700',
   },
   dropdownTrigger: {
     flex: 1,
@@ -2973,6 +3683,10 @@ const passengerStyles = StyleSheet.create({
     marginTop: Spacing.md,
     position: 'relative',
   },
+  driverCTA: {
+    borderRadius: R.xl,
+    height: 58,
+  },
   searchLoading: {
     marginTop: Spacing.sm,
     flexDirection: 'row',
@@ -2983,119 +3697,55 @@ const passengerStyles = StyleSheet.create({
     color: Colors.gray600,
     fontWeight: '600',
   },
+  fareSummaryWrapper: {
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  fareSummaryCard: {
+    borderRadius: R.xl,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: Colors.gray150,
+    padding: Spacing.lg,
+    alignItems: 'center',
+    gap: Spacing.xs,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  fareSummaryGain: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Colors.ink,
+    textAlign: 'center',
+  },
+  fareSummarySubtext: {
+    fontSize: 13,
+    color: Colors.gray600,
+    textAlign: 'center',
+  },
+  fareSummaryDetails: {
+    width: '100%',
+    marginTop: Spacing.sm,
+    gap: Spacing.xs,
+    alignItems: 'center',
+  },
+  fareSummaryDetail: {
+    fontSize: 13,
+    color: Colors.gray600,
+    textAlign: 'center',
+  },
+  fareSummaryDetailSecondary: {
+    fontSize: 12,
+    color: Colors.gray500,
+    textAlign: 'center',
+  },
   pickerTrigger: {
     paddingRight: Spacing.md,
     minHeight: 48,
     justifyContent: 'center',
-  },
-  moreFiltersButton: {
-    marginTop: Spacing.xs,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: R.pill,
-    borderWidth: 0,
-    backgroundColor: Colors.white,
-  },
-  moreFiltersButtonActive: {
-    backgroundColor: Colors.white,
-  },
-  moreFiltersButtonText: {
-    fontWeight: '700',
-    color: Colors.gray700,
-  },
-  moreFiltersButtonTextActive: {
-    color: Colors.primaryDark,
-  },
-  moreFiltersPanel: {
-    marginTop: Spacing.xs,
-    padding: Spacing.md,
-    borderRadius: R.xl,
-    borderWidth: 1,
-    borderColor: Colors.gray150,
-    backgroundColor: Colors.gray50,
-    gap: Spacing.sm,
-  },
-  filterGroup: {
-    gap: Spacing.xs,
-  },
-  filterGroupLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: Colors.gray600,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  sliderLabelRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  sliderValue: {
-    fontWeight: '800',
-    color: Colors.primaryDark,
-  },
-  sliderTrack: {
-    marginTop: Spacing.xs,
-    height: 28,
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  sliderTrackBackground: {
-    position: 'absolute',
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Colors.gray200,
-    width: '100%',
-    left: 0,
-  },
-  sliderTrackFill: {
-    position: 'absolute',
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Colors.primary,
-    left: 0,
-  },
-  sliderThumb: {
-    position: 'absolute',
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: Colors.white,
-    borderWidth: 2,
-    borderColor: Colors.primary,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-    transform: [{ translateX: -11 }],
-  },
-  sliderScale: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: Spacing.xs,
-  },
-  sliderScaleLabel: {
-    fontSize: 12,
-    color: Colors.gray500,
-  },
-  filterApplyButton: {
-    alignSelf: 'flex-end',
-    marginTop: Spacing.xs,
-    paddingVertical: Spacing.xs,
-    paddingHorizontal: Spacing.lg,
-    borderRadius: R.lg,
-    backgroundColor: Colors.primary,
-  },
-  filterApplyButtonDisabled: {
-    backgroundColor: Colors.gray300,
-  },
-  filterApplyButtonText: {
-    color: Colors.white,
-    fontWeight: '700',
-    letterSpacing: 0.2,
   },
   dropdownList: {
     position: 'absolute',
@@ -3121,6 +3771,17 @@ const passengerStyles = StyleSheet.create({
   dropdownItemText: {
     fontWeight: '600',
     color: Colors.ink,
+  },
+  placesButton: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: R.pill,
+  },
+  placesInput: {
+    justifyContent: 'space-between',
+    paddingVertical: 0,
+    minHeight: 48,
+    alignItems: 'center',
   },
   pickerOverlay: {
     flex: 1,
@@ -3822,33 +4483,6 @@ const styles = (C: typeof DefaultColors, S: typeof Shadows) =>
     quickChipText: { color: C.gray600, fontWeight: '700', fontSize: 12 },
     campusCard: { gap: Spacing.md },
     campusCardTitle: { fontWeight: '700', color: C.ink },
-    campusMap: {
-      marginTop: Spacing.sm,
-      borderRadius: 26,
-      backgroundColor: '#FFF7EF',
-      minHeight: 200,
-      overflow: 'hidden',
-      position: 'relative',
-      justifyContent: 'center',
-    },
-    publishWebMap: {
-      ...StyleSheet.absoluteFillObject,
-    },
-    campusFallbackMap: {
-      ...StyleSheet.absoluteFillObject,
-    },
-    publishWebMapError: {
-      ...StyleSheet.absoluteFillObject,
-      backgroundColor: 'rgba(255,255,255,0.85)',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: Spacing.sm,
-    },
-    publishWebMapErrorText: {
-      color: Colors.danger,
-      fontWeight: '700',
-      textAlign: 'center',
-    },
     campusLegend: {
       marginTop: Spacing.sm,
       backgroundColor: '#FFFFFF',
@@ -4207,625 +4841,3 @@ const maskCardNumberDisplay = (digits: string) => {
 };
 
 const EXPIRY_YEARS_SPAN = 12;
-
-type HeroSegment = {
-  id: string;
-  start: { latitude: number; longitude: number };
-  end: { latitude: number; longitude: number };
-  startLabel: string;
-  endLabel: string;
-};
-
-const HERO_FALLBACK_SEGMENTS: HeroSegment[] = [
-  {
-    id: 'hero-fallback-1',
-    start: { latitude: 50.8467, longitude: 4.3517 },
-    end: { latitude: 50.8794, longitude: 4.7009 },
-    startLabel: 'Grand-Place',
-    endLabel: 'Leuven',
-  },
-];
-
-type HeroLatLng = { lat: number; lng: number };
-type HeroPreviewMarker = { position: HeroLatLng; label: string; kind: 'origin' | 'destination' };
-
-const toHeroCoordinates = (point: HeroLatLng) => ({
-  latitude: point.lat,
-  longitude: point.lng,
-});
-
-const HERO_DESTINATION_PIN_SVG =
-  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="48" viewBox="0 0 32 48"><path fill="%23D93025" stroke="%23A52714" stroke-width="2" d="M16 1C8.82 1 3 6.82 3 14c0 9.5 13 24 13 24s13-14.5 13-24C29 6.82 23.18 1 16 1z"/><circle cx="16" cy="15" r="6" fill="%23FFFFFF"/></svg>';
-const HERO_DESTINATION_PIN_SIZE = { width: 24, height: 36 };
-
-const isValidHeroCoordinate = (coord: HeroSegment['start'] | null | undefined) =>
-  !!coord && Number.isFinite(coord.latitude) && Number.isFinite(coord.longitude);
-
-const sanitizeHeroSegments = (segments: HeroSegment[]): HeroSegment[] =>
-  segments.filter(
-    (segment) => isValidHeroCoordinate(segment.start) && isValidHeroCoordinate(segment.end)
-  );
-
-const computeHeroCamera = (segments: HeroSegment[]) => {
-  const validSegments = sanitizeHeroSegments(segments);
-  if (validSegments.length === 0) {
-    return { center: { lat: 50.8503, lng: 4.3517 }, zoom: 11 };
-  }
-  const lats = validSegments.flatMap((segment) => [segment.start.latitude, segment.end.latitude]);
-  const lngs = validSegments.flatMap((segment) => [segment.start.longitude, segment.end.longitude]);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-  const center = { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 };
-  const latitudeDelta = Math.max((maxLat - minLat) * 1.4, 0.02);
-  const longitudeDelta = Math.max((maxLng - minLng) * 1.4, 0.02);
-  const delta = Math.max(latitudeDelta, longitudeDelta);
-  const zoom = Math.max(5, Math.min(15, Math.log2(360 / delta)));
-  return { center, zoom };
-};
-
-const HeroWebMap = ({
-  rides,
-  depart,
-  destination,
-}: {
-  rides: Ride[];
-  depart?: string | null;
-  destination?: string | null;
-}) => {
-  const mapNode = useRef<HTMLDivElement | null>(null);
-  const mapInstance = useRef<any>(null);
-  const overlays = useRef<{ markers: any[]; polylines: any[]; infoWindows: google.maps.OverlayView[] }>({
-    markers: [],
-    polylines: [],
-    infoWindows: [],
-  });
-  const geocoderRef = useRef<any>(null);
-  const directionsRef = useRef<any>(null);
-  const lastDirectionsRequestId = useRef(0);
-  const [error, setError] = useState<string | null>(null);
-  const [mapReady, setMapReady] = useState(false);
-  const [previewMarkers, setPreviewMarkers] = useState<{
-    start: HeroPreviewMarker | null;
-    end: HeroPreviewMarker | null;
-  }>({ start: null, end: null });
-  const [previewPath, setPreviewPath] = useState<HeroLatLng[] | null>(null);
-
-  const segments = useMemo<HeroSegment[]>(() => {
-    if (!rides.length) return [];
-    return rides.slice(0, 3).map((ride) => ({
-      id: ride.id,
-      start: getCoordinates(ride.depart),
-      end: getCoordinates(ride.destination),
-      startLabel: ride.depart,
-      endLabel: ride.destination,
-    }));
-  }, [rides]);
-
-  const hasPreviewInput = Boolean(depart?.trim()) || Boolean(destination?.trim());
-  const usingFallback = segments.length === 0 && !hasPreviewInput;
-  const displaySegments = usingFallback ? HERO_FALLBACK_SEGMENTS : segments;
-  const safeDisplaySegments = useMemo(() => sanitizeHeroSegments(displaySegments), [displaySegments]);
-  const cameraSegments = useMemo(() => {
-    const list: HeroSegment[] = [...safeDisplaySegments];
-    if (previewMarkers.start && previewMarkers.end) {
-      list.push({
-        id: 'hero-preview-route',
-        start: toHeroCoordinates(previewMarkers.start.position),
-        end: toHeroCoordinates(previewMarkers.end.position),
-        startLabel: previewMarkers.start.label,
-        endLabel: previewMarkers.end.label,
-      });
-    } else if (previewMarkers.start) {
-      const start = toHeroCoordinates(previewMarkers.start.position);
-      list.push({
-        id: 'hero-preview-start',
-        start,
-        end: start,
-        startLabel: previewMarkers.start.label,
-        endLabel: previewMarkers.start.label,
-      });
-    } else if (previewMarkers.end) {
-      const end = toHeroCoordinates(previewMarkers.end.position);
-      list.push({
-        id: 'hero-preview-end',
-        start: end,
-        end,
-        startLabel: previewMarkers.end.label,
-        endLabel: previewMarkers.end.label,
-      });
-    }
-    return list.length ? list : HERO_FALLBACK_SEGMENTS;
-  }, [previewMarkers.end, previewMarkers.start, safeDisplaySegments]);
-
-  const selectedCampus = useMemo(() => findCampusLocation(destination), [destination]);
-  const selectedCampusKey = selectedCampus?.name.trim().toLowerCase() ?? null;
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    let mounted = true;
-    loadGoogleMapsApi()
-      .then((google) => {
-        if (!mounted || !mapNode.current) return;
-        const camera = computeHeroCamera(cameraSegments);
-        mapInstance.current = new google.maps.Map(mapNode.current, {
-          center: camera.center,
-          zoom: camera.zoom,
-          disableDefaultUI: true,
-          zoomControl: true,
-          mapTypeControl: false,
-          streetViewControl: false,
-        });
-        setMapReady(true);
-      })
-      .catch(() => {
-        if (mounted) {
-          setError("Impossible d'afficher Google Maps.");
-        }
-      });
-    return () => {
-      mounted = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    const google = window.google;
-    if (!mapReady || !google) {
-      if (!hasPreviewInput) {
-        setPreviewMarkers({ start: null, end: null });
-      }
-      return;
-    }
-
-    const clean = (value?: string | null) => (value && value.trim().length ? value.trim() : null);
-    const originLabel = clean(depart);
-    const destinationLabel = clean(destination);
-    if (!originLabel && !destinationLabel) {
-      setPreviewMarkers({ start: null, end: null });
-      return;
-    }
-
-    let cancelled = false;
-
-    const geocodeAddress = (address: string): Promise<HeroLatLng> =>
-      new Promise((resolve) => {
-        try {
-          if (!geocoderRef.current) {
-            geocoderRef.current = new google.maps.Geocoder();
-          }
-          const geocoder = geocoderRef.current;
-          geocoder!.geocode({ address }, (results, status) => {
-            if (status === 'OK' && results && results[0] && results[0].geometry.location) {
-              const loc = results[0].geometry.location;
-              const lat = Number(loc.lat());
-              const lng = Number(loc.lng());
-              if (Number.isFinite(lat) && Number.isFinite(lng)) {
-                resolve({ lat, lng });
-                return;
-              }
-            }
-            const fallback = getCoordinates(address);
-            resolve({ lat: fallback.latitude, lng: fallback.longitude });
-          });
-        } catch {
-          const fallback = getCoordinates(address);
-          resolve({ lat: fallback.latitude, lng: fallback.longitude });
-        }
-      });
-
-    (async () => {
-      const [startPosition, endPosition] = await Promise.all([
-        originLabel ? geocodeAddress(originLabel) : Promise.resolve<HeroLatLng | null>(null),
-        destinationLabel ? geocodeAddress(destinationLabel) : Promise.resolve<HeroLatLng | null>(null),
-      ]);
-      if (cancelled) return;
-      const safeStart =
-        startPosition && Number.isFinite(startPosition.lat) && Number.isFinite(startPosition.lng)
-          ? startPosition
-          : null;
-      const safeEnd =
-        endPosition && Number.isFinite(endPosition.lat) && Number.isFinite(endPosition.lng)
-          ? endPosition
-          : null;
-      setPreviewMarkers({
-        start: safeStart ? { position: safeStart, label: originLabel!, kind: 'origin' } : null,
-        end: safeEnd ? { position: safeEnd, label: destinationLabel!, kind: 'destination' } : null,
-      });
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [depart, destination, hasPreviewInput, mapReady]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    const google = window.google;
-    const map = mapInstance.current;
-    const origin = previewMarkers.start?.position ?? null;
-    const end = previewMarkers.end?.position ?? null;
-    if (!mapReady || !google || !map || !origin || !end) {
-      setPreviewPath(null);
-      return;
-    }
-
-    if (!directionsRef.current) {
-      directionsRef.current = new google.maps.DirectionsService();
-    }
-    const requestId = ++lastDirectionsRequestId.current;
-    try {
-      directionsRef.current.route(
-        {
-          origin,
-          destination: end,
-          travelMode: google.maps.TravelMode.DRIVING,
-          provideRouteAlternatives: false,
-        },
-        (response, status) => {
-          if (requestId !== lastDirectionsRequestId.current) return;
-          if (status === 'OK' && response?.routes?.length) {
-            const overview = response.routes[0].overview_path ?? [];
-            if (overview.length > 0) {
-              const path = overview.map((point) => ({ lat: point.lat(), lng: point.lng() }));
-              setPreviewPath(path);
-              return;
-            }
-          }
-          setPreviewPath(null);
-        }
-      );
-    } catch (routeError) {
-      if (requestId === lastDirectionsRequestId.current) {
-        console.warn('Hero map directions failed', routeError);
-        setPreviewPath(null);
-      }
-    }
-  }, [mapReady, previewMarkers.end, previewMarkers.start]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    const map = mapInstance.current;
-    const google = window.google;
-    if (!map || !google) return;
-
-    overlays.current.markers.forEach((marker) => marker.setMap(null));
-    overlays.current.polylines.forEach((polyline) => polyline.setMap(null));
-    overlays.current.infoWindows.forEach((info) => info.setMap(null));
-    overlays.current = { markers: [], polylines: [], infoWindows: [] };
-
-    const camera = computeHeroCamera(cameraSegments);
-    map.setCenter(camera.center);
-    map.setZoom(camera.zoom);
-
-    safeDisplaySegments.forEach((segment) => {
-      const path = [
-        { lat: segment.start.latitude, lng: segment.start.longitude },
-        { lat: segment.end.latitude, lng: segment.end.longitude },
-      ];
-      const polyline = new google.maps.Polyline({
-        path,
-        strokeColor: '#1A73E8',
-        strokeOpacity: 0.9,
-        strokeWeight: 4,
-        geodesic: true,
-      });
-      polyline.setMap(map);
-
-      const start = new google.maps.Marker({
-        position: path[0],
-        title: segment.startLabel,
-        icon: {
-          path: google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
-          fillColor: '#10B981',
-          fillOpacity: 0.95,
-          strokeColor: '#0F5132',
-          strokeOpacity: 0.9,
-          strokeWeight: 2,
-          scale: 4.6,
-        },
-      });
-      const endMarker = new google.maps.Marker({
-        position: path[1],
-        title: segment.endLabel,
-        icon: {
-          path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-          fillColor: '#F97316',
-          fillOpacity: 0.95,
-          strokeColor: '#C05621',
-          strokeOpacity: 0.9,
-          strokeWeight: 2,
-          scale: 4.6,
-        },
-      });
-      start.setMap(map);
-      endMarker.setMap(map);
-      overlays.current.polylines.push(polyline);
-      overlays.current.markers.push(start, endMarker);
-    });
-
-    if (previewPath && previewPath.length > 0) {
-      const previewPolyline = new google.maps.Polyline({
-        path: previewPath,
-        strokeColor: '#1A73E8',
-        strokeOpacity: 0.95,
-        strokeWeight: 5,
-      });
-      previewPolyline.setMap(map);
-      overlays.current.polylines.push(previewPolyline);
-    } else if (previewMarkers.start && previewMarkers.end) {
-      const previewPolyline = new google.maps.Polyline({
-        path: [previewMarkers.start.position, previewMarkers.end.position],
-        strokeColor: '#1A73E8',
-        strokeOpacity: 0.85,
-        strokeWeight: 4,
-        geodesic: true,
-      });
-      previewPolyline.setMap(map);
-      overlays.current.polylines.push(previewPolyline);
-    }
-
-    const createOriginMarker = (marker: HeroPreviewMarker) =>
-      new google.maps.Marker({
-        position: marker.position,
-        title: marker.label,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          fillColor: '#1A73E8',
-          fillOpacity: 0.95,
-          strokeColor: '#FFFFFF',
-          strokeOpacity: 0.9,
-          strokeWeight: 2,
-          scale: 7,
-        },
-      });
-
-    const createDestinationMarker = (marker: HeroPreviewMarker) =>
-      new google.maps.Marker({
-        position: marker.position,
-        title: marker.label,
-        icon: {
-          url: HERO_DESTINATION_PIN_SVG,
-          scaledSize: new google.maps.Size(
-            HERO_DESTINATION_PIN_SIZE.width,
-            HERO_DESTINATION_PIN_SIZE.height
-          ),
-          anchor: new google.maps.Point(
-            HERO_DESTINATION_PIN_SIZE.width / 2,
-            HERO_DESTINATION_PIN_SIZE.height
-          ),
-        },
-        zIndex: 1000,
-      });
-
-    if (previewMarkers.start) {
-      const marker = createOriginMarker(previewMarkers.start);
-      marker.setMap(map);
-      overlays.current.markers.push(marker);
-    }
-    if (previewMarkers.end) {
-      const marker = createDestinationMarker(previewMarkers.end);
-      marker.setMap(map);
-      overlays.current.markers.push(marker);
-    }
-
-    if (previewMarkers.start && previewMarkers.end) {
-      const durationMinutes = getDurationMinutes(
-        previewMarkers.start.label,
-        previewMarkers.end.label
-      );
-      if (durationMinutes && Number.isFinite(durationMinutes)) {
-        const midpoint = (() => {
-          if (previewPath && previewPath.length > 0) {
-            const midIndex = Math.floor(previewPath.length / 2);
-            return previewPath[midIndex];
-          }
-          return {
-            lat: (previewMarkers.start.position.lat + previewMarkers.end.position.lat) / 2,
-            lng: (previewMarkers.start.position.lng + previewMarkers.end.position.lng) / 2,
-          };
-        })();
-        const bubbleContent =
-          `<div style="position:relative;display:inline-flex;align-items:center;font-size:13px;font-weight:700;color:#111;">` +
-          `<div style="width:0;height:0;border-top:7px solid transparent;border-bottom:7px solid transparent;` +
-          `border-right:9px solid #fff;box-shadow:1px 0 1px rgba(0,0,0,0.12);margin-right:-1px;"></div>` +
-          `<span style="background:#fff;border:2px solid #dcdcdc;border-radius:18px;padding:4px 12px;box-shadow:0 2px 6px rgba(0,0,0,0.15);">` +
-          `${durationMinutes} min</span>` +
-          `</div>`;
-        const infoWindowDiv = document.createElement('div');
-        infoWindowDiv.innerHTML = bubbleContent;
-        const overlay = new google.maps.OverlayView();
-        overlay.onAdd = function () {
-          const pane = this.getPanes()?.floatPane;
-          if (!pane) return;
-          pane.appendChild(infoWindowDiv);
-        };
-        overlay.draw = function () {
-          const projection = this.getProjection();
-          if (!projection) return;
-          const pos = projection.fromLatLngToDivPixel(new google.maps.LatLng(midpoint.lat, midpoint.lng));
-          if (pos) {
-            infoWindowDiv.style.position = 'absolute';
-            infoWindowDiv.style.transform = 'translate(10px, -50%)';
-            infoWindowDiv.style.left = `${pos.x}px`;
-            infoWindowDiv.style.top = `${pos.y}px`;
-          }
-        };
-        overlay.onRemove = function () {
-          if (infoWindowDiv.parentNode) {
-            infoWindowDiv.parentNode.removeChild(infoWindowDiv);
-          }
-        };
-        overlay.setMap(map);
-        overlays.current.infoWindows.push(overlay);
-      }
-    }
-
-    // Campus markers intentionally removed per request.
-  }, [
-    cameraSegments,
-    previewMarkers.end,
-    previewMarkers.start,
-    previewPath,
-    safeDisplaySegments,
-    selectedCampusKey,
-  ]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    const map = mapInstance.current;
-    const google = window.google;
-    if (!map || !google) return;
-    const destinationLabel = previewMarkers.end?.label ?? selectedCampus?.name ?? null;
-    if (!destinationLabel) return;
-    const campus = findCampusLocation(destinationLabel);
-    const arrivalPosition = previewMarkers.end?.position;
-    if (!campus || !arrivalPosition) return;
-
-    const campusLatLng = new google.maps.LatLng(campus.latitude, campus.longitude);
-    const arrivalLatLng = new google.maps.LatLng(arrivalPosition.lat, arrivalPosition.lng);
-    const dottedLine = new google.maps.Polyline({
-      path: [arrivalLatLng, campusLatLng],
-      geodesic: true,
-      strokeColor: '#1A73E8',
-      strokeOpacity: 0.8,
-      strokeWeight: 3,
-      icons: [
-        {
-          icon: {
-            path: 'M 0,-1 0,1',
-            strokeOpacity: 1,
-            scale: 3,
-          },
-          offset: '0',
-          repeat: '12px',
-        },
-      ],
-    });
-    dottedLine.setMap(map);
-    overlays.current.polylines.push(dottedLine);
-  }, [previewMarkers.end, selectedCampus]);
-
-  if (Platform.OS !== 'web') {
-    return null;
-  }
-
-  return (
-    <View style={passengerStyles.webMapHero}>
-      <div ref={mapNode} style={webMapSurfaceStyle} />
-      {error ? (
-        <View style={passengerStyles.webMapError}>
-          <Text style={passengerStyles.webMapErrorText}>{error}</Text>
-        </View>
-      ) : null}
-    </View>
-  );
-};
-
-const RideMap = ({
-  rides,
-  selectedCampus,
-  previewDepart,
-  previewDestination,
-}: {
-  rides: Ride[];
-  selectedCampus?: string | null;
-  previewDepart?: string;
-  previewDestination?: string;
-}) => {
-  const destination = selectedCampus ?? previewDestination ?? null;
-  if (Platform.OS === 'web') {
-    return <HeroWebMap rides={rides} depart={previewDepart} destination={destination} />;
-  }
-  return (
-    <View style={styles(C, S).campusMap}>
-      <Image source={HERO_MAP_IMAGE} style={styles(C, S).campusFallbackMap} resizeMode="cover" />
-    </View>
-  );
-};
-
-const PublishCampusWebMap = () => {
-  if (Platform.OS !== 'web') {
-    return null;
-  }
-
-  const mapNode = useRef<HTMLDivElement | null>(null);
-  const mapInstance = useRef<any>(null);
-  const markers = useRef<any[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [mapReady, setMapReady] = useState(false);
-
-  useEffect(() => {
-    let mounted = true;
-    loadGoogleMapsApi()
-      .then((google) => {
-        if (!mounted || !mapNode.current) return;
-        const camera = computeCampusCamera();
-        mapInstance.current = new google.maps.Map(mapNode.current, {
-          center: camera.center,
-          zoom: camera.zoom,
-          disableDefaultUI: true,
-          zoomControl: true,
-          mapTypeControl: false,
-          streetViewControl: false,
-        });
-        setMapReady(true);
-      })
-      .catch(() => {
-        if (mounted) {
-          setError("Impossible d'afficher Google Maps.");
-        }
-      });
-    return () => {
-      mounted = false;
-      markers.current.forEach((marker) => marker.setMap(null));
-      markers.current = [];
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!mapReady) return;
-    const google = window.google;
-    const map = mapInstance.current;
-    if (!google || !map) return;
-
-    markers.current.forEach((marker) => marker.setMap(null));
-    markers.current = [];
-
-    const camera = computeCampusCamera();
-    map.setCenter(camera.center);
-    map.setZoom(camera.zoom);
-
-    CAMPUS_LOCATIONS.forEach((campus) => {
-      const marker = new google.maps.Marker({
-        map,
-        position: { lat: campus.latitude, lng: campus.longitude },
-        title: campus.name,
-      });
-      markers.current.push(marker);
-    });
-  }, [mapReady]);
-
-  return (
-    <View style={styles(C, S).publishWebMap}>
-      <div ref={mapNode} style={webMapSurfaceStyle} />
-      {error ? (
-        <View style={styles(C, S).publishWebMapError}>
-          <Text style={styles(C, S).publishWebMapErrorText}>{error}</Text>
-        </View>
-      ) : null}
-    </View>
-  );
-};
-
-const webMapSurfaceStyle: CSSProperties = {
-  width: '100%',
-  height: '100%',
-};
-
-declare global {
-  // Ensures module augmentation can extend Window elsewhere when needed.
-  interface Window {}
-}

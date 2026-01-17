@@ -132,9 +132,9 @@ const styles = StyleSheet.create({
   background: {
     flex: 1,
     paddingBottom: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
   },
   safe: {
-    paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.xl,
     gap: Spacing.md,
   },
@@ -165,26 +165,25 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: Radius['2xl'],
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.4)',
+    borderColor: Colors.gray200,
     paddingVertical: Spacing.sm,
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: Colors.white,
   },
   tabItemActive: {
-    backgroundColor: Colors.accent,
-    borderColor: Colors.accent,
+    backgroundColor: Colors.accentSoft,
+    borderColor: Colors.accentSoft,
   },
   tabLabel: {
     fontSize: 14,
     fontWeight: '700',
-    color: 'rgba(255,255,255,0.9)',
+    color: Colors.gray600,
   },
   tabLabelActive: {
-    color: Colors.white,
+    color: Colors.accent,
   },
   content: {
     marginTop: Spacing.xl,
-    paddingHorizontal: Spacing.lg,
   },
   card: {
     borderRadius: Radius['2xl'],

@@ -1,6 +1,6 @@
 import { Fragment, memo, useEffect, useMemo, useState } from 'react';
 import MapView, { Marker, Polyline, Region, PROVIDER_GOOGLE } from 'react-native-maps';
-import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Platform, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import type { Ride } from '@/app/services/rides';
 import { getCoordinates } from '@/app/services/distance';
@@ -33,6 +33,8 @@ const DEFAULT_REGION: Region = {
   latitudeDelta: 0.35,
   longitudeDelta: 0.45,
 };
+
+const mapProvider = Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined;
 
 const computeRegion = (data: RideMapData[], extraPoints: Coordinates[] = []): Region => {
   const pairs = data.flatMap((item) => [item.origin, item.destination]).concat(extraPoints);
@@ -155,7 +157,7 @@ const RideMapComponent = ({
     <View style={[styles.mapContainer, variant === 'bare' && styles.mapContainerBare, variant === 'bare' && style]}>
       <MapView
         style={[styles.map, variant === 'bare' && styles.mapBare, variant === 'bare' && style]}
-        provider={PROVIDER_GOOGLE}
+        provider={mapProvider}
         initialRegion={region}
         region={region}
         onRegionChangeComplete={setRegion}

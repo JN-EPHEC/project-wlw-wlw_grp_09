@@ -2,8 +2,8 @@ import { useRouter } from 'expo-router';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActionSheetIOS,
-  Alert,
   ActivityIndicator,
+  Alert,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -16,7 +16,6 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 
 import * as Auth from '@/app/services/auth';
 import { subscribePassengerFeedback, type PassengerFeedback } from '@/app/services/passenger-feedback';
@@ -35,29 +34,29 @@ import {
   type Ride,
 } from '@/app/services/rides';
 import {
+  getNextSelfieLabel,
+  needsFreshSelfie,
+  type DocumentReviewState,
+} from '@/app/services/security';
+import {
   getWallet,
   subscribeWallet,
   toggleChecklistItem,
   type WalletSnapshot,
 } from '@/app/services/wallet';
-import {
-  getNextSelfieLabel,
-  needsFreshSelfie,
-  type DocumentReviewState,
-} from '@/app/services/security';
 import { getAvatarUrl } from '@/app/ui/avatar';
-import { Colors, Gradients, Radius, Spacing, Typography, Shadows } from '@/app/ui/theme';
+import { Colors, Gradients, Radius, Spacing, Typography } from '@/app/ui/theme';
 import { buildSmartReplies } from '@/app/utils/ai-reply';
+import { captureProfilePhoto, persistAvatarImage, pickProfileDocument, pickProfileImage } from '@/app/utils/image-picker';
+import { AvatarCropperModal } from '@/components/avatar-cropper';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
-import { useDriverSecurity } from '@/hooks/use-driver-security';
 import { useBreakpoints } from '@/hooks/use-breakpoints';
+import { useDriverSecurity } from '@/hooks/use-driver-security';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
-import { AvatarCropperModal } from '@/components/avatar-cropper';
-import { captureProfilePhoto, pickProfileImage, pickProfileDocument, persistAvatarImage } from '@/app/utils/image-picker';
 import { uploadProfileSelfie } from '@/src/storageUploads';
 
 const C = Colors;

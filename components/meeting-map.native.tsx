@@ -1,6 +1,6 @@
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { memo, useMemo } from 'react';
-import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { Colors, Radius } from '@/app/ui/theme';
 import { getCoordinates } from '@/app/services/distance';
@@ -16,6 +16,8 @@ const DEFAULT_REGION: Region = {
   latitudeDelta: 0.05,
   longitudeDelta: 0.05,
 };
+
+const mapProvider = Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined;
 
 const MeetingMapNative = ({ address, style }: MeetingMapProps) => {
   const point = useMemo(() => {
@@ -39,7 +41,7 @@ const MeetingMapNative = ({ address, style }: MeetingMapProps) => {
     <View style={[styles.card, style]}>
       <MapView
         style={styles.map}
-        provider={PROVIDER_GOOGLE}
+        provider={mapProvider}
         region={region}
         showsCompass={false}
         showsPointsOfInterest={false}

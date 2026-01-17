@@ -33,7 +33,8 @@ export default function RequestsScreen() {
       ? 'Tu n’as envoyé aucune demande pour l’instant.'
       : 'Pas encore de demande acceptée. Réserve un trajet pour commencer.';
 
-  const highlightColor = isDriver ? Colors.accent : Colors.primary;
+  const activeTabBackgroundColor = isDriver ? Colors.accentSoft : Colors.primaryLight;
+  const activeTabTextColor = isDriver ? Colors.accent : Colors.primaryDark;
   const openRideDetails = useCallback(
     (rideId: string) => {
       router.push(`/ride/${rideId}`);
@@ -106,20 +107,15 @@ export default function RequestsScreen() {
                   key={section.key}
                   style={[
                     styles.tabButton,
-                    styles.tabButtonActive,
+                    isActive && styles.tabButtonActive,
                     isActive && {
-                      backgroundColor: highlightColor,
-                      borderColor: highlightColor,
+                      backgroundColor: activeTabBackgroundColor,
+                      borderColor: activeTabBackgroundColor,
                     },
                   ]}
                   onPress={() => setActiveTab(section.key as typeof activeTab)}
                 >
-                  <Text
-                    style={[
-                      styles.tabButtonText,
-                      isActive && styles.tabButtonTextActive,
-                    ]}
-                  >
+                  <Text style={[styles.tabButtonText, isActive && { color: activeTabTextColor }]}>
                     {section.label} ({section.count})
                   </Text>
                 </Pressable>
@@ -178,21 +174,17 @@ const styles = StyleSheet.create({
     borderRadius: Radius.pill,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.5)',
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: Colors.white,
     paddingVertical: Spacing.md,
     alignItems: 'center',
     ...Shadows.card,
   },
   tabButtonActive: {
-    backgroundColor: 'transparent',
     borderColor: 'transparent',
   },
   tabButtonText: {
-    color: C.white,
+    color: C.gray600,
     fontWeight: '700',
-  },
-  tabButtonTextActive: {
-    color: C.white,
   },
   card: {
     backgroundColor: C.white,
