@@ -3,7 +3,6 @@ import {
   User,
   UserCredential,
   createUserWithEmailAndPassword,
-  deleteUser,
   onAuthStateChanged,
   reauthenticateWithCredential,
   signInWithEmailAndPassword,
@@ -11,8 +10,9 @@ import {
   updatePassword as firebaseUpdatePassword,
   updateProfile as firebaseUpdateProfile,
 } from 'firebase/auth';
+import { httpsCallable } from 'firebase/functions';
 
-import { auth } from '@/src/firebase';
+import { auth, functions } from '@/src/firebase';
 import {
   getPassengerProfile,
   markPassengerVerified,
@@ -177,6 +177,7 @@ const authError = (code: string, message: string) => {
 const normalizeEmail = (email: string | null | undefined) => sanitizeEmail(email ?? '');
 
 type FirebaseAuthError = Error & { code?: string };
+type FirebaseFunctionsError = Error & { code?: string };
 
 const rethrowFirebaseAuthError = (error: FirebaseAuthError, context: 'sign-in' | 'sign-up'): never => {
   const code = typeof error?.code === 'string' ? error.code : '';
@@ -469,16 +470,27 @@ export const signOut = async () => {
   setCurrentSession(createEmptySession());
 };
 
-export const deleteCurrentAccount = async () => {
+type DeleteAccountResult = {
+  ok: true;
+  deletedCounts: Record<string, number>;
+};
+
+export const deleteCurrentAccount = async (): Promise<DeleteAccountResult> => {
   const user = auth.currentUser;
   if (!user || !user.email) {
     throw authError('USER_NOT_FOUND', 'Aucun compte connecté pour la suppression.');
   }
   try {
-    await deleteUser(user);
+    const callable = httpsCallable(functions, 'deleteAccountAndData');
+    const result = await callable();
+    deleteAccountData(user.email);
+    return result.data as DeleteAccountResult;
   } catch (error) {
-    const authErr = error as FirebaseAuthError;
-    if (authErr.code === 'auth/requires-recent-login') {
+    const functionsErr = error as FirebaseFunctionsError;
+    if (
+      functionsErr?.code === 'functions/unauthenticated' ||
+      functionsErr?.code === 'functions/permission-denied'
+    ) {
       throw authError(
         'REAUTH_REQUIRED',
         'Reconnecte-toi pour supprimer ton compte (vérification récente requise).'
@@ -486,13 +498,6 @@ export const deleteCurrentAccount = async () => {
     }
     throw error;
   }
-  deleteAccountData(user.email);
-  try {
-    await firebaseSignOut(auth);
-  } catch {
-    // ignore sign-out errors
-  }
-  setCurrentSession(createEmptySession());
 };
 
 export const sendVerificationEmail = async (rawEmail?: string) => {

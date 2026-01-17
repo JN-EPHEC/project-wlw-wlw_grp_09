@@ -1,5 +1,5 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -8,6 +8,8 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import NotificationCenter from '@/components/notification-center';
 import { LanguageProvider } from '@/hooks/use-language';
 import { DocumentStoreProvider } from '@/hooks/use-document-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useEffect, useState } from 'react';
 
 if (__DEV__ && typeof window !== 'undefined' && !((window as any).__openStackFrameFetchPatched)) {
   (window as any).__openStackFrameFetchPatched = true;
@@ -39,6 +41,37 @@ export const unstable_settings = {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+  const router = useRouter();
+  const POST_DELETE_FLAG = 'campusride:post-delete-redirect';
+  const [bootRedirectChecked, setBootRedirectChecked] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const flag = await AsyncStorage.getItem(POST_DELETE_FLAG);
+        if (!active) return;
+        if (flag) {
+          console.log('[root] post-delete flag found', flag);
+          await AsyncStorage.removeItem(POST_DELETE_FLAG);
+          await router.replace(flag);
+        }
+      } catch {
+        // ignore
+      } finally {
+        if (active) {
+          setBootRedirectChecked(true);
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [router]);
+
+  if (!bootRedirectChecked) {
+    return null;
+  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -48,6 +81,7 @@ export default function RootLayout() {
             <NotificationCenter />
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="welcome" options={{ headerShown: false }} />
+              <Stack.Screen name="account-deleted" options={{ headerShown: false }} />
               <Stack.Screen name="sign-up" options={{ headerShown: false }} />
               <Stack.Screen name="verify-email" options={{ title: 'Vérifie ton email' }} />
               <Stack.Screen name="account-activated" options={{ headerShown: false }} />

@@ -97,27 +97,83 @@ Des Cloud Functions (dossier `functions/`) viendront plus tard orchestrer les wo
 
 ## 5. Collection `trajets` (Cloud Firestore)
 
-- **Emplacement** : `firestore.collection('trajets')`, alimenté via `src/firestoreTrips.ts`.
-- **Rôle** : journaliser, pour chaque membre (`trajets/{authUid}`), la liste des trajets qu’il a publiés ou réservés.
-- **Structure** : un document par utilisateur `{ publies: { [rideId]: {...} }, reservations: { [rideId]: {...} } }`.
+La collection `trajets` contient deux usages compatibles :
 
-| Champ (par entrée)   | Type      | Description |
-|----------------------|-----------|-------------|
-| `rideId`             | string    | Identifiant du trajet (référence `rides`). |
-| `type` / `role`      | enum      | `published`/`driver` ou `reserved`/`passenger`. |
-| `driver` / `driverEmail` | string | Nom + e-mail conducteur. |
-| `depart` / `destination` | string | Labels du trajet. |
-| `time` / `departureAt`   | string / number | Heure saisie + timestamp. |
-| `price`              | number    | Prix par passager. |
-| `seats` / `availableSeats` | number | Places totales / restantes (publies). |
-| `passengers`         | string[]  | Liste des passagers confirmés (publies). |
-| `reservedAt`         | number    | Timestamp ms de la réservation (reservations). |
-| `status`             | enum      | `upcoming` ou `departed` selon `departureAt`. |
-| `syncedAt`           | Timestamp Firestore | Audit serveur automatiquement mis à jour. |
+1. Le **journal par utilisateur** existant (`trajets/{authUid}`) contient les blocs `publies`/`reservations` utilisés par les helpers `recordPublishedRide` / `recordReservedRide` de `src/firestoreTrips.ts`. Cette structure reste inchangée (lecture/écriture réservées au propriétaire du document).
+2. Le **document centralisé par trajet** (`trajets/{trajetId}`) est le nouveau point d’entrée métier pour les workflows « publier », « demander », « accepter » et « historique ». L’application doit lire d’abord ce document et basculer en fallback vers le journal par utilisateur tant que les deux structures coexistent.
 
-**Alimentation**
-- `app/services/rides.ts` appelle `recordPublishedRide` lors de `addRide` et `recordReservedRide` après `reserveSeat`. Chaque helper résout l’UID via `users` (cache) puis merge l’entrée dans `trajets/{uid}`.
-- Les règles Firestore autorisent lecture/écriture uniquement pour l’utilisateur concerné (`request.auth.uid == userId`).
+### 5.1. Document « trajet » (`trajets/{trajetId}`)
+
+| Champ              | Type              | Description |
+|--------------------|-------------------|-------------|
+| `ownerUid`         | string            | UID conducteur, identique au champ de la règle Firestore. |
+| `driverName`       | string            | Nom affiché (mis à jour à chaque publication). |
+| `driverEmail`      | string            | E-mail normalisé du conducteur (serve de doublon de `ownerUid`). |
+| `depart`           | string            | Label de départ saisi. |
+| `destination`      | string            | Label de destination saisi. |
+| `departureAt`      | `Timestamp`       | Timestamp Firestore (préférer `Timestamp` plutôt qu’un nombre). |
+| `totalSeats`       | number            | Places vendues au départ. |
+| `availableSeats`   | number            | Places restantes. |
+| `price`            | number            | Prix par passager. |
+| `campus`           | string (optionnel)| Campus sélectionné (si disponible). |
+| `status`           | enum              | `published` / `cancelled` / `completed`. |
+| `createdAt`        | `Timestamp`       | `serverTimestamp()` lors de la création. |
+| `updatedAt`        | `Timestamp`       | Mise à jour à chaque mutation. |
+| `search`           | objet indexable   | `{ departLower, destinationLower, dayKey }` pour faciliter les recherches. |
+
+Le champ `search.dayKey` correspond à la date ISO (YYYY-MM-DD) de `departureAt`. Les appels front-end doivent faire un double-écriture temporaire vers la structure `publies`/`reservations` existante (pour le moment) en attendant que les anciens parcours migrent.
+
+### 5.2. Sous-collections d’un trajet
+
+- **`reservations`** (`trajets/{trajetId}/reservations/{reservationId}`)
+  - Objectif : stocker les réservations confirmées du conducteur.
+  - Champs obligatoires :
+    | Champ | Type | Description |
+    |---|---|---|
+    | `rideId` | string (optionnel) | Identifiant des seeds existants (`seed-1`, `seed-2`). |
+    | `passengerUid` | string | UID du passager confirmé. |
+    | `passengerEmail` | string | E-mail normalisé. |
+    | `seats` | number | Nombre de places réservées (généralement 1). |
+    | `status` | enum | `pending` / `accepted` / `declined` / `cancelled` / `completed`. |
+    | `reservedAt` / `updatedAt` | `Timestamp` | `serverTimestamp()` pour garder l’historique. |
+    | `payoutProcessed` | bool (optionnel) | Flag existant, ne pas supprimer. |
+    | `syncedAt` | `Timestamp` (optionnel) | Si la synchronisation batch existe déjà.
+
+- **`requests`** (`trajets/{trajetId}/requests/{requestId}`)
+  - Objectif : enregistrer les demandes « en attente » du passager.
+  - Champs MVP :
+    | Champ | Type | Description |
+    |---|---|---|
+    | `passengerUid` | string | UID du passager. |
+    | `passengerEmail` | string | E-mail normalisé. |
+    | `seatsRequested` | number | Compte des places demandées. |
+    | `message` | string (optionnel) | Courte note, pas de messagerie. |
+    | `status` | enum | `pending` / `accepted` / `declined` / `expired`. |
+    | `createdAt` / `updatedAt` | `Timestamp` | `serverTimestamp()` pour audit.
+
+- **`history`** (`trajets/{trajetId}/history/{eventId}`)
+  - Objectif : journaliser les actions admin (création de demande, acceptation, réservation, annulation…).
+  - Champs :
+    | Champ | Type | Description |
+    |---|---|---|
+    | `type` | string | Exemple : `REQUEST_CREATED`, `REQUEST_ACCEPTED`, `RESERVATION_CREATED`, `CANCELLED`. |
+    | `actorUid` | string | UID de la personne à l’origine de l’événement. |
+    | `createdAt` | `Timestamp` | `serverTimestamp()`. |
+    | `metadata` | objet | Informations contextuelles (rideId, seats…). |
+
+### 5.3. Requêtes principales
+
+1. **Mes trajets (driver)** : requête `firestore.collection('trajets').where('ownerUid', '==', currentUser.uid)` classée par `createdAt`. Index automatique sur `ownerUid`.
+2. **Mes demandes (passager)** : requête `collectionGroup('requests').where('passengerUid', '==', currentUser.uid).orderBy('createdAt', 'desc')`. Index collectif nécessaire (`requests` collectionGroup + `passengerUid` + `createdAt`).
+3. **Mes réservations (passager)** : `collectionGroup('reservations').where('passengerUid', '==', currentUser.uid)`.
+4. **Admin overview** : combinaison `collectionGroup('requests')` ou `collectionGroup('reservations')` triées par `createdAt` pour surveiller demandes et confirmations.
+
+### 5.4. Helpers TypeScript et compatibilité
+
+- Le nouveau fichier `src/firestoreTrajets.ts` expose les types `TrajetDoc`, `TrajetRequestDoc`, `TrajetReservationDoc` ainsi que les helpers `createTrajet`, `createRequest`, `acceptRequest`, `declineRequest`, `createReservation`, `listMyTrips` et `listMyRequests`. Les helpers utilisent des transactions pour éviter les sur-réservations (`availableSeats`) et consignent les événements dans `history`.
+- Les vues UI doivent toujours prioriser la lecture du document `trajets/{trajetId}` et rebasculer sur le journal par utilisateur (`trajets/{uid}`) uniquement si le document trip est absent. Cette double lecture garantit une compatibilité sans rupture (le nouveau modèle existe en parallèle).
+- Les règles Firestore (section dédiée) autorisent désormais les opérations sur `trajets/{trajetId}`/subcollections tout en conservant `request.auth.uid == userId` pour le journal legacy.
+
 
 ## 6. `authUsers` (Firebase Auth)
 
@@ -214,26 +270,25 @@ Cela couvre la Definition of Done : le « serveur de notifications » repose sur
 | Champ                   | Type              | Description |
 |------------------------|--------------------|-------------|
 | `quoteId`              | string             | Identifiant auto généré du document. |
-| `createdAt`            | `Timestamp`        | Marqueur `serverTimestamp()` pour ordonner les leads. |
-| `status`               | string             | `new` par défaut afin de filtrer les demandes non traitées. |
+| `createdAt`           | `Timestamp`        | Marqueur `serverTimestamp()` pour ordonner les leads. |
+| `updatedAt`           | `Timestamp`        | Mise à jour (`serverTimestamp()`) pour tracer les modifications ou re-soumissions. |
+| `status`              | string             | `new` par défaut afin de filtrer les demandes non traitées. |
 | `source`               | string             | Toujours `business-quote`. |
 | `appVersion`           | string \| null     | Version de l’app (via `expo-constants`). |
 | `platform`             | string \| null     | `ios`, `android` ou `web` provenant de `Platform.OS`. |
-| `userId`               | string \| null     | `auth.currentUser.uid` si l’utilisateur est connecté. |
-| `userEmail`            | string \| null     | E-mail du profil Firebase Auth/`AuthSession`. |
-| `role`                 | string \| null     | `passenger` ou `driver` quand disponible, sinon `null`. |
+| `createdByUid`         | string \| null     | `auth.currentUser.uid` si l’utilisateur est connecté. |
+| `createdByEmail`       | string             | Adresse e-mail Auth du submitteur (le champ `email` contient le contact pub). |
+| `roleAtSubmit`         | string \| null     | `passenger` ou `driver` quand disponible, sinon `null`. |
 | `originRoute`          | string             | Chemin frontend (`/business-quote`). |
 | `clientTimestamp`      | number             | Horodatage `Date.now()` côté client pour tracer les sessions. |
 | `companyName`          | string             | Nom de l’entreprise demandant un devis. |
 | `contactName`          | string             | Responsable contact. |
-| `contactEmail`         | string             | E-mail du contact (normalisé). |
-| `contactPhone`         | string \| null     | Téléphone (optionnel, format BE). |
+| `email`                | string             | E-mail du contact (normalisé). |
+| `phone`                | string \| null     | Téléphone (optionnel, format BE). |
 | `website`              | string \| null     | Site web complet (`https://` ajouté automatiquement si absent). |
-| `desiredFormat`        | string             | Format souhaité sélectionné dans le formulaire (ex. `Banner horizontal`). |
-| `estimatedMonthlyBudget` | string           | Option de budget sélectionnée par l’utilisateur. |
+| `formatWanted`         | string             | Format souhaité sélectionné dans le formulaire (ex. `Banner horizontal`). |
+| `budgetMonthly`        | string             | Option de budget sélectionnée par l’utilisateur. |
 | `messageObjectives`    | string             | Description des objectifs / message publicitaire. |
-| `consent`              | boolean            | `true` par défaut pour l’enregistrement RGPD. |
-| `note`                 | string \| null     | Champ libre réservé aux admins. |
 
 **Alimentation**
 - `app/business-quote.tsx` baptise `persistBusinessQuote` après validation stricte du formulaire (e-mail, téléphone BE léger, site web, champs obligatoires).
@@ -241,6 +296,28 @@ Cela couvre la Definition of Done : le « serveur de notifications » repose sur
 - Les champs métier sont nettoyés (trim, e-mail en minuscules, `Platform.OS`, `Constants.expoConfig.version`).
 - Le payload est enregistré une fois (`persistBusinessQuote`), puis le mailto reste optionnel : l’ouverture du client mail n’influence pas l’écriture Firestore.
 
-**Règles Firestore**
-- `allow create: if request.auth != null` (utile pour éviter le spam non authentifié tout en conservant le mailto d’admin).
-- Lecture/mise à jour supprimée pour les clients ; seuls les admins (requête côté console ou Cloud Functions avec claim `admin`) peuvent lire/écrire avec `request.auth.token.admin == true`.
+- `allow create` : réservé aux utilisateurs authentifiés, la fonction vérifie que `createdByUid`/`createdByEmail` correspondent au compte en cours et que le payload respecte la whitelist (status `new`, source/origin fixes, champs correctement typés, plateforme en `ios|android|web`, etc.).
+- `allow read/update/delete` : uniquement les admins identifiés (`request.auth.token.admin == true`).
+
+
+L’équipement UX côté app (guard Auth + `router.replace('/sign-in')`) garantit que `createdByUid` n’est jamais `null` et que `createdByEmail` reflète le compte authentifié. `roleAtSubmit` est dérivé du mode actif (`passenger`/`driver`). Les règles Firestore interdisent tout champ supplémentaire et forcent `status = 'new'`, ce qui évite les abus (pas de lecture publique ni d’updates côté client).
+
+## 12. Collection `auditLogs` (Cloud Firestore)
+
+- **Emplacement** : `firestore.collection('auditLogs')`.
+- **Rôle** : historiser chaque suppression de compte (Cloud Function `deleteAccountAndData`) et capturer les métriques de nettoyage Firestore|Storage|Auth.
+
+| Champ             | Type               | Description |
+|------------------|--------------------|-------------|
+| `uid`             | string             | Identifiant Firebase Auth supprimé. |
+| `email`           | string \| null     | Adresse associée (si disponible). |
+| `action`          | string             | Toujours `"delete-account"`. |
+| `deletedAt`       | `Timestamp`        | `serverTimestamp()` logguant la suppression. |
+| `deletedCounts`   | map<string, number> | Nombre de documents/fichiers effacés par catégorie. |
+| `status`          | string             | `"success"` ou `"error"` selon le résultat. |
+| `errorMessage`    | string \| null     | Détail en cas d’échec. |
+
+> La Cloud Function `deleteAccountAndData` écrit systématiquement une entrée ici. En plus de `deletedCounts`, l’entrée embarque `step`, `collection` et `errorMessage` quand l’opération échoue, ainsi que `status = 'error'`. Cela simplifie le débogage et le suivi des suppressions partielles.
+
+**Écriture**
+- Exclusivement via Cloud Functions (admin SDK) pour garantir l’intégrité des métriques.

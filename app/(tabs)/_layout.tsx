@@ -92,7 +92,7 @@ function TabLayout() {
   };
 
   if (!session.email) {
-    return <Redirect href="/welcome" />;
+    return <Redirect href="/sign-in" />;
   }
 
   if (!session.verified) {

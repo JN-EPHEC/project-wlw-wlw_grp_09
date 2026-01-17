@@ -166,8 +166,6 @@ export default function ProfileScreen() {
   const [cropSourceUri, setCropSourceUri] = useState<string | null>(null);
   const [isSavingAvatar, setIsSavingAvatar] = useState(false);
   const [avatarVersion, setAvatarVersion] = useState(0);
-  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
-
   const applyAvatar = useCallback(
     async (uri: string | null) => {
       if (!session.email) return false;
@@ -308,16 +306,6 @@ export default function ProfileScreen() {
   const handleOpenBusinessPartnership = useCallback(() => {
     router.push('/business-partnership');
   }, [router]);
-
-  const handleConfirmDeleteAccount = useCallback(() => {
-    if (!session.email) return;
-    router.push('/confirm-delete-account');
-  }, [router, session.email]);
-
-  const promptDeleteAccount = useCallback(() => {
-    if (isDeletingAccount) return;
-    handleConfirmDeleteAccount();
-  }, [handleConfirmDeleteAccount, isDeletingAccount]);
 
   const driverSecurityStatus = useMemo(() => {
     if (!driverSecurity) {
@@ -897,28 +885,6 @@ export default function ProfileScreen() {
             >
               <Text style={styles.logoutPillText}>Se déconnecter</Text>
             </Pressable>
-            <Pressable
-              style={[styles.photoDeleteLink, styles.deleteAccountLink]}
-              onPress={promptDeleteAccount}
-              disabled={isDeletingAccount}
-              accessibilityRole="button"
-              hitSlop={12}
-            >
-              {isDeletingAccount ? (
-                <ActivityIndicator color={C.danger} size="small" />
-              ) : (
-                <IconSymbol name="trash" size={14} color={C.danger} />
-              )}
-              <Text
-                style={[
-                  styles.photoDeleteText,
-                  styles.deleteAccountText,
-                  isDeletingAccount && styles.deleteAccountTextDisabled,
-                ]}
-              >
-                {isDeletingAccount ? 'Suppression en cours…' : 'Supprimer mon compte'}
-              </Text>
-            </Pressable>
           </View>
         </GradientBackground>
         </ScrollView>
@@ -1155,16 +1121,6 @@ const styles = StyleSheet.create({
   photoDeleteText: {
     fontWeight: '600',
     color: C.danger,
-  },
-  deleteAccountLink: {
-    marginTop: Spacing.xs,
-  },
-  deleteAccountText: {
-    fontWeight: '700',
-    color: C.danger,
-  },
-  deleteAccountTextDisabled: {
-    color: C.gray400,
   },
   photoDeleteTextDisabled: {
     color: C.gray400,

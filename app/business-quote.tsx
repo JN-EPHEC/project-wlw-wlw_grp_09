@@ -18,6 +18,7 @@ import Constants from 'expo-constants';
 
 import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
 import { AppBackground } from '@/components/ui/app-background';
+import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { budgetOptions, formatOptions, steps } from '@/app/business-quote/constants';
 import { auth } from '@/src/firebase';
@@ -55,8 +56,10 @@ export default function BusinessQuoteScreen() {
   const platformLabel = Platform.OS;
   const appVersion =
     Constants.expoConfig?.version ?? Constants.manifest?.version ?? null;
-  const userId = auth.currentUser?.uid ?? null;
-  const userEmail = session.email ?? null;
+  const currentUser = auth.currentUser;
+  const userId = currentUser?.uid ?? null;
+  const isAuthenticated = !!userId;
+  const userEmail = currentUser?.email ?? session.email ?? null;
   const role = session.isDriver ? "driver" : session.isPassenger ? "passenger" : null;
   const isFormComplete =
     company.trim().length > 0 &&
@@ -64,7 +67,6 @@ export default function BusinessQuoteScreen() {
     message.trim().length > 0 &&
     email.trim().length > 0 &&
     EMAIL_PATTERN.test(email.trim());
-
   const resetForm = () => {
     setCompany('');
     setContactName('');
@@ -76,6 +78,27 @@ export default function BusinessQuoteScreen() {
     setBudgetChoice(budgetOptions[0]);
     setErrors({});
   };
+
+  const handleSignIn = () => {
+    router.replace('/sign-in');
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <AppBackground colors={Gradients.background}>
+        <SafeAreaView style={styles.safe}>
+          <View style={styles.authGate}>
+            <IconSymbol name="lock.closed" size={32} color={C.white} />
+            <Text style={styles.authGateTitle}>Connexion requise</Text>
+            <Text style={styles.authGateBody}>
+              Connecte-toi pour accéder au formulaire de devis entreprise.
+            </Text>
+            <GradientButton title="Se connecter" onPress={handleSignIn} fullWidth />
+          </View>
+        </SafeAreaView>
+      </AppBackground>
+    );
+  }
 
   const goBack = () => {
     try {
@@ -92,7 +115,6 @@ export default function BusinessQuoteScreen() {
   };
 
   const onSend = async () => {
-    if (submitting) return;
     const trimmedCompany = company.trim();
     const trimmedContactName = contactName.trim();
     const trimmedMessage = message.trim();
@@ -127,21 +149,30 @@ export default function BusinessQuoteScreen() {
     );
     const mailto = `mailto:business@campusride.app?subject=${subject}&body=${body}`;
 
+    if (!userEmail) {
+      Alert.alert(
+        'Erreur',
+        'Impossible de récupérer ton adresse. Déconnecte-toi puis reconnecte-toi.'
+      );
+      setSubmitting(false);
+      return;
+    }
+
     try {
       await persistBusinessQuote({
         companyName: trimmedCompany,
         contactName: trimmedContactName,
-        contactEmail: normalizedEmail,
-        contactPhone: sanitizedPhone,
+        email: normalizedEmail,
+        phone: sanitizedPhone,
         website: formattedWebsite,
-        desiredFormat: formatChoice,
-        estimatedMonthlyBudget: budgetChoice,
+        formatWanted: formatChoice,
+        budgetMonthly: budgetChoice,
         messageObjectives: trimmedMessage,
         appVersion,
         platform: platformLabel,
-        userId,
-        userEmail,
-        role,
+        createdByUid: userId,
+        createdByEmail: userEmail,
+        roleAtSubmit: role,
         consent: true,
         originRoute: '/business-quote',
         clientTimestamp: Date.now(),
@@ -328,9 +359,9 @@ export default function BusinessQuoteScreen() {
                   </View>
                 ))}
               </View>
-            <View style={styles.ctaSection}>
-              <Pressable
-                style={({ pressed }) => {
+              <View style={styles.ctaSection}>
+                <Pressable
+                  style={({ pressed }) => {
                   const active = isFormComplete && !submitting;
                   return [
                     styles.sendButton,
@@ -343,14 +374,14 @@ export default function BusinessQuoteScreen() {
                 accessibilityRole="button"
               >
                 {submitting ? (
-                  <View style={styles.loadingRow}>
-                    <ActivityIndicator size="small" color={C.white} />
-                    <Text style={styles.sendButtonText}>Envoi en cours…</Text>
-                  </View>
-                ) : (
-                  <Text
-                    style={[
-                      styles.sendButtonText,
+                    <View style={styles.loadingRow}>
+                      <ActivityIndicator size="small" color={C.white} />
+                      <Text style={styles.sendButtonText}>Envoi en cours…</Text>
+                    </View>
+                  ) : (
+                    <Text
+                      style={[
+                        styles.sendButtonText,
                       !isFormComplete && styles.sendButtonTextDisabled,
                     ]}
                   >
@@ -358,13 +389,13 @@ export default function BusinessQuoteScreen() {
                   </Text>
                 )}
               </Pressable>
-              {!isFormComplete && (
-                <Text style={styles.formHint}>
-                  Complète tous les champs obligatoires pour activer le bouton.
-                </Text>
-              )}
-              <Text style={styles.requiredText}>* Champs obligatoires</Text>
-            </View>
+            {!isFormComplete && (
+              <Text style={styles.formHint}>
+                Complète tous les champs obligatoires pour activer le bouton.
+                  </Text>
+                )}
+                <Text style={styles.requiredText}>* Champs obligatoires</Text>
+              </View>
           </>
         </ScrollView>
       </SafeAreaView>
@@ -402,6 +433,24 @@ const styles = StyleSheet.create({
   pageSubtitle: {
     color: C.white,
     marginTop: Spacing.xs,
+  },
+  authGate: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    padding: Spacing.lg,
+  },
+  authGateTitle: {
+    color: C.white,
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  authGateBody: {
+    color: C.white,
+    textAlign: 'center',
+    fontSize: 14,
+    lineHeight: 20,
   },
   sectionCard: {
     backgroundColor: '#FFFFFF',
