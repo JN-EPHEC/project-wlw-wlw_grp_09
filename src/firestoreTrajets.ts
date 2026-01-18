@@ -52,10 +52,33 @@ export type TrajetRequestDoc = {
   passengerUid: string;
   passengerEmail: string;
   seatsRequested: number;
-  message?: string;
+  message: string | null;
   status: TrajetRequestStatus;
   createdAt: Timestamp;
   updatedAt: Timestamp;
+  driverUid: string | null;
+  driverName: string | null;
+  driverEmail: string | null;
+  rideId: string | null;
+  depart: string | null;
+  destination: string | null;
+  price: number | null;
+  timeLabel: string | null;
+};
+
+export type TrajetRequestPayload = {
+  passengerUid: string;
+  passengerEmail: string;
+  seatsRequested: number;
+  message?: string;
+  driverUid?: string;
+  driverName?: string;
+  driverEmail?: string;
+  rideId?: string;
+  depart?: string;
+  destination?: string;
+  price?: number;
+  timeLabel?: string;
 };
 
 export type TrajetReservationDoc = {
@@ -154,30 +177,36 @@ export const createTrajet = async (
 
 export const createRequest = async (
   trajetId: string,
-  requestId: string,
-  payload: {
-    passengerUid: string;
-    passengerEmail: string;
-    seatsRequested: number;
-    message?: string;
-  }
+  payload: TrajetRequestPayload & { requestId?: string }
 ) => {
-  const requestRef = doc(collection(doc(trajetsCol, trajetId), 'requests'), requestId);
+  const requestsCollection = collection(doc(trajetsCol, trajetId), 'requests');
+  const requestRef = payload.requestId
+    ? doc(requestsCollection, payload.requestId)
+    : doc(requestsCollection);
   const now = serverTimestamp();
   const requestPayload: TrajetRequestDoc = {
     passengerUid: payload.passengerUid,
     passengerEmail: normalizeText(payload.passengerEmail),
     seatsRequested: payload.seatsRequested,
-    message: payload.message,
+    message: payload.message ?? null,
     status: 'pending',
     createdAt: now,
     updatedAt: now,
+    driverUid: payload.driverUid ?? null,
+    driverName: payload.driverName ?? null,
+    driverEmail: payload.driverEmail ? normalizeText(payload.driverEmail) : null,
+    rideId: payload.rideId ?? null,
+    depart: payload.depart ?? null,
+    destination: payload.destination ?? null,
+    price: payload.price ?? null,
+    timeLabel: payload.timeLabel ?? null,
   };
   await setDoc(requestRef, requestPayload);
   await logHistoryEvent(trajetId, 'REQUEST_CREATED', payload.passengerUid, {
-    requestId,
+    requestId: requestRef.id,
     seatsRequested: payload.seatsRequested,
   });
+  return requestRef.id;
 };
 
 export const declineRequest = async (

@@ -67,7 +67,7 @@ export default function WalletConfirmationScreen() {
   const amount = params.amount ? Number(params.amount) : null;
   const walletBalance = walletSnapshot?.balance ?? 0;
 
-  const handleConfirm = useCallback(() => {
+  const handleConfirm = useCallback(async () => {
     if (!rideId || !amount || Number.isNaN(amount)) {
       setError('Informations manquantes pour valider le paiement.');
       return;
@@ -94,7 +94,7 @@ export default function WalletConfirmationScreen() {
     setIsProcessing(true);
     setError(null);
     try {
-      const debitResult = debitWallet(
+      const debitResult = await debitWallet(
         session.email,
         amount,
         `Paiement trajet ${ride.depart} → ${ride.destination}`,
@@ -106,7 +106,7 @@ export default function WalletConfirmationScreen() {
       }
       const reservation = confirmReservationWithoutPayment(ride.id, session.email);
       if (!reservation) {
-        creditWallet(session.email, amount, {
+        await creditWallet(session.email, amount, {
           description: 'Annulation paiement',
           rideId,
           reason: 'reservation_failed',
@@ -146,7 +146,7 @@ export default function WalletConfirmationScreen() {
       console.debug('[WalletConfirm] reservationResult', bookingResult);
       if (!bookingResult.ok) {
         cancelReservation(ride.id, session.email);
-        creditWallet(session.email, amount, {
+        await creditWallet(session.email, amount, {
           description: 'Annulation paiement',
           rideId,
           reason: 'booking_failed',

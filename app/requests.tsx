@@ -19,7 +19,7 @@ import {
   acceptDriverReservationRequest,
   rejectDriverReservationRequest,
   type ReservationRequestEntry,
-} from '@/app/services/reservation-requests';
+} from '@/app/services/firestore-reservation-requests';
 
 const C = Colors;
 
@@ -27,8 +27,8 @@ export default function RequestsScreen() {
   const router = useRouter();
   const session = useAuthSession();
   const isDriver = session.isDriver;
-  const driverRequests = useDriverRequests(session.email);
-  const passengerRequests = usePassengerRequests(session.email);
+  const passengerRequests = usePassengerRequests(session.uid);
+  const driverRequests = useDriverRequests(session.uid);
   const [activeTab, setActiveTab] = useState<'pending' | 'accepted'>('pending');
   const [bookings, setBookings] = useState<Booking[]>(() =>
     session.email ? listBookingsByPassenger(session.email) : []
@@ -112,166 +112,63 @@ export default function RequestsScreen() {
     [router]
   );
 
-  useEffect(() => {
-    if (!session.email) {
-      setBookings([]);
-      return;
-    }
-    const unsubscribe = subscribeBookingsByPassenger(session.email, setBookings);
-    return unsubscribe;
-  }, [session.email]);
-
-  useEffect(() => {
-    const payload = bookings.map((booking) => ({
-      id: booking.id,
-      status: booking.status,
-      paid: booking.paid,
-    }));
-    console.debug('[Requests] bookings', payload);
-  }, [bookings]);
-
-  useEffect(() => {
-    const pendingCount = isDriver ? driverRequests.pending.length : pendingRequests.length;
-    const acceptedCount = isDriver ? driverRequests.accepted.length : acceptedRequests.length;
-    console.debug('[Requests] filtered', { pendingCount, acceptedCount });
-  }, [
-    acceptedRequests.length,
-    driverRequests.pending.length,
-    driverRequests.accepted.length,
-    isDriver,
-    pendingRequests.length,
-  ]);
-
-  useEffect(() => {
-    console.debug('[Requests] pending', pendingRequests.length);
-    console.debug('[Requests] accepted', acceptedRequests.length);
-  }, [pendingRequests.length, acceptedRequests.length]);
-
-  useEffect(() => {
-    console.debug('[Requests] active count', activeRequestCount);
-  }, [activeRequestCount]);
-
-  const renderDriverCard = useCallback(
-    (request: ReservationRequestEntry) => (
-      <Pressable
-        key={request.id}
-        style={styles.card}
-        onPress={() => openRideDetails(request.rideId)}
-        accessibilityRole="button"
-      >
-        <View style={styles.cardHeader}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.cardDriver}>{request.passenger}</Text>
-            <Text style={styles.cardMeta}>
-              {request.depart} → {request.destination}
-            </Text>
-          </View>
-          <View style={[styles.badge, request.status === 'pending' ? styles.badgePending : styles.badgeAccepted]}>
-            <Text style={styles.badgeText}>{request.status === 'pending' ? 'En attente' : 'Acceptée'}</Text>
-          </View>
-        </View>
-        <View style={styles.cardFooter}>
-          <View style={styles.cardFooterRow}>
-            <IconSymbol name="clock" size={16} color={C.gray500} />
-            <Text style={styles.cardFooterText}>{request.timeLabel}</Text>
-          </View>
-          <View style={styles.cardFooterRow}>
-            <IconSymbol name="creditcard.fill" size={16} color={C.gray500} />
-            <Text style={styles.cardFooterText}>{request.price.toFixed(2)} €</Text>
-          </View>
-        </View>
-        {request.status === 'pending' ? (
-          <View style={styles.requestActions}>
-            <Pressable
-              style={[styles.requestActionButton, styles.requestActionButtonSecondary]}
-              onPress={(event) => {
-                event.stopPropagation();
-                rejectDriverReservationRequest(session.email, request.id);
-              }}
-            >
-              <Text style={[styles.requestActionText, styles.requestActionTextSecondary]}>Refuser</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.requestActionButton, styles.requestActionButtonPrimary]}
-              onPress={(event) => {
-                event.stopPropagation();
-                acceptDriverReservationRequest(session.email, request.id);
-              }}
-            >
-              <Text style={[styles.requestActionText, styles.requestActionTextPrimary]}>Accepter</Text>
-            </Pressable>
-          </View>
-        ) : null}
-      </Pressable>
-    ),
-    [openRideDetails, session.email]
-  );
-
-  const renderPassengerCard = useCallback(
-    (request: ReservationRequestEntry, isAcceptedList: boolean) => {
-      const booking =
-        session.email && request.rideId
-          ? getLatestBookingForRide(session.email, request.rideId) ?? undefined
-          : undefined;
-      console.debug('[Requests] request', {
-        requestId: request.id,
-        rideId: request.rideId,
-        status: request.status,
-      });
-      console.debug('[Requests] bookingForRide', {
-        rideId: request.rideId,
-        bookingId: booking?.id,
-        bookingStatus: booking?.status,
-        paymentStatus: booking?.paymentStatus,
-      });
-      const driverName = booking?.driver ?? request.driver;
-      const driverEmail = booking?.ownerEmail ?? request.driverEmail;
-      const routeLabel = `${booking?.depart ?? request.depart} → ${booking?.destination ?? request.destination}`;
-      const timeLabel =
-        booking?.time ??
-        request.timeLabel ??
-        new Date(booking?.departureAt ?? booking?.createdAt ?? Date.now()).toLocaleTimeString('fr-BE', {
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-      const amount = booking ? booking.pricePaid ?? booking.amount : request.price;
-      const amountLabel = Number.isFinite(amount) ? amount.toFixed(2) : '0.00';
-      const paymentAllowedForRequest = isPaymentAllowed(request);
-      const handleCheckoutNavigation = () => {
-        if (!paymentAllowedForRequest) {
-          Alert.alert(
-            'Paiement indisponible',
-            'Cette réservation n’est plus payable. Recommence une demande.'
-          );
-          return;
-        }
-        if (!request.rideId) {
-          console.warn('[Requests] missing rideId for checkout', { requestId: request.id });
-          Alert.alert(
-            'Trajet introuvable',
-            'Impossible de retrouver ce trajet pour continuer le paiement.'
-          );
-          return;
-        }
-        console.debug('[Requests] checkout navigation', {
-          requestId: request.id,
-          rideId: request.rideId,
-          bookingRideId: booking?.rideId,
-        });
-        router.push({
-          pathname: '/ride/checkout',
-          params: { rideid: request.rideId },
-        });
-      };
-      const handlePress = () => {
-        if (isAcceptedList) {
-          handleCheckoutNavigation();
-          return;
-        }
-        if (request.rideId) {
-          openRideDetails(request.rideId);
-        }
-      };
+  const renderCard = useCallback(
+    (request: ReservationRequestEntry) => {
+      const isDriverCard = isDriver;
+      if (isDriverCard) {
+        return (
+          <Pressable
+            key={request.id}
+            style={styles.card}
+            onPress={() => openRideDetails(request.rideId)}
+            accessibilityRole="button"
+          >
+            <View style={styles.cardHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardDriver}>{request.passenger}</Text>
+                <Text style={styles.cardMeta}>
+                  {request.depart} → {request.destination}
+                </Text>
+              </View>
+              <View style={[styles.badge, request.status === 'pending' ? styles.badgePending : styles.badgeAccepted]}>
+                <Text style={styles.badgeText}>{request.status === 'pending' ? 'En attente' : 'Acceptée'}</Text>
+              </View>
+            </View>
+            <View style={styles.cardFooter}>
+              <View style={styles.cardFooterRow}>
+                <IconSymbol name="clock" size={16} color={C.gray500} />
+                <Text style={styles.cardFooterText}>{request.timeLabel}</Text>
+              </View>
+              <View style={styles.cardFooterRow}>
+                <IconSymbol name="creditcard.fill" size={16} color={C.gray500} />
+                <Text style={styles.cardFooterText}>{request.price.toFixed(2)} €</Text>
+              </View>
+            </View>
+            {request.status === 'pending' ? (
+              <View style={styles.requestActions}>
+                <Pressable
+                  style={[styles.requestActionButton, styles.requestActionButtonSecondary]}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                  void rejectDriverReservationRequest(session.uid, request.id);
+                  }}
+                >
+                  <Text style={[styles.requestActionText, styles.requestActionTextSecondary]}>Refuser</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.requestActionButton, styles.requestActionButtonPrimary]}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                  void acceptDriverReservationRequest(session.uid, request.id);
+                  }}
+                >
+                  <Text style={[styles.requestActionText, styles.requestActionTextPrimary]}>Accepter</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </Pressable>
+        );
+      }
       return (
         <Pressable
           key={request.id}

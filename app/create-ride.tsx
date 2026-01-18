@@ -108,6 +108,10 @@ export default function CreateRideScreen() {
       setFormError('Choisis une heure.');
       return;
     }
+    if (!session.uid) {
+      Alert.alert('Connexion requise', 'Reconnecte-toi pour publier un trajet.');
+      return;
+    }
 
     const seatsCount = Number(places);
     if (!Number.isFinite(seatsCount) || seatsCount < 1) {
@@ -130,25 +134,26 @@ export default function CreateRideScreen() {
     const time = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
     const departureAtDate = new Date(selectedDate ?? Date.now());
     departureAtDate.setHours(hours, minutes, 0, 0);
-    const departureAt = departureAtDate.getTime();
-    const rideId = `ride-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const departureAt = departureAtDate.getTime();
+      const rideId = `ride-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    setIsPublishingRide(true);
-    try {
-      addRide({
-        id: rideId,
-        driver: session.name ?? 'Conducteur',
-        plate: registeredPlate,
-        depart: departure,
-        destination: campus,
-        time,
-        seats: seatsCount,
-        price: priceValue,
-        ownerEmail: session.email,
-        pricingMode: 'single',
-        tripType: 'one_way',
-        departureAt,
-      });
+      setIsPublishingRide(true);
+      try {
+        addRide({
+          id: rideId,
+          driver: session.name ?? 'Conducteur',
+          plate: registeredPlate,
+          depart: departure,
+          destination: campus,
+          time,
+          seats: seatsCount,
+          price: priceValue,
+          ownerEmail: session.email,
+          ownerUid: session.uid,
+          pricingMode: 'single',
+          tripType: 'one_way',
+          departureAt,
+        });
       Alert.alert('Trajet publié', 'Ton trajet est en ligne et peut être réservé.');
       router.back();
     } catch (error) {

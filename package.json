@@ -8,7 +8,11 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "check:user-id-consistency": "node scripts/check-user-id-consistency.js",
+    "verify:firebase-requests": "node scripts/verify-firestore-requests.js",
+    "lint": "expo lint",
+    "migrate:firestore": "node scripts/migrate-user-docs.js",
+    "migrate:wallets": "node scripts/migrate-wallets.js"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
@@ -54,6 +58,8 @@
     "@types/react": "~19.1.0",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
+    "firebase-admin": "^12.5.0",
+    "firebase-tools": "^15.3.1",
     "typescript": "~5.9.2"
   },
   "private": true

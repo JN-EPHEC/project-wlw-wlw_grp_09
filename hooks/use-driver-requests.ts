@@ -3,19 +3,19 @@ import { useEffect, useState } from 'react';
 import {
   subscribeDriverReservationRequests,
   type ReservationRequestEntry,
-} from '@/app/services/reservation-requests';
+} from '@/app/services/firestore-reservation-requests';
 
-export const useDriverRequests = (email: string | null) => {
+export const useDriverRequests = (driverUid: string | null) => {
   const [requests, setRequests] = useState<ReservationRequestEntry[]>([]);
 
   useEffect(() => {
-    if (!email) {
+    if (!driverUid) {
       setRequests([]);
       return;
     }
-    const unsubscribe = subscribeDriverReservationRequests(email, setRequests);
+    const unsubscribe = subscribeDriverReservationRequests(driverUid, setRequests);
     return unsubscribe;
-  }, [email]);
+  }, [driverUid]);
 
   return {
     pending: requests.filter((request) => request.status === 'pending'),
