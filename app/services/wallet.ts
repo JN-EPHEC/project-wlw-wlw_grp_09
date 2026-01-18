@@ -2,6 +2,7 @@
 
 import { pushNotification } from './notifications';
 import { loadStoredWallet, persistStoredWallet } from './local-wallet-store';
+import { callAdjustBalance } from '@/src/firestore/walletFunctions';
 import type { WalletStoreRecord } from './local-wallet-store';
 
 type TransactionType = 'credit' | 'debit' | 'info';
@@ -189,19 +190,44 @@ const notify = (email: string) => {
   persistStoredWallet(email, walletToRecord(wallets[key]));
 };
 
+const updateLocalBalance = (email: string, balanceCents: number) => {
+  const key = ensureWallet(email);
+  wallets[key].balance = balanceCents / 100;
+  persistStoredWallet(email, walletToRecord(wallets[key]));
+};
+
+const adjustViaFunction = async (
+  email: string,
+  amount: number,
+  direction: 'credit' | 'debit',
+  metadata?: Record<string, unknown>,
+  description?: string
+) => {
+  const payload = {
+    amountCents: Math.round(amount * 100),
+    direction,
+    description: description ?? (metadata as any)?.description ?? `${direction} wallet`,
+    metadata,
+    idempotencyKey: `${direction}-${email}-${Date.now()}`,
+  };
+  const result = await callAdjustBalance(payload);
+  updateLocalBalance(email, result.balanceCents);
+  return result.balanceCents;
+};
+
 const pushTransaction = (wallet: Wallet, transaction: WalletTransaction) => {
   wallet.transactions = [transaction, ...wallet.transactions.slice(0, 49)];
 };
 
-export const creditWallet = (
+export const creditWallet = async (
   email: string,
   amount: number,
   metadata: { description: string; rideId?: string } & Record<string, unknown>
 ) => {
   if (!email || amount <= 0) return null;
+  await adjustViaFunction(email, amount, 'credit', metadata, metadata.description);
   const key = ensureWallet(email);
   const wallet = wallets[key];
-  wallet.balance += amount;
   const transaction: WalletTransaction = {
     id: randomId(),
     type: 'credit',
@@ -212,21 +238,19 @@ export const creditWallet = (
     metadata,
   };
   pushTransaction(wallet, transaction);
-  notify(email);
   return transaction;
 };
 
-export const debitWallet = (
+export const debitWallet = async (
   email: string,
   amount: number,
   description: string,
   metadata?: Record<string, unknown>
 ) => {
   if (!email || amount <= 0) return null;
+  await adjustViaFunction(email, amount, 'debit', metadata, description);
   const key = ensureWallet(email);
   const wallet = wallets[key];
-  if (wallet.balance < amount) return null;
-  wallet.balance -= amount;
   const transaction: WalletTransaction = {
     id: randomId(),
     type: 'debit',
@@ -237,7 +261,6 @@ export const debitWallet = (
     metadata,
   };
   pushTransaction(wallet, transaction);
-  notify(email);
   return transaction;
 };
 
@@ -514,7 +537,7 @@ const seedDemoWallet = (email: string, wallet: Wallet) => {
   notify(email);
 };
 
-export const withdrawAmount = (
+export const withdrawAmount = async (
   email: string,
   amount: number,
   options?: { description?: string }
@@ -536,7 +559,7 @@ export const withdrawAmount = (
   }
   const now = Date.now();
   const delayDays = wallet.withdrawalDelayDays ?? DEFAULT_WITHDRAWAL_DELAY_DAYS;
-  debitWallet(email, amount, options?.description ?? 'Retrait manuel', {
+  await debitWallet(email, amount, options?.description ?? 'Retrait manuel', {
     type: 'manual-withdrawal',
     delayDays,
   });

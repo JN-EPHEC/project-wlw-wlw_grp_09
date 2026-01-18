@@ -1,11 +1,6 @@
-import {
-  collection,
-  doc,
-  serverTimestamp,
-  setDoc,
-} from "firebase/firestore";
+import { serverTimestamp, setDoc } from "firebase/firestore";
 
-import { db } from "./firebase";
+import { userDocRef, requireUid } from "./firestore/userDocumentHelpers";
 
 export type BusinessQuoteRole = "passenger" | "driver";
 
@@ -27,31 +22,36 @@ export type BusinessQuoteInput = {
   clientTimestamp: number;
 };
 
-const businessQuotesCol = collection(db, "businessQuotes");
+const BUSINESS_QUOTES_COLLECTION = "businessQuotes";
 
 export const persistBusinessQuote = async (payload: BusinessQuoteInput) => {
-  const quoteRef = doc(businessQuotesCol);
-  await setDoc(quoteRef, {
-    quoteId: quoteRef.id,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    status: "new",
-    source: "business-quote",
-    appVersion: payload.appVersion ?? null,
-    platform: payload.platform ?? null,
-    createdByUid: payload.createdByUid ?? null,
-    createdByEmail: payload.createdByEmail ?? null,
-    roleAtSubmit: payload.roleAtSubmit ?? null,
-    companyName: payload.companyName,
-    contactName: payload.contactName,
-    email: payload.email,
-    phone: payload.phone ?? null,
-    website: payload.website ?? null,
-    formatWanted: payload.formatWanted,
-    budgetMonthly: payload.budgetMonthly,
-    messageObjectives: payload.messageObjectives,
-    originRoute: payload.originRoute,
-    clientTimestamp: payload.clientTimestamp,
-  });
+  const uid = requireUid(payload.createdByUid ?? undefined);
+  const quoteRef = userDocRef(BUSINESS_QUOTES_COLLECTION, uid);
+  await setDoc(
+    quoteRef,
+    {
+      quoteId: quoteRef.id,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      status: "new",
+      source: "business-quote",
+      appVersion: payload.appVersion ?? null,
+      platform: payload.platform ?? null,
+      createdByUid: uid,
+      createdByEmail: payload.createdByEmail ?? null,
+      roleAtSubmit: payload.roleAtSubmit ?? null,
+      companyName: payload.companyName,
+      contactName: payload.contactName,
+      email: payload.email,
+      phone: payload.phone ?? null,
+      website: payload.website ?? null,
+      formatWanted: payload.formatWanted,
+      budgetMonthly: payload.budgetMonthly,
+      messageObjectives: payload.messageObjectives,
+      originRoute: payload.originRoute,
+      clientTimestamp: payload.clientTimestamp,
+    },
+    { merge: true }
+  );
   return quoteRef.id;
 };

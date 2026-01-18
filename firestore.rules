@@ -2,17 +2,25 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function isSignedIn() {
-      return request.auth != null && request.auth.token.email != null;
+      return request.auth != null;
     }
 
-    function isDocumentOwner(targetEmail) {
-      return isSignedIn() && targetEmail == request.auth.token.email;
+    function isUidOwner(targetUid) {
+      return request.auth != null && request.auth.uid == targetUid;
     }
 
     match /users/{userId} {
-      allow create: if isDocumentOwner(request.resource.data.email)
-        && request.resource.data.role in ['passenger', 'driver'];
-      allow read, update, delete: if isDocumentOwner(resource.data.email);
+      allow create: if isUidOwner(userId) &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.authUid == userId &&
+        request.resource.data.role in ['passenger', 'driver'];
+      allow read: if isUidOwner(userId) ||
+        (
+          isSignedIn() &&
+          request.auth.token.email != null &&
+          resource.data.email == request.auth.token.email
+        );
+      allow update, delete: if isUidOwner(userId);
     }
 
     function isRideOwner() {
@@ -29,12 +37,9 @@ service cloud.firestore {
     }
 
     match /wallets/{walletId} {
-      allow create: if isDocumentOwner(request.resource.data.email);
-      allow read, update, delete: if isDocumentOwner(resource.data.email);
-    }
-
-    function isAdmin() {
-      return request.auth != null && request.auth.token.admin == true;
+      allow create: if isUidOwner(walletId) &&
+        request.resource.data.ownerUid == walletId;
+      allow read, update, delete: if isUidOwner(walletId);
     }
 
     function isValidPlatform(value) {
@@ -83,6 +88,7 @@ service cloud.firestore {
         request.resource.data.source == 'business-quote' &&
         request.resource.data.originRoute == '/business-quote' &&
         request.resource.data.clientTimestamp is number &&
+        request.resource.data.quoteId == request.auth.uid &&
         request.resource.data.createdByUid == request.auth.uid &&
         request.resource.data.createdByEmail == request.auth.token.email &&
         (request.resource.data.phone == null || request.resource.data.phone is string) &&
@@ -94,8 +100,26 @@ service cloud.firestore {
     }
 
     match /businessQuotes/{quoteId} {
-      allow create: if isBusinessQuotePayload();
-      allow read, update, delete: if isAdmin();
+      allow create: if isBusinessQuotePayload() && isUidOwner(quoteId);
+      allow read, update, delete: if isUidOwner(quoteId);
+    }
+
+    match /notificationPreferences/{uid} {
+      allow create: if isUidOwner(uid) && request.resource.data.ownerUid == uid;
+      allow read, update, delete: if isUidOwner(uid);
+    }
+
+    match /notificationTokens/{uid} {
+      allow create: if isUidOwner(uid) && request.resource.data.ownerUid == uid;
+      allow read, update, delete: if isUidOwner(uid);
+    }
+
+    match /notifications/{notificationId} {
+      allow create: if isSignedIn() &&
+        request.resource.data.to == request.auth.token.email &&
+        request.resource.data.title is string &&
+        request.resource.data.body is string;
+      allow read: if false;
     }
 
     match /trajets/{trajetId} {
@@ -115,15 +139,29 @@ service cloud.firestore {
       allow update, delete: if isSignedIn() && (canManageUserJournal() || isTripOwner());
 
       match /requests/{requestId} {
-        allow read: if isSignedIn();
+        allow read: if isSignedIn() && (
+          (resource != null && resource.data.passengerUid == request.auth.uid) ||
+          (resource != null && resource.data.driverUid == request.auth.uid) ||
+          isTripOwner()
+        );
         allow create: if isSignedIn() &&
           request.resource.data.passengerUid == request.auth.uid &&
           request.resource.data.seatsRequested is number;
-        allow update: if isTripOwner();
+        allow update: if isSignedIn() &&
+          (
+            isTripOwner() ||
+            (resource != null && resource.data.passengerUid == request.auth.uid)
+          );
+        allow delete: if isSignedIn() &&
+          resource != null &&
+          resource.data.passengerUid == request.auth.uid;
       }
 
       match /reservations/{reservationId} {
-        allow read: if isSignedIn();
+        allow read: if isSignedIn() && (
+          (resource != null && resource.data.passengerUid == request.auth.uid) ||
+          isTripOwner()
+        );
         allow create: if isSignedIn() &&
           (request.resource.data.passengerUid == request.auth.uid || isTripOwner());
         allow update: if isTripOwner();

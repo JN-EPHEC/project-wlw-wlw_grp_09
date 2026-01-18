@@ -1,12 +1,6 @@
-import {
-  addDoc,
-  collection,
-  doc,
-  serverTimestamp,
-  setDoc,
-  type DocumentReference,
-} from 'firebase/firestore';
+import { addDoc, collection, serverTimestamp, setDoc } from 'firebase/firestore';
 
+import { userDocRef, requireUid } from './firestore/userDocumentHelpers';
 import { db } from './firebase';
 
 type NotificationPreferencesDocument = {
@@ -19,7 +13,8 @@ type NotificationPreferencesDocument = {
 };
 
 type PushTokenRecord = {
-  email: string;
+  uid: string | null | undefined;
+  email?: string | null;
   token: string;
   platform?: string | null;
 };
@@ -36,10 +31,13 @@ type NotificationEventRecord = {
   scheduleKey?: string | null;
 };
 
-const normalizeEmail = (value: string) => value.trim().toLowerCase();
+const normalizeEmail = (value?: string | null) => {
+  if (!value) return null;
+  return value.trim().toLowerCase();
+};
 
-const notificationTokensCol = collection(db, 'notificationTokens');
-const notificationPreferencesCol = collection(db, 'notificationPreferences');
+const NOTIFICATION_TOKENS_COLLECTION = 'notificationTokens';
+const NOTIFICATION_PREFERENCES_COLLECTION = 'notificationPreferences';
 const notificationsCol = collection(db, 'notifications');
 
 const sanitizeMetadata = (metadata?: Record<string, unknown>) => {
@@ -52,10 +50,7 @@ const sanitizeMetadata = (metadata?: Record<string, unknown>) => {
   }
 };
 
-const safeSetDoc = async (
-  ref: DocumentReference,
-  data: Record<string, unknown>
-) => {
+const safeSetDoc = async (ref: ReturnType<typeof userDocRef>, data: Record<string, unknown>) => {
   try {
     await setDoc(ref, data, { merge: true });
   } catch (error) {
@@ -64,15 +59,18 @@ const safeSetDoc = async (
 };
 
 export const persistPushTokenRecord = async ({
+  uid,
   email,
   token,
   platform,
 }: PushTokenRecord) => {
-  if (!email || !token) return;
+  if (!token) return;
+  const userId = requireUid(uid);
   const normalized = normalizeEmail(email);
-  const ref = doc(notificationTokensCol, normalized);
+  const ref = userDocRef(NOTIFICATION_TOKENS_COLLECTION, userId);
   await safeSetDoc(ref, {
     email: normalized,
+    ownerUid: userId,
     token,
     platform: platform ?? 'unknown',
     updatedAt: serverTimestamp(),
@@ -80,14 +78,16 @@ export const persistPushTokenRecord = async ({
 };
 
 export const persistNotificationPreferencesRecord = async (
-  email: string,
-  preferences: NotificationPreferencesDocument
+  uid: string | null | undefined,
+  preferences: NotificationPreferencesDocument,
+  email?: string | null
 ) => {
-  if (!email) return;
-  const normalized = normalizeEmail(email);
-  const ref = doc(notificationPreferencesCol, normalized);
+  const userId = requireUid(uid);
+  const normalized = normalizeEmail(email ?? null);
+  const ref = userDocRef(NOTIFICATION_PREFERENCES_COLLECTION, userId);
   await safeSetDoc(ref, {
     email: normalized,
+    ownerUid: userId,
     ...preferences,
     updatedAt: serverTimestamp(),
   });

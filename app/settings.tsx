@@ -80,7 +80,7 @@ export default function SettingsScreen() {
       return;
     }
     setPushEnabledLocal(value);
-    updateNotificationPreferences(email, { pushEnabled: value });
+    updateNotificationPreferences(email, { pushEnabled: value }, session.uid);
   };
 
   const handleSoundChange = (value: boolean) => {
@@ -89,7 +89,7 @@ export default function SettingsScreen() {
       return;
     }
     setSoundEnabledLocal(value);
-    updateNotificationPreferences(email, { soundEnabled: value });
+    updateNotificationPreferences(email, { soundEnabled: value }, session.uid);
   };
 
   const handleReminderChange = (value: boolean) => {
@@ -98,7 +98,7 @@ export default function SettingsScreen() {
       return;
     }
     setRemindersEnabledLocal(value);
-    updateNotificationPreferences(email, { remindersEnabled: value });
+    updateNotificationPreferences(email, { remindersEnabled: value }, session.uid);
   };
 
   const pushEnabled = pushEnabledLocal;

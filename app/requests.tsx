@@ -13,7 +13,7 @@ import {
   acceptDriverReservationRequest,
   rejectDriverReservationRequest,
   type ReservationRequestEntry,
-} from '@/app/services/reservation-requests';
+} from '@/app/services/firestore-reservation-requests';
 
 const C = Colors;
 
@@ -21,8 +21,8 @@ export default function RequestsScreen() {
   const router = useRouter();
   const session = useAuthSession();
   const isDriver = session.isDriver;
-  const passengerRequests = usePassengerRequests(session.email);
-  const driverRequests = useDriverRequests(session.email);
+  const passengerRequests = usePassengerRequests(session.uid);
+  const driverRequests = useDriverRequests(session.uid);
   const [activeTab, setActiveTab] = useState<'pending' | 'accepted'>('pending');
 
   const sections = useMemo(
@@ -119,7 +119,7 @@ export default function RequestsScreen() {
                   style={[styles.requestActionButton, styles.requestActionButtonSecondary]}
                   onPress={(event) => {
                     event.stopPropagation();
-                    rejectDriverReservationRequest(session.email, request.id);
+                  void rejectDriverReservationRequest(session.uid, request.id);
                   }}
                 >
                   <Text style={[styles.requestActionText, styles.requestActionTextSecondary]}>Refuser</Text>
@@ -128,7 +128,7 @@ export default function RequestsScreen() {
                   style={[styles.requestActionButton, styles.requestActionButtonPrimary]}
                   onPress={(event) => {
                     event.stopPropagation();
-                    acceptDriverReservationRequest(session.email, request.id);
+                  void acceptDriverReservationRequest(session.uid, request.id);
                   }}
                 >
                   <Text style={[styles.requestActionText, styles.requestActionTextPrimary]}>Accepter</Text>

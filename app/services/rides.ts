@@ -17,6 +17,7 @@ import {
   persistRideRecord,
 } from '@/src/firestoreRides';
 import { recordPublishedRide, recordReservedRide } from '@/src/firestoreTrips';
+import { createTrajet } from '@/src/firestoreTrajets';
 import { maskPlate } from '@/app/utils/plate';
 import { getDistanceKm } from './distance';
 import { buildPriceBand, roughKmFromText } from './pricing';
@@ -33,6 +34,7 @@ export type Ride = {
   tripType?: 'one_way' | 'round_trip';
   createdAt: number;
   ownerEmail: string;
+  ownerUid: string;
   passengers: string[];
   canceledPassengers: string[];
   updatedAt: number;
@@ -72,6 +74,7 @@ export type RidePayload = {
   seats: number;
   price: number;
   ownerEmail: string;
+  ownerUid?: string;
   pricingMode?: 'single' | 'double';
   tripType?: 'one_way' | 'round_trip';
   departureAt?: number;
@@ -219,6 +222,7 @@ const buildRide = (payload: RidePayload): Ride => {
     seats,
     price,
     ownerEmail,
+    ownerUid: payload.ownerUid ?? '',
     pricingMode,
     tripType,
     passengers: [],
@@ -289,7 +293,7 @@ const processRidePayouts = () => {
       const commission = +(grossAmount * CAMPUSRIDE_COMMISSION_RATE).toFixed(2);
       const driverNet = +(grossAmount - commission).toFixed(2);
       if (driverNet > 0) {
-        creditWallet(ride.ownerEmail, driverNet, {
+        void creditWallet(ride.ownerEmail, driverNet, {
           description: `Trajet ${ride.depart} → ${ride.destination}`,
           rideId: ride.id,
           grossAmount,
@@ -370,6 +374,20 @@ export const addRide = (payload: RidePayload) => {
   }
   persistRideSnapshot(ride);
   void recordPublishedRide(ride);
+  if (ride.ownerUid) {
+    void createTrajet(ride.id, {
+      ownerUid: ride.ownerUid,
+      driverName: ride.driver,
+      driverEmail: ride.ownerEmail,
+      depart: ride.depart,
+      destination: ride.destination,
+      departureAt: ride.departureAt,
+      totalSeats: ride.seats,
+      price: ride.price,
+    }).catch((error) => {
+      console.warn('[rides] createTrajet sync failed', error);
+    });
+  }
   notifyRides();
   if (__DEV__) {
     console.debug('[addRide] created ride', ride);

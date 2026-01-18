@@ -147,6 +147,7 @@ Le champ `search.dayKey` correspond à la date ISO (YYYY-MM-DD) de `departureAt`
     | `passengerUid` | string | UID du passager. |
     | `passengerEmail` | string | E-mail normalisé. |
     | `seatsRequested` | number | Compte des places demandées. |
+    | `driverUid` | string (optionnel) | UID du conducteur pour les collectionGroup. |
     | `message` | string (optionnel) | Courte note, pas de messagerie. |
     | `status` | enum | `pending` / `accepted` / `declined` / `expired`. |
     | `createdAt` / `updatedAt` | `Timestamp` | `serverTimestamp()` pour audit.
@@ -167,6 +168,10 @@ Le champ `search.dayKey` correspond à la date ISO (YYYY-MM-DD) de `departureAt`
 2. **Mes demandes (passager)** : requête `collectionGroup('requests').where('passengerUid', '==', currentUser.uid).orderBy('createdAt', 'desc')`. Index collectif nécessaire (`requests` collectionGroup + `passengerUid` + `createdAt`).
 3. **Mes réservations (passager)** : `collectionGroup('reservations').where('passengerUid', '==', currentUser.uid)`.
 4. **Admin overview** : combinaison `collectionGroup('requests')` ou `collectionGroup('reservations')` triées par `createdAt` pour surveiller demandes et confirmations.
+
+**Index Firestore recommandés**
+- `collectionGroup('requests')` : préfère un index composite `passengerUid (asc), createdAt (desc)` pour les vues passager + `driverUid (asc), createdAt (desc)` pour le dashboard conducteur.
+*- `collectionGroup('reservations')` : index sur `passengerUid (asc)` (et `createdAt` si tu les classes par date).
 
 ### 5.4. Helpers TypeScript et compatibilité
 

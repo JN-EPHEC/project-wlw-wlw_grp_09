@@ -853,6 +853,10 @@ const selectMeetingPoint = useCallback(
       Alert.alert('Connexion requise', 'Connecte-toi pour publier un trajet.');
       return;
     }
+    if (!session.uid) {
+      Alert.alert('Connexion requise', 'Reconnecte-toi pour pouvoir publier un trajet.');
+      return;
+    }
     if (!session.isDriver) {
       Alert.alert('Mode conducteur requis', 'Active ton rôle conducteur pour publier un trajet.');
       return;
@@ -885,6 +889,7 @@ const selectMeetingPoint = useCallback(
         seats: places,
         price: pricePerPassenger,
         ownerEmail: session.email,
+        ownerUid: session.uid,
         pricingMode: 'single',
         tripType,
         departureAt: publishingDate.getTime(),

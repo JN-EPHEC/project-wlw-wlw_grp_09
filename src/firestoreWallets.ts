@@ -1,19 +1,10 @@
-import {
-  collection,
-  doc,
-  getDocs,
-  query,
-  serverTimestamp,
-  setDoc,
-  where,
-  type DocumentReference,
-} from 'firebase/firestore';
+import { serverTimestamp, setDoc } from "firebase/firestore";
 
-import { db } from './firebase';
+import { userDocRef } from "./firestore/userDocumentHelpers";
 
 export type WalletTransactionRecord = {
   id: string;
-  type: 'credit' | 'debit' | 'info';
+  type: "credit" | "debit" | "info";
   amount: number;
   description: string;
   createdAt: number;
@@ -36,22 +27,11 @@ export type WalletSnapshotRecord = {
   } | null;
 };
 
-const walletsCol = collection(db, 'wallets');
-const usersCol = collection(db, 'users');
-const normalizeEmail = (value: string) => value.trim().toLowerCase();
-const walletOwnerCache = new Map<string, string>();
+const WALLET_COLLECTION = "wallets";
 
-const resolveWalletRef = async (email: string): Promise<DocumentReference | null> => {
-  const normalized = normalizeEmail(email);
-  if (!normalized) return null;
-  if (walletOwnerCache.has(normalized)) {
-    return doc(walletsCol, walletOwnerCache.get(normalized)!);
-  }
-  const result = await getDocs(query(usersCol, where('email', '==', normalized)));
-  const docSnap = result.docs[0];
-  if (!docSnap) return null;
-  walletOwnerCache.set(normalized, docSnap.id);
-  return doc(walletsCol, docSnap.id);
+const normalizeEmail = (value?: string | null) => {
+  if (!value) return null;
+  return value.trim().toLowerCase();
 };
 
 const sanitizeMetadata = (metadata?: Record<string, unknown> | null) => {
@@ -64,17 +44,18 @@ const sanitizeMetadata = (metadata?: Record<string, unknown> | null) => {
 };
 
 export const persistWalletSnapshot = async (
-  email: string,
-  snapshot: WalletSnapshotRecord
+  uid: string | null | undefined,
+  snapshot: WalletSnapshotRecord,
+  email?: string | null
 ) => {
-  if (!email) return;
-  const ref = await resolveWalletRef(email);
-  if (!ref) return;
+  if (!uid) return;
+  const normalizedEmail = normalizeEmail(email ?? null);
+  const ref = userDocRef(WALLET_COLLECTION, uid);
   await setDoc(
     ref,
     {
-      email: normalizeEmail(email),
-      ownerUid: ref.id,
+      email: normalizedEmail,
+      ownerUid: uid,
       balance: snapshot.balance,
       payoutMethod: snapshot.payoutMethod
         ? {
