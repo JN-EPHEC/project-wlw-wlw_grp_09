@@ -27,7 +27,11 @@ import type { Notification } from '@/app/services/notifications';
 import { subscribeNotifications } from '@/app/services/notifications';
 import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
-import { usePassengerRequests } from '@/hooks/use-passenger-requests';
+import {
+  listBookingsByPassenger,
+  subscribeBookingsByPassenger,
+  type Booking,
+} from '@/app/services/booking-store';
 import { getCurrentCommune, LocationPermissionError } from '@/app/services/location';
 
 type SectionKey = 'search' | 'requests' | 'trips';
@@ -222,9 +226,31 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
     return unsubscribe;
   }, [session.email]);
 
-  const { pending: passengerPendingRequests, accepted: passengerAcceptedRequests } = usePassengerRequests(
-    session.email
+  const [bookings, setBookings] = useState<Booking[]>(() =>
+    session.email ? listBookingsByPassenger(session.email) : []
   );
+  useEffect(() => {
+    if (!session.email) {
+      setBookings([]);
+      return;
+    }
+    const unsubscribe = subscribeBookingsByPassenger(session.email, setBookings);
+    return unsubscribe;
+  }, [session.email]);
+
+  const passengerPendingRequests = useMemo(
+    () => bookings.filter((booking) => booking.status === 'pending'),
+    [bookings]
+  );
+  const passengerAcceptedRequests = useMemo(
+    () => bookings.filter((booking) => booking.status === 'accepted'),
+    [bookings]
+  );
+  const passengerRequestCount = passengerPendingRequests.length + passengerAcceptedRequests.length;
+
+  useEffect(() => {
+    console.debug('[HomeBadge] count', passengerRequestCount);
+  }, [passengerRequestCount]);
 
   const recommendedRides = useMemo(() => rides.slice(0, 3), [rides]);
   const myReservations = useMemo(
@@ -269,7 +295,6 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
     () => notifications.filter((notif) => !notif.read).length,
     [notifications]
   );
-  const passengerRequestCount = passengerPendingRequests.length + passengerAcceptedRequests.length;
 
   const firstName = getFirstName(session.name);
   const walletBalance = wallet?.balance ?? 0;

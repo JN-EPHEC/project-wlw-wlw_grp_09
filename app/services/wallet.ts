@@ -202,6 +202,12 @@ export const creditWallet = (
   const key = ensureWallet(email);
   const wallet = wallets[key];
   wallet.balance += amount;
+  console.debug('[Wallet] credit applied', {
+    email,
+    amount,
+    description: metadata.description,
+    rideId: metadata.rideId,
+  });
   const transaction: WalletTransaction = {
     id: randomId(),
     type: 'credit',

@@ -1,5 +1,5 @@
 import { useLocalSearchParams, router } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -32,7 +32,18 @@ import {
   type Ride,
 } from '@/app/services/rides';
 import { createThread } from '@/app/services/messages';
-import { createBooking } from '@/app/services/booking-store';
+import {
+  cancelBooking,
+  createBooking,
+  getActiveBookingForRide,
+  getBookingById,
+  getBookingForRide,
+  isBlockingReservation,
+  listBookingsByPassenger,
+  subscribeBookingsByPassenger,
+  type Booking,
+  updateBooking,
+} from '@/app/services/booking-store';
 import {
   creditWallet,
   debitWallet,
@@ -40,7 +51,11 @@ import {
   subscribeWallet,
   type WalletSnapshot,
 } from '@/app/services/wallet';
-import { logReservationRequest, removeReservationRequest } from '@/app/services/reservation-requests';
+import {
+  logReservationRequest,
+  markReservationCancelled,
+  removeReservationRequest,
+} from '@/app/services/reservation-requests';
 import { usePassengerRequests } from '@/hooks/use-passenger-requests';
 import { subscribeDriverReviews } from '@/app/services/reviews';
 import { evaluateRewards } from '@/app/services/rewards';
@@ -54,11 +69,13 @@ import {
 import { createReport } from '@/app/services/reports';
 import type { ReportReason } from '@/app/services/reports';
 import { GradientButton } from '@/components/ui/gradient-button';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { CAMPUSRIDE_COMMISSION_RATE } from '@/app/constants/fuel';
 import { maskPlate } from '@/app/utils/plate';
 import { MeetingMap } from '@/components/meeting-map';
 import type { PaymentMethod } from '@/app/services/payments';
 import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
+import { resolveMeetingPoint } from '@/utils/meeting-point';
 
 export type RideDetailScreenMode = 'detail' | 'checkout';
 
@@ -117,14 +134,17 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
   const [reportComment, setReportComment] = useState('');
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const reportCommentRef = useRef<TextInput | null>(null);
-  const { pending: pendingRequests, accepted: activeAcceptedRequests } = usePassengerRequests(
-    session.email
-  );
+  const passengerRequests = usePassengerRequests(session.email);
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
   const [showWalletConfirmModal, setShowWalletConfirmModal] = useState(false);
   const [isPaying, setIsPaying] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [walletPaymentError, setWalletPaymentError] = useState<string | null>(null);
+  const [bookings, setBookings] = useState<Booking[]>(() =>
+    session.email ? listBookingsByPassenger(session.email) : []
+  );
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const platformFeePerPassenger = useMemo(() => {
     if (!ride) return 0;
@@ -135,17 +155,40 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
     if (!ride) return 0;
     return +(ride.price - platformFeePerPassenger).toFixed(2);
   }, [ride, platformFeePerPassenger]);
-  const acceptedReservation = useMemo(() => {
+  const userRequestForRide = useMemo(() => {
     if (!ride) return null;
-    return activeAcceptedRequests.find((request) => request.rideId === ride.id) ?? null;
-  }, [activeAcceptedRequests, ride]);
-  const pendingReservation = useMemo(() => {
-    if (!ride) return null;
-    return pendingRequests.find((request) => request.rideId === ride.id) ?? null;
-  }, [pendingRequests, ride]);
-  const reservationAccepted = !!acceptedReservation;
-  const reservationPending = !!pendingReservation && !reservationAccepted;
-  const hasRequestedReservation = reservationPending || reservationAccepted;
+    return (
+      passengerRequests.requests.find((request) => request.rideId === ride.id) ?? null
+    );
+  }, [passengerRequests.requests, ride]);
+  const checkoutGuardRedirectedRef = useRef(false);
+  const prevRequestStatus = useRef<string | null>(null);
+  const reservationAccepted = userRequestForRide?.status === 'accepted';
+  const reservationPending =
+    userRequestForRide?.status === 'pending' && !reservationAccepted;
+  const bookingForRide = useMemo(() => {
+    if (!ride?.id || !session.email) return null;
+    return getActiveBookingForRide(session.email, ride.id);
+  }, [bookings, ride?.id, session.email]);
+  const latestBookingForRide = useMemo(() => {
+    if (!ride?.id || !session.email) return null;
+    return getBookingForRide(session.email, ride.id);
+  }, [bookings, ride?.id, session.email]);
+  const bookingReadyForPayment =
+    latestBookingForRide?.status === 'accepted' && latestBookingForRide?.paymentStatus === 'unpaid';
+  const paymentAllowed = reservationAccepted && bookingReadyForPayment;
+  useEffect(() => {
+    console.debug('[Ride] active booking', bookingForRide?.status, bookingForRide?.id);
+  }, [bookingForRide?.id, bookingForRide?.status]);
+  const cancelledBannerVisible = false;
+  useEffect(() => {
+    console.debug('[Ride] cancelled banner visible?', cancelledBannerVisible);
+  }, [cancelledBannerVisible]);
+  const hasActiveBookingForRide = !!bookingForRide && isBlockingReservation(bookingForRide);
+  const showCancelButton =
+    bookingForRide?.status === 'accepted' && bookingForRide?.paid === false;
+  const hasRequestedReservation =
+    !!userRequestForRide && userRequestForRide.status !== 'cancelled';
   const amOwner = useMemo(
     () => !!session.email && ride?.ownerEmail === session.email,
     [ride, session.email]
@@ -157,14 +200,57 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
   const canViewSensitiveDetails = routeMode === 'checkout' && (amOwner || amPassenger || reservationAccepted);
   useEffect(() => {
     if (!rideId) return;
-    const status = reservationAccepted ? 'accepted' : reservationPending ? 'pending' : 'idle';
+    const status = userRequestForRide?.status ?? 'idle';
     console.debug('[Request] status', status, rideId);
-  }, [reservationAccepted, reservationPending, rideId]);
+  }, [rideId, userRequestForRide?.status]);
+  useEffect(() => {
+    console.debug('[RidePage] request status', userRequestForRide?.status, 'rideId', rideId);
+    prevRequestStatus.current = userRequestForRide?.status ?? null;
+  }, [rideId, userRequestForRide?.status]);
+  useEffect(() => {
+    if (routeMode !== 'checkout' || !ride || !session.email) return;
+    const requestStatus = userRequestForRide?.status ?? 'idle';
+    const bookingStatus = latestBookingForRide?.status ?? bookingForRide?.status;
+    const paymentStatus = latestBookingForRide?.paymentStatus ?? bookingForRide?.paymentStatus;
+    if (!paymentAllowed || requestStatus !== 'accepted') {
+      console.debug('[CheckoutGuard]', { rideId, requestStatus, bookingStatus, paymentStatus });
+      if (!checkoutGuardRedirectedRef.current) {
+        checkoutGuardRedirectedRef.current = true;
+        router.replace(`/ride/${ride.id}`);
+      }
+      return;
+    }
+    checkoutGuardRedirectedRef.current = false;
+  }, [
+    bookingForRide?.paymentStatus,
+    bookingForRide?.status,
+    bookingReadyForPayment,
+    latestBookingForRide?.paymentStatus,
+    latestBookingForRide?.status,
+    paymentAllowed,
+    ride,
+    rideId,
+    routeMode,
+    router,
+    session.email,
+    userRequestForRide?.status,
+  ]);
+  useEffect(() => {
+    if (!session.email) {
+      setBookings([]);
+      return;
+    }
+    const unsubscribe = subscribeBookingsByPassenger(session.email, setBookings);
+    return unsubscribe;
+  }, [session.email]);
   const walletBalance = wallet?.balance ?? 0;
   const checkoutAmount = ride?.price ?? 0;
   const walletBalanceLabel = walletBalance.toFixed(2);
   const checkoutAmountLabel = checkoutAmount.toFixed(2);
   const hasWalletBalance = ride ? walletBalance >= ride.price : false;
+  const rideMeetingPoint = useMemo(() => resolveMeetingPoint({ ride }), [ride]);
+  const rideMeetingPointAddress = rideMeetingPoint.address || 'Point de rendez-vous';
+  const rideMeetingPointLatLng = rideMeetingPoint.latLng;
   const openDriverProfile = () => {
     if (!ride) return;
     router.push({ pathname: '/driver-profile/[email]', params: { email: ride.ownerEmail } });
@@ -316,6 +402,7 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
       router.push('/sign-up');
       return;
     }
+    const passengerEmail = session.email;
     if (departed) {
       Alert.alert('Trajet terminé', 'Ce trajet est déjà parti.');
       return;
@@ -328,7 +415,7 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
       Alert.alert('Déjà confirmé', 'Tu fais déjà partie de ce trajet.');
       return;
     }
-    if (hasRequestedReservation) {
+    if (hasRequestedReservation || hasActiveBookingForRide) {
       Alert.alert('Demande déjà envoyée', 'Rends-toi dans Mes demandes pour suivre le statut.');
       return;
     }
@@ -336,8 +423,76 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
       Alert.alert('Complet', 'Toutes les places ont été réservées.');
       return;
     }
-    const entry = logReservationRequest(session.email, ride, null);
+    const entry = logReservationRequest(passengerEmail, ride, null);
     if (!entry) return;
+    const meetingPointSnapshot = resolveMeetingPoint({ ride });
+    const meetingPointAddress = meetingPointSnapshot.address || ride.depart;
+    const meetingPointLatLng = meetingPointSnapshot.latLng ?? null;
+    const driverPlate = ride.plate ?? '';
+    const bookingPayload = {
+      id: entry.id,
+      rideId: ride.id,
+      passengerEmail,
+      driver: ride.driver,
+      ownerEmail: ride.ownerEmail,
+      status: 'pending' as const,
+      paid: false,
+      paymentMethod: 'none' as const,
+      amount: Number.isFinite(ride.price) ? ride.price : 0,
+      createdAt: entry.createdAt,
+      depart: ride.depart,
+      destination: ride.destination,
+      departureAt: Number.isFinite(ride.departureAt) ? ride.departureAt : Date.now(),
+      meetingPoint: ride.depart,
+      meetingPointAddress,
+      meetingPointLatLng,
+      time: ride.time,
+      dateLabel: ride.dateLabel,
+      plate: ride.plate ?? null,
+      driverPlate,
+      maskedPlate: maskPlate(driverPlate),
+    };
+    const bookingResult = createBooking(bookingPayload);
+    if (!bookingResult.ok) {
+      console.error('[Booking] request creation failed', bookingResult.reason, bookingPayload);
+    } else {
+      console.log('[Booking] created (pending)', bookingPayload);
+      setTimeout(() => {
+        const current = getBookingById(passengerEmail, bookingPayload.id);
+        if (!current || current.status !== 'pending') return;
+        const acceptedPatch = {
+          status: 'accepted',
+          acceptedAt: Date.now(),
+          paymentStatus: 'unpaid' as const,
+          paid: false,
+        };
+        const acceptResult = updateBooking(passengerEmail, bookingPayload.id, acceptedPatch);
+        if (acceptResult.ok) {
+          console.debug('[Booking] auto-accepted', {
+            bookingId: bookingPayload.id,
+            paymentStatus: 'unpaid',
+          });
+        } else {
+          const acceptedBookingPayload = {
+            ...bookingPayload,
+            status: 'accepted' as const,
+            paymentStatus: 'unpaid' as const,
+            paid: false,
+            acceptedAt: Date.now(),
+          };
+          const creationResult = createBooking(acceptedBookingPayload);
+          if (creationResult.ok) {
+            console.debug('[Booking] auto-accepted (created)', bookingPayload.id);
+          } else {
+            console.warn(
+              '[Booking] auto-accept create failed',
+              creationResult.reason,
+              bookingPayload.id
+            );
+          }
+        }
+      }, 10000);
+    }
     router.push({
       pathname: '/ride/request-confirmation',
       params: {
@@ -356,6 +511,10 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
     }
     if (!reservationAccepted) {
       setCheckoutError('Le conducteur doit accepter ta demande avant le paiement.');
+      return;
+    }
+    if (!paymentAllowed) {
+      setCheckoutError('Cette réservation n’est plus payable. Recommence une demande.');
       return;
     }
     if (!Number.isFinite(ride.departureAt)) {
@@ -398,36 +557,65 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
         return;
       }
       debited = true;
-      const bookingPayload = {
-        id: `${rideIdValue}:${passengerEmail}:${Date.now()}`,
-        rideId: rideIdValue,
-        passengerEmail,
-        status: 'paid' as const,
-        paid: true,
-        paymentMethod: 'wallet' as const,
-        paidAt: Date.now(),
-        amount,
-        pricePaid: amount,
-        createdAt: Date.now(),
-        depart: ride.depart,
-        destination: ride.destination,
-        driver: ride.driver,
-        ownerEmail: ride.ownerEmail,
-        departureAt: ride.departureAt,
-        meetingPoint: ride.depart,
-        time: ride.time,
-        plate: ride.plate ?? null,
-      };
-      const bookingResult = createBooking(bookingPayload);
-      if (!bookingResult.ok) {
-        throw new Error('Impossible de sauvegarder la réservation.');
+      const finalBookingId = bookingForRide?.id ?? `${rideIdValue}:${passengerEmail}:${Date.now()}`;
+      if (bookingForRide) {
+        const paidPatch = updateBooking(passengerEmail, bookingForRide.id, {
+          status: 'paid',
+          paid: true,
+          paymentMethod: 'wallet',
+          paidAt: Date.now(),
+          amountPaid: amount,
+          pricePaid: amount,
+          paymentStatus: 'paid',
+        });
+        if (!paidPatch.ok) {
+          throw new Error('Impossible de sauvegarder la réservation.');
+        }
+      } else {
+        const meetingPointSnapshot = resolveMeetingPoint({ ride });
+        const meetingPointAddress = meetingPointSnapshot.address || ride.depart;
+        const meetingPointLatLng = meetingPointSnapshot.latLng ?? null;
+        const bookingPayload = {
+          id: finalBookingId,
+          rideId: rideIdValue,
+          passengerEmail,
+          status: 'paid' as const,
+          paid: true,
+          paymentMethod: 'wallet' as const,
+          paidAt: Date.now(),
+          amount,
+          pricePaid: amount,
+          createdAt: Date.now(),
+          depart: ride.depart,
+          destination: ride.destination,
+          driver: ride.driver,
+          ownerEmail: ride.ownerEmail,
+          departureAt: ride.departureAt,
+          meetingPoint: meetingPointAddress,
+          meetingPointAddress,
+          meetingPointLatLng,
+          time: ride.time,
+          plate: ride.plate ?? null,
+        };
+        console.debug('[WalletConfirm] booking payload', bookingPayload);
+        const bookingResult = createBooking(bookingPayload);
+        console.debug('[WalletConfirm] reservationResult', bookingResult);
+        if (!bookingResult.ok) {
+          cancelReservation(ride.id, session.email);
+          creditWallet(session.email, amount, {
+            description: 'Annulation paiement',
+            rideId,
+            reason: 'booking_failed',
+          });
+          throw new Error('Impossible de sauvegarder la confirmation.');
+        }
       }
-      console.debug('[Checkout] booking created', { bookingId: bookingPayload.id });
+      console.debug('[Payment] booking paid', finalBookingId);
       removeReservationRequest(passengerEmail, rideIdValue);
       setShowWalletConfirmModal(false);
       router.replace({
         pathname: '/ride/confirmed',
-        params: { bookingId: bookingPayload.id },
+        params: { bookingId: finalBookingId },
       });
     } catch (error) {
       console.error('[Checkout] payment failed', error);
@@ -559,27 +747,38 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
     });
   };
 
-  const onCancel = () => {
-    if (!session.email) {
-      router.push('/sign-up');
+  const handleConfirmCancel = useCallback(async () => {
+    if (!ride || !session.email || !bookingForRide) {
+      setShowCancelModal(false);
       return;
     }
-    const result = cancelReservation(ride.id, session.email);
-    if (!result) {
-      Alert.alert('Annulation impossible', 'Ta réservation est introuvable.');
-      return;
+    console.debug('[UI] cancel pressed', { rideId: ride.id, bookingId: bookingForRide.id });
+    setIsCancelling(true);
+    setCheckoutError(null);
+    try {
+      await cancelBooking(bookingForRide.id);
+      const result = cancelReservation(ride.id, session.email);
+      if (!result) {
+        setCheckoutError('Ta réservation est introuvable.');
+        return;
+      }
+      markReservationCancelled(session.email, ride.id);
+    } catch (error) {
+      console.error('[RideDetail] cancellation failed', error);
+      setCheckoutError('Impossible d’annuler la réservation pour le moment. Réessaie plus tard.');
+    } finally {
+      setIsCancelling(false);
+      setShowCancelModal(false);
     }
-    removeReservationRequest(session.email, ride.id);
-    router.push({
-      pathname: '/ride/request-confirmation',
-      params: {
-        driver: ride.driver,
-        depart: ride.depart,
-        destination: ride.destination,
-        cancelled: '1',
-      },
-    });
-  };
+  }, [
+    bookingForRide,
+    cancelBooking,
+    cancelReservation,
+    removeReservationRequest,
+    ride,
+    session.email,
+    setCheckoutError,
+  ]);
 
   const onDelete = () => {
     Alert.alert('Supprimer', 'Supprimer définitivement ce trajet ?', [
@@ -779,21 +978,6 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                 </Text>
               </View>
             ) : null}
-            {reservationAccepted ? (
-              <View style={[styles.acceptBanner, isCompact && styles.acceptBannerCompact]}>
-                <View style={styles.acceptIconCircle}>
-                  <Image
-                    source={require('@/assets/images/verifier.png')}
-                    style={styles.acceptIconImage}
-                    resizeMode="contain"
-                  />
-                </View>
-                <View style={styles.acceptTextGroup}>
-                  <Text style={styles.acceptTitle}>Demande acceptée !</Text>
-                  <Text style={styles.acceptSubtitle}>{ride.driver} a validé ta réservation.</Text>
-                </View>
-              </View>
-            ) : null}
             {reservationPending ? (
               <View style={[styles.noticeBanner, isCompact && styles.noticeBannerCompact]}>
                 <View style={styles.noticeIcon}>
@@ -913,7 +1097,7 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.meetingLabel}>Lieu de rendez-vous</Text>
-                      <Text style={styles.meetingAddress}>{ride.depart}</Text>
+                      <Text style={styles.meetingAddress}>{rideMeetingPointAddress}</Text>
                     </View>
                   </View>
                   <View style={styles.meetingRow}>
@@ -924,7 +1108,11 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                       Heure de départ : <Text style={styles.meetingTimeValue}>{ride.time}</Text>
                     </Text>
                   </View>
-                  <MeetingMap address={ride.depart} style={styles.meetingMap} />
+                  <MeetingMap
+                    address={rideMeetingPointAddress}
+                    latLng={rideMeetingPointLatLng}
+                    style={styles.meetingMap}
+                  />
                 </>
               ) : (
                 <View style={styles.restrictedNotice}>
@@ -1016,35 +1204,37 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                   />
                 </>
               ) : amPassenger ? (
-                <GradientButton
-                  title="Annuler ma réservation"
-                  size="sm"
-                  variant="lavender"
-                  fullWidth
-                  style={[styles.actionButton, isCompact && styles.actionButtonFull]}
-                  onPress={onCancel}
-                  accessibilityRole="button"
-                />
-              ) : reservationAccepted ? (
-                routeMode === 'checkout' ? (
-                  <>
-                    {checkoutError ? <Text style={styles.errorText}>{checkoutError}</Text> : null}
+                <Text style={styles.statusText}>Tu as déjà une place sur ce trajet.</Text>
+              ) : routeMode === 'checkout' ? (
+                <>
+                  {checkoutError ? <Text style={styles.errorText}>{checkoutError}</Text> : null}
+                  <GradientButton
+                    title={isPaying ? 'Paiement en cours…' : seatsLeft > 0 ? 'Procéder au paiement' : 'Complet'}
+                    size="sm"
+                    variant="cta"
+                    fullWidth
+                    style={[styles.actionButton, isCompact && styles.actionButtonFull]}
+                    onPress={handleProceedToPayment}
+                    disabled={seatsLeft <= 0 || isPaying || !ride}
+                    accessibilityRole="button"
+                  />
+                  {showCancelButton ? (
                     <GradientButton
-                      title={isPaying ? 'Paiement en cours…' : seatsLeft > 0 ? 'Procéder au paiement' : 'Complet'}
+                      title={isCancelling ? 'Annulation en cours…' : 'Annuler ma réservation'}
                       size="sm"
-                      variant="cta"
+                      variant="lavender"
                       fullWidth
-                      style={[styles.actionButton, isCompact && styles.actionButtonFull]}
-                      onPress={handleProceedToPayment}
-                      disabled={seatsLeft <= 0 || isPaying || !ride}
+                      style={[
+                        styles.actionButton,
+                        styles.cancelCheckoutButton,
+                        isCompact && styles.actionButtonFull,
+                      ]}
+                      onPress={() => setShowCancelModal(true)}
+                      disabled={isCancelling}
                       accessibilityRole="button"
                     />
-                  </>
-                ) : (
-                  <Text style={styles.statusText}>
-                    Ta demande est acceptée. Consulte l’onglet « Mes demandes » pour procéder au paiement.
-                  </Text>
-                )
+                  ) : null}
+                </>
               ) : reservationPending ? (
                 <>
                   <Text style={styles.statusText}>Demande en attente de confirmation.</Text>
@@ -1071,10 +1261,19 @@ const REPORT_REASONS: { label: string; value: ReportReason }[] = [
                 />
               )}
             </View>
-
           </ScrollView>
         </SafeAreaView>
       </AppBackground>
+      <ConfirmModal
+        visible={showCancelModal}
+        title="Annuler la réservation ?"
+        message="Voulez-vous vraiment annuler cette réservation ?"
+        confirmLabel="Oui, annuler"
+        cancelLabel="Retour"
+        onConfirm={handleConfirmCancel}
+        onCancel={() => setShowCancelModal(false)}
+        confirmDisabled={isCancelling}
+      />
       <Modal
         visible={routeMode === 'checkout' && showWalletConfirmModal}
         animationType="slide"
@@ -1715,6 +1914,9 @@ const styles = StyleSheet.create({
   actionButtonFull: {
     width: '100%',
     minWidth: undefined,
+  },
+  cancelCheckoutButton: {
+    marginTop: Spacing.xs,
   },
   statusText: {
     color: C.gray600,

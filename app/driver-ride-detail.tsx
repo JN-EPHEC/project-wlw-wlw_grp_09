@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -16,7 +18,7 @@ import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Spacing, Shadows } from '@/app/ui/theme';
-import { getRides, removeRide, subscribeRides, type Ride } from '@/app/services/rides';
+import { deleteRide, getRides, subscribeRides, type Ride } from '@/app/services/rides';
 
 const formatFullDate = (timestamp: number) =>
   new Date(timestamp).toLocaleDateString('fr-BE', {
@@ -85,33 +87,42 @@ export default function DriverRideDetailScreen() {
     },
   ];
 
-  const handleRemoveRide = useCallback(() => {
+  const [confirmVisible, setConfirmVisible] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const openDeleteModal = useCallback(() => {
     if (!ride) {
       Alert.alert('Trajet introuvable', 'Ce trajet ne peut pas être supprimé.');
       return;
     }
-    Alert.alert(
-      'Supprimer le trajet',
-      'Souhaitez-vous vraiment supprimer ce trajet ? Cette action est irréversible.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Supprimer',
-          style: 'destructive',
-          onPress: () => {
-            try {
-              removeRide(ride.id);
-              Alert.alert('Trajet supprimé', 'Ce trajet a été retiré de la plateforme.');
-              router.replace('/(tabs)/index');
-            } catch (error) {
-              const message =
-                error instanceof Error ? error.message : 'Impossible de supprimer ce trajet.';
-              Alert.alert('Erreur', message);
-            }
-          },
-        },
-      ]
-    );
+    console.debug('[DeleteRide] open confirm', ride.id);
+    setConfirmVisible(true);
+  }, [ride]);
+
+  const closeDeleteModal = useCallback(() => {
+    if (isDeleting) return;
+    setConfirmVisible(false);
+  }, [isDeleting]);
+
+  const handleDeleteRide = useCallback(async () => {
+    if (!ride) return;
+    console.debug('[DeleteRide] start', ride.id);
+    setIsDeleting(true);
+    try {
+      deleteRide(ride.id);
+      console.debug('[DeleteRide] success', ride.id);
+      setConfirmVisible(false);
+      void router
+        .replace({ pathname: '/driver-my-rides', params: { tab: 'published' } })
+        .catch(() => router.back());
+    } catch (error) {
+      console.error('[DeleteRide] error', error);
+      const message =
+        error instanceof Error ? error.message : 'Impossible de supprimer ce trajet.';
+      Alert.alert('Erreur', message);
+    } finally {
+      setIsDeleting(false);
+    }
   }, [ride, router]);
 
   return (
@@ -172,11 +183,61 @@ export default function DriverRideDetailScreen() {
         />
 
         <View style={styles.deleteWrapper}>
-          <Pressable style={styles.deleteButton} onPress={handleRemoveRide}>
-            <Text style={styles.deleteButtonText}>Supprimer ce trajet</Text>
+          <Pressable
+            style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]}
+            onPress={openDeleteModal}
+            accessibilityRole="button"
+            disabled={isDeleting}
+          >
+            {isDeleting ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.deleteButtonText}>Supprimer ce trajet</Text>
+            )}
           </Pressable>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={confirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeDeleteModal}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Supprimer ce trajet ?</Text>
+            <Text style={styles.modalDescription}>
+              Cette action supprimera immédiatement le trajet publié ainsi que toutes les demandes
+              associées.
+            </Text>
+            <View style={styles.modalActions}>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonSecondary]}
+                onPress={closeDeleteModal}
+                accessibilityRole="button"
+                disabled={isDeleting}
+              >
+                <Text style={styles.modalButtonText}>Annuler</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalButton, styles.modalButtonPrimary]}
+                onPress={handleDeleteRide}
+                accessibilityRole="button"
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={[styles.modalButtonText, styles.modalButtonPrimaryText]}>
+                    Supprimer
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </AppBackground>
   );
 }
@@ -281,8 +342,67 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     alignItems: 'center',
   },
+  deleteButtonDisabled: {
+    opacity: 0.7,
+  },
   deleteButtonText: {
     color: Colors.danger,
+    fontWeight: '700',
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.lg,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: Colors.white,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    gap: Spacing.md,
+    shadowColor: '#0B2545',
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: Colors.ink,
+  },
+  modalDescription: {
+    fontSize: 14,
+    color: Colors.gray600,
+    lineHeight: 20,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  modalButton: {
+    flex: 1,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalButtonSecondary: {
+    borderWidth: 1,
+    borderColor: Colors.gray300,
+    backgroundColor: Colors.white,
+  },
+  modalButtonPrimary: {
+    backgroundColor: Colors.danger,
+  },
+  modalButtonPrimaryText: {
+    color: '#fff',
+  },
+  modalButtonText: {
+    color: Colors.ink,
     fontWeight: '700',
   },
 });
