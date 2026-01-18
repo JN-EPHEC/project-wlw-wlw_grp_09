@@ -22,6 +22,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
 import type { AuthSession } from '@/app/services/auth';
 import { useAuthSession } from '@/hooks/use-auth-session';
+import { usePassengerRequests } from '@/hooks/use-passenger-requests';
 import { getAvatarUrl } from '@/app/ui/avatar';
 import type { Notification } from '@/app/services/notifications';
 import { subscribeNotifications } from '@/app/services/notifications';
@@ -245,6 +246,7 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
   const { pending: passengerPendingRequests, accepted: passengerAcceptedRequests } = usePassengerRequests(
     session.uid
   );
+  const passengerRequestCount = passengerPendingRequests.length + passengerAcceptedRequests.length;
 
   const recommendedRides = useMemo(() => rides.slice(0, 3), [rides]);
   const myReservations = useMemo(

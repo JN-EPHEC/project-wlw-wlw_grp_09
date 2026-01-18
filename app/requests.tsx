@@ -112,63 +112,106 @@ export default function RequestsScreen() {
     [router]
   );
 
-  const renderCard = useCallback(
-    (request: ReservationRequestEntry) => {
-      const isDriverCard = isDriver;
-      if (isDriverCard) {
-        return (
-          <Pressable
-            key={request.id}
-            style={styles.card}
-            onPress={() => openRideDetails(request.rideId)}
-            accessibilityRole="button"
-          >
-            <View style={styles.cardHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardDriver}>{request.passenger}</Text>
-                <Text style={styles.cardMeta}>
-                  {request.depart} → {request.destination}
-                </Text>
-              </View>
-              <View style={[styles.badge, request.status === 'pending' ? styles.badgePending : styles.badgeAccepted]}>
-                <Text style={styles.badgeText}>{request.status === 'pending' ? 'En attente' : 'Acceptée'}</Text>
-              </View>
-            </View>
-            <View style={styles.cardFooter}>
-              <View style={styles.cardFooterRow}>
-                <IconSymbol name="clock" size={16} color={C.gray500} />
-                <Text style={styles.cardFooterText}>{request.timeLabel}</Text>
-              </View>
-              <View style={styles.cardFooterRow}>
-                <IconSymbol name="creditcard.fill" size={16} color={C.gray500} />
-                <Text style={styles.cardFooterText}>{request.price.toFixed(2)} €</Text>
-              </View>
-            </View>
-            {request.status === 'pending' ? (
-              <View style={styles.requestActions}>
-                <Pressable
-                  style={[styles.requestActionButton, styles.requestActionButtonSecondary]}
-                  onPress={(event) => {
-                    event.stopPropagation();
-                  void rejectDriverReservationRequest(session.uid, request.id);
-                  }}
-                >
-                  <Text style={[styles.requestActionText, styles.requestActionTextSecondary]}>Refuser</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.requestActionButton, styles.requestActionButtonPrimary]}
-                  onPress={(event) => {
-                    event.stopPropagation();
-                  void acceptDriverReservationRequest(session.uid, request.id);
-                  }}
-                >
-                  <Text style={[styles.requestActionText, styles.requestActionTextPrimary]}>Accepter</Text>
-                </Pressable>
-              </View>
-            ) : null}
-          </Pressable>
-        );
-      }
+  const renderDriverCard = useCallback(
+    (request: ReservationRequestEntry) => (
+      <Pressable
+        key={request.id}
+        style={styles.card}
+        onPress={() => openRideDetails(request.rideId)}
+        accessibilityRole="button"
+      >
+        <View style={styles.cardHeader}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardDriver}>{request.passenger}</Text>
+            <Text style={styles.cardMeta}>
+              {request.depart} → {request.destination}
+            </Text>
+          </View>
+          <View style={[styles.badge, request.status === 'pending' ? styles.badgePending : styles.badgeAccepted]}>
+            <Text style={styles.badgeText}>{request.status === 'pending' ? 'En attente' : 'Acceptée'}</Text>
+          </View>
+        </View>
+        <View style={styles.cardFooter}>
+          <View style={styles.cardFooterRow}>
+            <IconSymbol name="clock" size={16} color={C.gray500} />
+            <Text style={styles.cardFooterText}>{request.timeLabel}</Text>
+          </View>
+          <View style={styles.cardFooterRow}>
+            <IconSymbol name="creditcard.fill" size={16} color={C.gray500} />
+            <Text style={styles.cardFooterText}>{request.price.toFixed(2)} €</Text>
+          </View>
+        </View>
+        {request.status === 'pending' ? (
+          <View style={styles.requestActions}>
+            <Pressable
+              style={[styles.requestActionButton, styles.requestActionButtonSecondary]}
+              onPress={(event) => {
+                event.stopPropagation();
+                rejectDriverReservationRequest(session.uid, request.id);
+              }}
+            >
+              <Text style={[styles.requestActionText, styles.requestActionTextSecondary]}>Refuser</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.requestActionButton, styles.requestActionButtonPrimary]}
+              onPress={(event) => {
+                event.stopPropagation();
+                acceptDriverReservationRequest(session.uid, request.id);
+              }}
+            >
+              <Text style={[styles.requestActionText, styles.requestActionTextPrimary]}>Accepter</Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </Pressable>
+    ),
+    [openRideDetails, session.uid]
+  );
+
+  const renderPassengerCard = useCallback(
+    (request: ReservationRequestEntry, isAcceptedList: boolean) => {
+      const booking =
+        session.email && request.rideId ? getLatestBookingForRide(session.email, request.rideId) ?? undefined : undefined;
+      const driverName = booking?.driver ?? request.driver;
+      const driverEmail = booking?.ownerEmail ?? request.driverEmail;
+      const routeLabel = `${booking?.depart ?? request.depart} → ${booking?.destination ?? request.destination}`;
+      const timeLabel =
+        booking?.time ??
+        request.timeLabel ??
+        new Date(booking?.departureAt ?? booking?.createdAt ?? Date.now()).toLocaleTimeString('fr-BE', {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      const amount = booking ? booking.pricePaid ?? booking.amount : request.price;
+      const amountLabel = Number.isFinite(amount) ? amount.toFixed(2) : '0.00';
+      const paymentAllowedForRequest = isPaymentAllowed(request);
+      const handleCheckoutNavigation = () => {
+        if (!paymentAllowedForRequest) {
+          Alert.alert(
+            'Paiement indisponible',
+            'Cette réservation n’est plus payable. Recommence une demande.'
+          );
+          return;
+        }
+        if (!request.rideId) {
+          Alert.alert(
+            'Trajet introuvable',
+            'Impossible de retrouver ce trajet pour continuer le paiement.'
+          );
+          return;
+        }
+        router.push({
+          pathname: '/ride/checkout',
+          params: { rideid: request.rideId },
+        });
+      };
+      const handlePress = () => {
+        if (isAcceptedList) {
+          handleCheckoutNavigation();
+          return;
+        }
+        openRideDetails(request.rideId);
+      };
       return (
         <Pressable
           key={request.id}
