@@ -27,7 +27,11 @@ import type { Notification } from '@/app/services/notifications';
 import { subscribeNotifications } from '@/app/services/notifications';
 import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
-import { usePassengerRequests } from '@/hooks/use-passenger-requests';
+import {
+  listBookingsByPassenger,
+  subscribeBookingsByPassenger,
+  type Booking,
+} from '@/app/services/booking-store';
 import { getCurrentCommune, LocationPermissionError } from '@/app/services/location';
 
 type SectionKey = 'search' | 'requests' | 'trips';
@@ -35,6 +39,8 @@ type SectionFocus = { key: SectionKey; token: number };
 
 const isSectionKey = (value: string | undefined): value is SectionKey =>
   value === 'search' || value === 'requests' || value === 'trips';
+
+const normalizeEmail = (value?: string) => (value ?? '').trim().toLowerCase();
 
 const CAMPUS_OPTIONS = [
   'EPHEC Delta',
@@ -203,6 +209,20 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
     return unsubscribe;
   }, []);
 
+  const normalizedDriverEmail = useMemo(() => normalizeEmail(session.email), [session.email]);
+  const driverPublishedCount = useMemo(() => {
+    if (!session.isDriver || !normalizedDriverEmail) return 0;
+    return rides.filter((ride) => normalizeEmail(ride.ownerEmail) === normalizedDriverEmail).length;
+  }, [rides, normalizedDriverEmail, session.isDriver]);
+
+  useEffect(() => {
+    if (!session.isDriver) return;
+    console.debug('[HomeBadge] driverPublishedCount', {
+      count: driverPublishedCount,
+      email: session.email,
+    });
+  }, [driverPublishedCount, session.email, session.isDriver]);
+
   useEffect(() => {
     if (!session.email) {
       setWallet(null);
@@ -269,7 +289,6 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
     () => notifications.filter((notif) => !notif.read).length,
     [notifications]
   );
-  const passengerRequestCount = passengerPendingRequests.length + passengerAcceptedRequests.length;
 
   const firstName = getFirstName(session.name);
   const walletBalance = wallet?.balance ?? 0;
@@ -374,11 +393,14 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
         key: 'trips' as SectionKey,
         label: 'Mes trajets',
         icon: 'car.fill' as const,
-        badge: tripBuckets[tripTab].length > 0 ? undefined : undefined,
+        badge:
+          session.isDriver && driverPublishedCount > 0
+            ? String(driverPublishedCount)
+            : undefined,
         onPress: () => router.push('/trips'),
       },
     ],
-    [passengerRequestCount, tripBuckets, tripTab, router]
+    [driverPublishedCount, passengerRequestCount, router, session.isDriver]
   );
 
   const sponsorSlides = useMemo(() => [sponsorSecondary, sponsorOffer], []);

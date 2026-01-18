@@ -18,7 +18,9 @@ export const usePassengerRequests = (passengerUid: string | null) => {
   }, [passengerUid]);
 
   return {
+    requests,
     pending: requests.filter((request) => request.status === 'pending'),
     accepted: requests.filter((request) => request.status === 'accepted'),
+    cancelled: requests.filter((request) => request.status === 'cancelled'),
   };
 };

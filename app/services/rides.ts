@@ -21,6 +21,8 @@ import { createTrajet } from '@/src/firestoreTrajets';
 import { maskPlate } from '@/app/utils/plate';
 import { getDistanceKm } from './distance';
 import { buildPriceBand, roughKmFromText } from './pricing';
+import { removeBookingsByRide } from './booking-store';
+import { removeRequestsByRide } from './reservation-requests';
 export type Ride = {
   id: string;
   driver: string;
@@ -414,7 +416,7 @@ export const updateRide = (id: string, patch: Partial<RidePayload>) => {
   return updated;
 };
 
-export const removeRide = (id: string) => {
+const removeRideInternal = (id: string) => {
   const target = rides.find((r) => r.id === id);
   if (!target) {
     throw new Error('Trajet introuvable');
@@ -438,6 +440,14 @@ export const removeRide = (id: string) => {
   rides = rides.filter((r) => r.id !== id);
   cancelRideSnapshot(target, 'driver_cancelled');
   notifyRides();
+};
+
+export const removeRide = (id: string) => removeRideInternal(id);
+
+export const deleteRide = (id: string) => {
+  removeBookingsByRide(id);
+  removeRequestsByRide(id);
+  removeRideInternal(id);
 };
 
 export const subscribeRides = (cb: Listener) => {
@@ -610,6 +620,11 @@ export const cancelReservation = (rideId: string, passengerEmail: string) => {
       const nextCanceled = ride.canceledPassengers.includes(passengerEmail)
         ? ride.canceledPassengers
         : [...ride.canceledPassengers, passengerEmail];
+      console.debug('[CancelBooking] releaseSeat', {
+        rideId: ride.id,
+        beforeSeats: ride.passengers.length,
+        afterSeats: nextPassengers.length,
+      });
       updated = {
         ...ride,
         passengers: nextPassengers,

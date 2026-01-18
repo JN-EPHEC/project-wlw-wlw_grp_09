@@ -1,16 +1,17 @@
-import { ActivityIndicator, Image, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useEffect, useMemo, useState } from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Image, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { subscribeBookingsByPassenger, type Booking } from '@/app/services/booking-store';
+import { getAvatarUrl } from '@/app/ui/avatar';
+import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
+import { maskPlate } from '@/app/utils/plate';
+import { resolveMeetingPoint } from '@/utils/meeting-point';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
 import { useAuthSession } from '@/hooks/use-auth-session';
-import { getAvatarUrl } from '@/app/ui/avatar';
-import { maskPlate } from '@/app/utils/plate';
-import { subscribeBookingsByPassenger, type Booking } from '@/app/services/booking-store';
 
 const C = Colors;
 
@@ -31,12 +32,17 @@ const formatDepartureMoment = (timestamp: number) => {
 
 const getPaymentLabel = (method: Booking['paymentMethod']) => {
   switch (method) {
+    case 'wallet':
+      return 'Wallet';
     case 'card':
       return 'Carte bancaire';
+    case 'cash':
+      return 'Paiement en espèces';
     case 'pass':
       return 'Crédit CampusRide';
+    case 'none':
     default:
-      return 'Wallet';
+      return 'Paiement confirmé';
   }
 };
 
@@ -73,7 +79,18 @@ export default function RideConfirmedScreen() {
   );
   const amountPaid = booking ? booking.pricePaid ?? booking.amount : 0;
   const amountLabel = amountPaid.toFixed(2);
-  const meetingPoint = booking?.meetingPoint ?? booking?.depart ?? 'Point de rendez-vous';
+  const meetingPoint = useMemo(() => resolveMeetingPoint({ booking }), [booking]);
+  const meetingPointAddress = meetingPoint.address || 'Point de rendez-vous';
+  const meetingPointLatLng = meetingPoint.latLng ?? null;
+  const displayPlate =
+    booking?.status === 'paid'
+      ? booking.driverPlate ?? booking.plate ?? '—'
+      : booking?.maskedPlate ?? maskPlate(booking?.plate);
+
+  useEffect(() => {
+    if (!booking) return;
+    console.debug('[RideConfirmed] meetingPoint', meetingPoint);
+  }, [booking, meetingPoint.address, meetingPoint.latLng?.lat, meetingPoint.latLng?.lng]);
 
   const renderFallback = (title: string, subtitle: string) => (
     <GradientBackground colors={Gradients.card} style={styles.card}>
@@ -136,7 +153,7 @@ export default function RideConfirmedScreen() {
             <IconSymbol name="car.fill" size={18} color={C.secondary} />
             <View style={styles.infoText}>
               <Text style={styles.infoLabel}>Plaque</Text>
-              <Text style={styles.infoValue}>{maskPlate(booking.plate)}</Text>
+              <Text style={styles.infoValue}>{displayPlate}</Text>
             </View>
           </View>
           <View style={styles.infoRow}>
@@ -152,7 +169,7 @@ export default function RideConfirmedScreen() {
             <IconSymbol name="mappin.and.ellipse" size={18} color={C.primary} />
             <View style={styles.infoText}>
               <Text style={styles.infoLabel}>Point de rencontre</Text>
-              <Text style={styles.infoValue}>{meetingPoint}</Text>
+              <Text style={styles.infoValue}>{meetingPointAddress}</Text>
             </View>
           </View>
           <View style={styles.infoRow}>

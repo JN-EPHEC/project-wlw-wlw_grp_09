@@ -48,6 +48,13 @@ export default function TripsScreen() {
   }, [session.email, handleBookingsUpdate]);
 
   useEffect(() => {
+    console.debug(
+      '[Trips] bookings',
+      bookings.map((booking) => ({ id: booking.id, status: booking.status }))
+    );
+  }, [bookings]);
+
+  useEffect(() => {
     if (!params.initialTab) return;
     setActiveTab(params.initialTab === 'history' ? 'history' : 'upcoming');
   }, [params.initialTab]);
@@ -57,17 +64,18 @@ export default function TripsScreen() {
     []
   );
   const bookingSortValue = useCallback((booking: Booking) => getDepartureTime(booking), [getDepartureTime]);
+  const now = Date.now();
   const upcomingBookings = useMemo(
     () =>
       bookings
         .filter(
           (booking) =>
             booking.passengerEmail === session.email &&
-            booking.paid &&
-            booking.status !== 'completed'
+            booking.status === 'paid' &&
+            getDepartureTime(booking) > now
         )
         .sort((a, b) => bookingSortValue(a) - bookingSortValue(b)),
-    [bookings, session.email, bookingSortValue]
+    [bookings, session.email, bookingSortValue, now]
   );
   const historyBookings = useMemo(
     () =>
@@ -75,21 +83,33 @@ export default function TripsScreen() {
         .filter(
           (booking) =>
             booking.passengerEmail === session.email &&
-            booking.paid &&
-            booking.status === 'completed'
+            (booking.status === 'completed' ||
+              booking.status === 'cancelled' ||
+              (booking.status === 'paid' && getDepartureTime(booking) <= now))
         )
         .sort((a, b) => bookingSortValue(b) - bookingSortValue(a)),
-    [bookings, session.email, bookingSortValue]
+    [bookings, session.email, bookingSortValue, now]
   );
   useEffect(() => {
     console.debug('[Trips] bookings updated count', bookings.length);
   }, [bookings.length]);
   useEffect(() => {
-    console.debug('[Trips] upcoming count', upcomingBookings.length);
+    console.debug('[Trips] upcoming', upcomingBookings.length);
   }, [upcomingBookings.length]);
   useEffect(() => {
-    console.debug('[Trips] history count', historyBookings.length);
+    console.debug('[Trips] history', historyBookings.length);
   }, [historyBookings.length]);
+  const cancelledCount = useMemo(
+    () => historyBookings.filter((booking) => booking.status === 'cancelled').length,
+    [historyBookings]
+  );
+  const completedCount = useMemo(
+    () => historyBookings.filter((booking) => booking.status === 'completed').length,
+    [historyBookings]
+  );
+  useEffect(() => {
+    console.debug('[Trips] historyCount', { cancelledCount, completedCount });
+  }, [cancelledCount, completedCount]);
 
   const sections = useMemo(
     () => [
@@ -134,12 +154,17 @@ export default function TripsScreen() {
         hour: '2-digit',
         minute: '2-digit',
       });
+      const isCancelled = booking.status === 'cancelled';
+      const cardPressProps = isCancelled
+        ? { disabled: true, onPress: undefined, style: [styles.card, styles.cardDisabled] }
+        : {
+            disabled: false,
+            onPress: () => openTripDetails(booking.id),
+            style: styles.card,
+            accessibilityRole: 'button' as const,
+          };
       return (
-        <Pressable
-          key={booking.id}
-          style={styles.card}
-            onPress={() => openTripDetails(booking.id)}
-        >
+        <Pressable key={booking.id} {...cardPressProps}>
           <View style={styles.cardHeader}>
             <Image source={{ uri: getAvatarUrl(booking.passengerEmail, 96) }} style={styles.cardAvatar} />
             <View style={{ flex: 1 }}>
@@ -148,8 +173,10 @@ export default function TripsScreen() {
                 {booking.depart} → {booking.destination}
               </Text>
             </View>
-            <View style={[styles.badge, styles.badgeUpcoming]}>
-              <Text style={styles.badgeText}>Confirmé</Text>
+            <View style={[styles.badge, isCancelled ? styles.badgeCancelled : styles.badgeUpcoming]}>
+              <Text style={[styles.badgeText, isCancelled && styles.badgeTextCancelled]}>
+                {isCancelled ? 'Annulé' : 'Confirmé'}
+              </Text>
             </View>
           </View>
           <View style={styles.cardFooter}>
@@ -162,7 +189,11 @@ export default function TripsScreen() {
               <Text style={styles.cardFooterText}>{displayAmount.toFixed(2)} €</Text>
             </View>
           </View>
-          {activeTab === 'upcoming' ? (
+          {isCancelled ? (
+            <View style={styles.cancelledFooter}>
+              <Text style={styles.cancelledFooterText}>Réservation annulée</Text>
+            </View>
+          ) : activeTab === 'upcoming' ? (
             <View style={styles.actionRow}>
               <Pressable
                 style={styles.viewButton}
@@ -192,7 +223,7 @@ export default function TripsScreen() {
         </Pressable>
       );
     },
-    [getDepartureTime, openTripDetails, handleTripComplete]
+    [getDepartureTime, openTripDetails, handleTripComplete, activeTab]
   );
 
   return (
@@ -290,6 +321,9 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
     ...Shadows.card,
   },
+  cardDisabled: {
+    opacity: 0.65,
+  },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -316,12 +350,20 @@ const styles = StyleSheet.create({
   badgeUpcoming: {
     backgroundColor: C.successLight,
   },
+  badgeCancelled: {
+    backgroundColor: C.gray100,
+    borderWidth: 1,
+    borderColor: C.danger,
+  },
   badgeHistory: {
     backgroundColor: C.gray200,
   },
   badgeText: {
     color: C.gray900,
     fontWeight: '700',
+  },
+  badgeTextCancelled: {
+    color: C.danger,
   },
   cardFooter: {
     flexDirection: 'row',
@@ -354,6 +396,16 @@ const styles = StyleSheet.create({
   },
   completeButton: {
     flex: 1,
+  },
+  cancelledFooter: {
+    marginTop: Spacing.sm,
+    padding: Spacing.sm,
+    borderRadius: Radius.lg,
+    backgroundColor: C.gray50,
+  },
+  cancelledFooterText: {
+    color: C.gray600,
+    fontSize: 13,
   },
   emptyState: {
     backgroundColor: C.white,

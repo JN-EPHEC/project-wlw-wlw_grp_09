@@ -1,7 +1,8 @@
 import type { Ride } from '@/app/services/rides';
 import type { PaymentMethod } from '@/app/services/payments';
+import { createBooking, patchBooking, type Booking } from '@/app/services/booking-store';
 
-export type ReservationStatus = 'pending' | 'accepted' | 'rejected';
+export type ReservationStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled';
 
 export type ReservationRequestEntry = {
   id: string;
@@ -165,6 +166,11 @@ export const markReservationAccepted = (email: string, rideId: string) => {
   updateStatus(email, rideId, 'accepted');
 };
 
+export const markReservationCancelled = (email: string | null, rideId: string) => {
+  if (!email) return;
+  updateStatus(email, rideId, 'cancelled');
+};
+
 export const removeReservationRequest = (email: string, rideId: string) => {
   const key = normalizeEmail(email);
   const bucket = passengerStore[key];
@@ -183,6 +189,21 @@ export const removeReservationRequest = (email: string, rideId: string) => {
       emitDriver(entry.driverEmail);
     }
   }
+};
+
+export const removeRequestsByRide = (rideId: string) => {
+  if (!rideId) return;
+  const entries: ReservationRequestEntry[] = [];
+  Object.values(passengerStore).forEach((bucket) => {
+    bucket.forEach((entry) => {
+      if (entry.rideId === rideId) {
+        entries.push(entry);
+      }
+    });
+  });
+  entries.forEach((entry) => {
+    removeReservationRequest(entry.passengerEmail, rideId);
+  });
 };
 
 export const subscribeReservationRequests = (email: string | null, listener: Listener) => {
@@ -223,6 +244,57 @@ export const acceptDriverReservationRequest = (email: string | null, requestId: 
   const entry = bucket.find((item) => item.id === requestId);
   if (!entry) return;
   updateStatus(entry.passengerEmail, entry.rideId, 'accepted');
+  const acceptedPatch = {
+    status: 'accepted',
+    acceptedAt: Date.now(),
+    paymentStatus: 'unpaid' as const,
+    paid: false,
+  };
+  const patchResult = patchBooking(entry.passengerEmail, entry.id, acceptedPatch);
+  if (patchResult.ok) {
+    console.log('[Booking] accepted', {
+      bookingId: entry.id,
+      paymentStatus: 'unpaid',
+    });
+  } else {
+    console.warn('[Booking] acceptance update failed', patchResult.reason, {
+      bookingId: entry.id,
+    });
+    const fallbackBooking: Booking = {
+      id: entry.id,
+      rideId: entry.rideId,
+      passengerEmail: entry.passengerEmail,
+      status: 'accepted',
+      paid: false,
+      paymentMethod: entry.paymentMethod ?? 'none',
+      amount: entry.price,
+      amountPaid: 0,
+      pricePaid: 0,
+      paymentStatus: 'unpaid',
+      createdAt: entry.createdAt,
+      depart: entry.depart,
+      destination: entry.destination,
+      driver: entry.driver,
+      ownerEmail: entry.driverEmail,
+      departureAt: entry.createdAt,
+      meetingPoint: entry.depart,
+      meetingPointAddress: entry.depart,
+      meetingPointLatLng: null,
+      time: entry.timeLabel,
+      plate: null,
+      driverPlate: null,
+      maskedPlate: null,
+      acceptedAt: Date.now(),
+    };
+    const creationResult = createBooking(fallbackBooking);
+    if (creationResult.ok) {
+      console.log('[Booking] accepted (created fallback)', { bookingId: entry.id });
+    } else {
+      console.warn('[Booking] acceptance fallback failed', creationResult.reason, {
+        bookingId: entry.id,
+      });
+    }
+  }
 };
 
 export const rejectDriverReservationRequest = (email: string | null, requestId: string) => {
@@ -232,5 +304,13 @@ export const rejectDriverReservationRequest = (email: string | null, requestId: 
   if (!bucket) return;
   const entry = bucket.find((item) => item.id === requestId);
   if (!entry) return;
-  updateStatus(entry.passengerEmail, entry.rideId, 'rejected');
+    updateStatus(entry.passengerEmail, entry.rideId, 'rejected');
+};
+
+export const getReservationRequestForRide = (email: string | null, rideId: string) => {
+  if (!email || !rideId) return null;
+  const key = normalizeEmail(email);
+  const bucket = passengerStore[key];
+  if (!bucket) return null;
+  return bucket.find((entry) => entry.rideId === rideId) ?? null;
 };

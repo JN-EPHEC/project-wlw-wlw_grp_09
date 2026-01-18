@@ -24,6 +24,8 @@ import {
 } from '@/app/services/wallet';
 import { createBooking } from '@/app/services/booking-store';
 import { useAuthSession } from '@/hooks/use-auth-session';
+import { maskPlate } from '@/app/utils/plate';
+import { resolveMeetingPoint } from '@/utils/meeting-point';
 
 const C = Colors;
 
@@ -111,11 +113,15 @@ export default function WalletConfirmationScreen() {
         });
         throw new Error('Impossible de confirmer ce trajet pour le moment.');
       }
+      const meetingPointSnapshot = resolveMeetingPoint({ ride });
+      const meetingPointAddress = meetingPointSnapshot.address || ride.depart;
+      const meetingPointLatLng = meetingPointSnapshot.latLng ?? null;
+      const driverPlate = ride.plate ?? '';
       const bookingPayload = {
         id: `${ride.id}:${session.email}:${Date.now()}`,
         rideId: ride.id,
         passengerEmail: session.email,
-        status: 'confirmed' as const,
+        status: 'paid' as const,
         paid: true,
         paymentMethod: 'wallet' as const,
         paidAt: Date.now(),
@@ -127,9 +133,13 @@ export default function WalletConfirmationScreen() {
         driver: ride.driver,
         ownerEmail: ride.ownerEmail,
         departureAt: ride.departureAt,
-        meetingPoint: ride.depart,
+        meetingPoint: meetingPointAddress,
+        meetingPointAddress,
+        meetingPointLatLng,
         time: ride.time,
         plate: ride.plate ?? null,
+        driverPlate,
+        maskedPlate: maskPlate(driverPlate),
       };
       console.debug('[WalletConfirm] booking payload', bookingPayload);
       const bookingResult = createBooking(bookingPayload);

@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
+import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
 import { MeetingMap } from '@/components/meeting-map';
@@ -11,11 +12,14 @@ import { useAuthSession } from '@/hooks/use-auth-session';
 import { getAvatarUrl } from '@/app/ui/avatar';
 import { maskPlate } from '@/app/utils/plate';
 import { CAMPUSRIDE_COMMISSION_RATE } from '@/app/constants/fuel';
+import { getRide } from '@/app/services/rides';
+import type { LatLng } from '@/app/services/location';
 import {
   listBookingsByPassenger,
   subscribeBookingsByPassenger,
   type Booking,
 } from '@/app/services/booking-store';
+import { resolveMeetingPoint } from '@/utils/meeting-point';
 
 const C = Colors;
 
@@ -34,12 +38,34 @@ const formatTime = (timestamp: number) =>
 
 const getPaymentLabel = (method: Booking['paymentMethod']) => {
   switch (method) {
+    case 'wallet':
+      return 'Wallet';
     case 'card':
       return 'Carte bancaire';
+    case 'cash':
+      return 'Paiement en espèces';
     case 'pass':
       return 'Crédit CampusRide';
+    case 'none':
     default:
-      return 'Wallet';
+      return 'Paiement confirmé';
+  }
+};
+
+const formatBookingStatusLabel = (status: Booking['status']) => {
+  switch (status) {
+    case 'paid':
+      return 'Payé';
+    case 'completed':
+      return 'Terminé';
+    case 'cancelled':
+      return 'Annulée';
+    case 'accepted':
+      return 'Acceptée';
+    case 'pending':
+      return 'En attente';
+    default:
+      return status;
   }
 };
 
@@ -87,7 +113,26 @@ export default function TripDetailsScreen() {
   const platformFee = +(amountPaid * CAMPUSRIDE_COMMISSION_RATE).toFixed(2);
   const driverShare = +(amountPaid - platformFee).toFixed(2);
   const paymentLabel = booking ? getPaymentLabel(booking.paymentMethod) : '';
-  const meetingPoint = booking?.meetingPoint ?? booking?.depart ?? 'Point de rendez-vous';
+  const rideSnapshot = useMemo(
+    () => (booking ? getRide(booking.rideId) : null),
+    [booking]
+  );
+  const meetingPoint = useMemo(
+    () => resolveMeetingPoint({ booking, ride: rideSnapshot }),
+    [booking, rideSnapshot]
+  );
+  const meetingPointAddress = meetingPoint.address || 'Point de rendez-vous';
+  const meetingPointLatLng = meetingPoint.latLng ?? null;
+  const displayPlate =
+    booking?.status === 'paid'
+      ? booking.driverPlate ?? booking.plate ?? '—'
+      : booking?.maskedPlate ?? maskPlate(booking?.plate);
+
+  useEffect(() => {
+    if (!booking) return;
+    console.debug('[TripDetails] meetingPoint', meetingPoint);
+  }, [booking, meetingPoint.address, meetingPoint.latLng?.lat, meetingPoint.latLng?.lng]);
+
 
   const renderContent = () => {
     if (!bookingId) {
@@ -129,9 +174,34 @@ export default function TripDetailsScreen() {
             <Text style={styles.cardSubtitle}>{formatLongDate(departureTimestamp)}</Text>
           </View>
           <View style={styles.heroTag}>
-            <Text style={styles.heroTagText}>Payé · {booking.status}</Text>
+            <Text style={styles.heroTagText}>
+              {booking.status === 'cancelled'
+                ? 'Réservation annulée'
+                : `Payé · ${formatBookingStatusLabel(booking.status)}`}
+            </Text>
           </View>
         </View>
+        {booking.status === 'cancelled' ? (
+          <View style={styles.cancelledNotice}>
+            <Text style={styles.cancelledNoticeTitle}>Réservation annulée</Text>
+            <Text style={styles.cancelledNoticeText}>
+              Les listes « Mes trajets » et « Mes demandes » ont été mises à jour. Tu peux revenir
+              à tes trajets à venir ou vérifier ton wallet pour voir le remboursement.
+            </Text>
+            <GradientButton
+              title="Voir mes trajets"
+              variant="cta"
+              fullWidth
+              onPress={() =>
+                router.replace({
+                  pathname: '/trips',
+                  params: { initialTab: 'upcoming' },
+                })
+              }
+              accessibilityRole="button"
+            />
+          </View>
+        ) : null}
 
         <View style={styles.driverRow}>
           <Image source={{ uri: getAvatarUrl(booking.ownerEmail, 128) }} style={styles.driverAvatar} />
@@ -168,7 +238,7 @@ export default function TripDetailsScreen() {
             <IconSymbol name="car.fill" size={18} color={C.secondary} />
             <View style={styles.infoText}>
               <Text style={styles.infoLabel}>Plaque</Text>
-              <Text style={styles.infoValue}>{maskPlate(booking.plate)}</Text>
+              <Text style={styles.infoValue}>{displayPlate}</Text>
             </View>
           </View>
           <View style={styles.infoRow}>
@@ -186,7 +256,7 @@ export default function TripDetailsScreen() {
             <IconSymbol name="mappin.and.ellipse" size={18} color={C.primary} />
             <View style={styles.infoText}>
               <Text style={styles.infoLabel}>Lieu de rendez-vous</Text>
-              <Text style={styles.infoValue}>{meetingPoint}</Text>
+          <Text style={styles.infoValue}>{meetingPointAddress}</Text>
             </View>
           </View>
           <View style={styles.meetingRow}>
@@ -196,7 +266,11 @@ export default function TripDetailsScreen() {
               <Text style={styles.infoValue}>{booking.time ?? formatTime(departureTimestamp)}</Text>
             </View>
           </View>
-          <MeetingMap address={meetingPoint} style={styles.map} />
+          <MeetingMap
+            address={meetingPointAddress}
+            latLng={meetingPointLatLng}
+            style={styles.map}
+          />
         </View>
 
         <View style={styles.sectionCard}>
@@ -349,6 +423,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: C.gray600,
     fontWeight: '600',
+  },
+  cancelledNotice: {
+    marginTop: Spacing.lg,
+    borderRadius: Radius['2xl'],
+    padding: Spacing.lg,
+    backgroundColor: C.gray900,
+    borderWidth: 1,
+    borderColor: C.success,
+    gap: Spacing.sm,
+  },
+  cancelledNoticeTitle: {
+    color: C.success,
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  cancelledNoticeText: {
+    color: C.white,
+    fontSize: 14,
+    lineHeight: 20,
   },
   driverRow: {
     flexDirection: 'row',

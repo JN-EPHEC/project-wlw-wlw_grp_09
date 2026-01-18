@@ -4,9 +4,11 @@ import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'reac
 
 import { Colors, Radius } from '@/app/ui/theme';
 import { getCoordinates } from '@/app/services/distance';
+import type { LatLng } from '@/app/services/location';
 
 export type MeetingMapProps = {
-  address: string;
+  address?: string;
+  latLng?: LatLng | null;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -19,13 +21,16 @@ const DEFAULT_REGION: Region = {
 
 const mapProvider = Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined;
 
-const MeetingMapNative = ({ address, style }: MeetingMapProps) => {
+const MeetingMapNative = ({ address, latLng, style }: MeetingMapProps) => {
   const point = useMemo(() => {
-    const coords = getCoordinates(address);
-    const lat = Number.isFinite(coords.latitude) ? coords.latitude : DEFAULT_REGION.latitude;
-    const lng = Number.isFinite(coords.longitude) ? coords.longitude : DEFAULT_REGION.longitude;
+    if (latLng?.lat != null && latLng?.lng != null) {
+      return { latitude: latLng.lat, longitude: latLng.lng };
+    }
+    const coords = address ? getCoordinates(address) : undefined;
+    const lat = coords && Number.isFinite(coords.latitude) ? coords.latitude : DEFAULT_REGION.latitude;
+    const lng = coords && Number.isFinite(coords.longitude) ? coords.longitude : DEFAULT_REGION.longitude;
     return { latitude: lat, longitude: lng };
-  }, [address]);
+  }, [address, latLng]);
 
   const region = useMemo<Region>(
     () => ({

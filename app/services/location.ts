@@ -255,6 +255,44 @@ export const formatLocationAddress = (place?: ResolvedPlace | null): string => {
   return parts.join(', ').trim();
 };
 
+export const reverseGeocodeToAddress = async (latLng: LatLng): Promise<string | null> => {
+  if (!latLng || !isValidCoordinate(latLng.lat) || !isValidCoordinate(latLng.lng)) {
+    return null;
+  }
+
+  if (Platform.OS === 'web') {
+    const googleAny = globalThis as typeof globalThis & { google?: any };
+    if (!googleAny.google?.maps?.Geocoder) {
+      return null;
+    }
+    return new Promise<string | null>((resolve) => {
+      const geocoder = new googleAny.google.maps.Geocoder();
+      geocoder.geocode({ location: { lat: latLng.lat, lng: latLng.lng } }, (results: any, status: string) => {
+        if (status !== 'OK' || !results || !results.length) {
+          resolve(null);
+          return;
+        }
+        const formatted = results[0]?.formatted_address;
+        resolve(typeof formatted === 'string' ? formatted.trim() : null);
+      });
+    });
+  }
+
+  try {
+    const places = await Location.reverseGeocodeAsync({
+      latitude: latLng.lat,
+      longitude: latLng.lng,
+    });
+    const place = places?.[0];
+    const formatted = formatLocationAddress(place);
+    const minimal = buildMinimalAddress(place);
+    const resolved = (formatted || minimal).trim();
+    return resolved.length > 0 ? resolved : null;
+  } catch {
+    return null;
+  }
+};
+
 export const getCurrentCommune = async (): Promise<ResolvedLocation> => {
   const permission = await Location.requestForegroundPermissionsAsync();
   if (permission.status !== Location.PermissionStatus.GRANTED) {
