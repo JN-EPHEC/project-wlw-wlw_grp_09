@@ -1,6 +1,7 @@
-import { ComponentProps, useEffect, useMemo, useState } from 'react';
+import { ComponentProps, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -41,6 +42,7 @@ import {
   subscribeWallet,
   type WalletSnapshot,
 } from '@/app/services/wallet';
+import { createThread } from '@/app/services/messages';
 import { CAMPUSRIDE_COMMISSION_RATE } from '@/app/constants/fuel';
 
 const C = Colors;
@@ -158,12 +160,47 @@ export default function RideCheckoutScreen() {
   const requestAccepted = requestForRide?.status === 'accepted';
   const bookingCancelled = bookingForRide?.status === 'cancelled';
   const bookingPaid = bookingForRide?.paymentStatus === 'paid';
-  const bookingMissing = requestAccepted && !bookingForRide;
-  const bookingReadyForPayment = Boolean(
-    bookingForRide && requestAccepted && !bookingCancelled && !bookingPaid
-  );
+const bookingMissing = requestAccepted && !bookingForRide;
+const bookingReadyForPayment = Boolean(
+  bookingForRide && requestAccepted && !bookingCancelled && !bookingPaid
+);
 
-  const walletBalance = wallet?.balance ?? 0;
+const walletBalance = wallet?.balance ?? 0;
+
+const driverProfileEmail = bookingForRide?.ownerEmail ?? ride?.ownerEmail ?? null;
+const resolvedRideId = ride?.id ?? ride?.rideId ?? rideIdString ?? null;
+const routeLabel = ride ? `${ride.depart} → ${ride.destination}` : '';
+
+const handleViewDriverProfile = useCallback(() => {
+  if (!driverProfileEmail) {
+    Alert.alert('Profil indisponible', 'Impossible de retrouver ce conducteur.');
+    return;
+  }
+  router.push({ pathname: '/driver-profile/[email]', params: { email: driverProfileEmail } });
+}, [driverProfileEmail, router]);
+
+const handleSendMessageToDriver = useCallback(() => {
+  if (!session.email) {
+    Alert.alert('Connexion requise', 'Connecte-toi pour envoyer un message.');
+    return;
+  }
+  if (!driverProfileEmail || !ride || !resolvedRideId) {
+    Alert.alert('Conversation indisponible', 'Impossible de démarrer la conversation pour le moment.');
+    return;
+  }
+  const thread = createThread({
+    rideId: resolvedRideId,
+    routeLabel,
+    participants: [
+      { email: session.email, role: 'passenger' },
+      { email: driverProfileEmail, role: 'driver' },
+    ],
+  });
+  router.push({
+    pathname: '/(tabs)/messages',
+    params: { thread: thread.id, origin: 'checkout' },
+  });
+}, [driverProfileEmail, ride, resolvedRideId, routeLabel, router, session.email]);
 
   useEffect(() => {
     if (!rideIdString) return;
@@ -458,6 +495,30 @@ export default function RideCheckoutScreen() {
             <Text style={styles.driverName}>{displayDriverName}</Text>
             <Text style={styles.driverEmail}>{displayDriverEmail}</Text>
             <Text style={styles.driverPlate}>Plaque : {maskedPlate}</Text>
+            <View style={styles.driverActions}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.driverActionButton,
+                  pressed && styles.driverActionButtonPressed,
+                ]}
+                onPress={handleViewDriverProfile}
+                accessibilityRole="button"
+              >
+                <IconSymbol name="person.crop.circle" size={16} color={C.primary} />
+                <Text style={styles.driverActionText}>Voir le profil</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.driverActionButton,
+                  pressed && styles.driverActionButtonPressed,
+                ]}
+                onPress={handleSendMessageToDriver}
+                accessibilityRole="button"
+              >
+                <IconSymbol name="bubble.left.and.bubble.right.fill" size={16} color={C.primary} />
+                <Text style={styles.driverActionText}>Envoyer un message</Text>
+              </Pressable>
+            </View>
           </GradientBackground>
 
           <GradientBackground colors={Gradients.card} style={styles.card}>
@@ -619,6 +680,31 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: C.ink,
+  },
+  driverActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  driverActionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: C.white,
+  },
+  driverActionText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: C.primaryDark,
+  },
+  driverActionButtonPressed: {
+    opacity: 0.85,
   },
   infoRow: {
     flexDirection: 'row',
