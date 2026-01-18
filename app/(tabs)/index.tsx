@@ -26,7 +26,7 @@ import { usePassengerRequests } from '@/hooks/use-passenger-requests';
 import { getAvatarUrl } from '@/app/ui/avatar';
 import type { Notification } from '@/app/services/notifications';
 import { subscribeNotifications } from '@/app/services/notifications';
-import { getRides, hasRideDeparted, subscribeRides, type Ride } from '@/app/services/rides';
+import { hasRideDeparted, type Ride } from '@/app/services/rides';
 import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
 import {
   listBookingsByPassenger,
@@ -34,6 +34,7 @@ import {
   type Booking,
 } from '@/app/services/booking-store';
 import { getCurrentCommune, LocationPermissionError } from '@/app/services/location';
+import { subscribePublishedRides } from '@/app/services/firestore-rides';
 
 type SectionKey = 'search' | 'requests' | 'trips';
 type SectionFocus = { key: SectionKey; token: number };
@@ -191,7 +192,7 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
     trips: 0,
   });
 
-  const [rides, setRides] = useState<Ride[]>(getRides());
+  const [rides, setRides] = useState<Ride[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [wallet, setWallet] = useState<WalletSnapshot | null>(() =>
     session.email ? getWallet(session.email) : null
@@ -206,7 +207,7 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
   const departureBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const unsubscribe = subscribeRides(setRides);
+    const unsubscribe = subscribePublishedRides(setRides);
     return unsubscribe;
   }, []);
 
@@ -693,8 +694,8 @@ type DriverDashboardProps = {
 
 function DriverDashboard({ session }: DriverDashboardProps) {
   const ownerEmail = (session.email ?? '').toLowerCase();
-  const [rides, setRides] = useState<Ride[]>(() => getRides());
-  const [loadingRides, setLoadingRides] = useState(() => getRides().length === 0);
+  const [rides, setRides] = useState<Ride[]>([]);
+  const [loadingRides, setLoadingRides] = useState(true);
   const [meetingPoint, setMeetingPoint] = useState('');
   const [destination, setDestination] = useState('');
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -705,7 +706,7 @@ function DriverDashboard({ session }: DriverDashboardProps) {
   const meetingBlurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const unsubscribe = subscribeRides((items) => {
+    const unsubscribe = subscribePublishedRides((items) => {
       setRides(items);
       setLoadingRides(false);
     });

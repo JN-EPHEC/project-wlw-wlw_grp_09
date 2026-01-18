@@ -23,15 +23,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { usePassengerRequests } from '@/hooks/use-passenger-requests';
 import { RatingStars } from '@/components/ui/rating-stars';
-import {
-  cancelReservation,
-  getRide,
-  hasRideDeparted,
-  removeRide,
-  reserveSeat,
-  subscribeRides,
-  type Ride,
-} from '@/app/services/rides';
+import { cancelReservation, hasRideDeparted, removeRide, reserveSeat, type Ride } from '@/app/services/rides';
 import { createThread } from '@/app/services/messages';
 import {
   cancelBooking,
@@ -75,6 +67,7 @@ import { MeetingMap } from '@/components/meeting-map';
 import type { PaymentMethod } from '@/app/services/payments';
 import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
 import { resolveMeetingPoint } from '@/utils/meeting-point';
+import { subscribePublishedRides } from '@/app/services/firestore-rides';
 
 export type RideDetailScreenMode = 'detail' | 'checkout';
 
@@ -106,11 +99,9 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
   const { width } = useWindowDimensions();
   const isCompact = width < 420;
   const routeMode = propMode ?? (params.mode === 'checkout' ? 'checkout' : 'detail');
-  const initialRealRide = rideId ? getRide(String(rideId)) : null;
-  const initialFallbackRide = !initialRealRide ? findFallbackRide(rideId) : null;
-  const initialRide = initialRealRide ?? initialFallbackRide;
-  const [ride, setRide] = useState<Ride | null>(initialRide);
-  const [isFallbackRide, setIsFallbackRide] = useState(!initialRealRide && !!initialFallbackRide);
+  const initialFallbackRide = findFallbackRide(rideId);
+  const [ride, setRide] = useState<Ride | null>(initialFallbackRide);
+  const [isFallbackRide, setIsFallbackRide] = useState<boolean>(Boolean(initialFallbackRide));
   const [driverCompleted, setDriverCompleted] = useState(0);
   const [driverRating, setDriverRating] = useState<{ average: number; count: number }>({
     average: 0,
@@ -257,8 +248,14 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
   };
 
   useEffect(() => {
-    if (!rideId) return;
-    const unsubscribe = subscribeRides((rides) => {
+    if (!rideId) {
+      const fallback = findFallbackRide(rideId);
+      setRide(fallback);
+      setDriverCompleted(0);
+      setIsFallbackRide(!!fallback);
+      return;
+    }
+    const unsubscribe = subscribePublishedRides((rides) => {
       const next = rides.find((item) => item.id === rideId) ?? null;
       if (next) {
         setRide(next);
