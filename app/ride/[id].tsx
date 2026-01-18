@@ -21,6 +21,7 @@ import {
 import { AppBackground } from '@/components/ui/app-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuthSession } from '@/hooks/use-auth-session';
+import { usePassengerRequests } from '@/hooks/use-passenger-requests';
 import { RatingStars } from '@/components/ui/rating-stars';
 import {
   cancelReservation,
@@ -55,7 +56,6 @@ import {
   logReservationRequest,
   removeReservationRequest,
 } from '@/app/services/firestore-reservation-requests';
-import { usePassengerRequests } from '@/hooks/use-passenger-requests';
 import { subscribeDriverReviews } from '@/app/services/reviews';
 import { evaluateRewards } from '@/app/services/rewards';
 import { Colors, Gradients, Shadows, Spacing, Radius, Typography } from '@/app/ui/theme';
@@ -133,9 +133,8 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
   const [reportComment, setReportComment] = useState('');
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const reportCommentRef = useRef<TextInput | null>(null);
-  const { pending: pendingRequests, accepted: activeAcceptedRequests } = usePassengerRequests(
-    session.uid
-  );
+  const passengerRequests = usePassengerRequests(session.uid);
+  const { pending: pendingRequests, accepted: activeAcceptedRequests } = passengerRequests;
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
   const [showWalletConfirmModal, setShowWalletConfirmModal] = useState(false);
   const [isPaying, setIsPaying] = useState(false);
@@ -785,7 +784,7 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
         cancelled: '1',
       },
     });
-  };
+  }, [bookingForRide, ride, router, session.email]);
 
   const onDelete = () => {
     Alert.alert('Supprimer', 'Supprimer définitivement ce trajet ?', [
