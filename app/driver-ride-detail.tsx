@@ -19,6 +19,8 @@ import { GradientButton } from '@/components/ui/gradient-button';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Spacing, Shadows } from '@/app/ui/theme';
 import { deleteRide, getRides, subscribeRides, type Ride } from '@/app/services/rides';
+import { useAuthSession } from '@/hooks/use-auth-session';
+import { createNotification } from '@/app/services/notifications-store';
 
 const formatFullDate = (timestamp: number) =>
   new Date(timestamp).toLocaleDateString('fr-BE', {
@@ -37,6 +39,7 @@ const formatAmount = (value: number) => `${value.toFixed(2)} €`;
 
 export default function DriverRideDetailScreen() {
   const router = useRouter();
+  const session = useAuthSession();
   const { rideId } = useLocalSearchParams<{ rideId?: string }>();
   const [rides, setRides] = useState<Ride[]>(() => getRides());
 
@@ -112,6 +115,12 @@ export default function DriverRideDetailScreen() {
       deleteRide(ride.id);
       console.debug('[DeleteRide] success', ride.id);
       setConfirmVisible(false);
+      createNotification(
+        session.email ?? '',
+        'ride_deleted',
+        'Trajet supprimé',
+        'Ton trajet a été supprimé.'
+      );
       void router
         .replace({ pathname: '/driver-my-rides', params: { tab: 'published' } })
         .catch(() => router.back());

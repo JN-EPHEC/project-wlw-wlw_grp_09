@@ -40,6 +40,8 @@ type SectionFocus = { key: SectionKey; token: number };
 const isSectionKey = (value: string | undefined): value is SectionKey =>
   value === 'search' || value === 'requests' || value === 'trips';
 
+const normalizeEmail = (value?: string) => (value ?? '').trim().toLowerCase();
+
 const CAMPUS_OPTIONS = [
   'EPHEC Delta',
   'EPHEC Louvain-la-Neuve',
@@ -206,6 +208,20 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
     const unsubscribe = subscribeRides(setRides);
     return unsubscribe;
   }, []);
+
+  const normalizedDriverEmail = useMemo(() => normalizeEmail(session.email), [session.email]);
+  const driverPublishedCount = useMemo(() => {
+    if (!session.isDriver || !normalizedDriverEmail) return 0;
+    return rides.filter((ride) => normalizeEmail(ride.ownerEmail) === normalizedDriverEmail).length;
+  }, [rides, normalizedDriverEmail, session.isDriver]);
+
+  useEffect(() => {
+    if (!session.isDriver) return;
+    console.debug('[HomeBadge] driverPublishedCount', {
+      count: driverPublishedCount,
+      email: session.email,
+    });
+  }, [driverPublishedCount, session.email, session.isDriver]);
 
   useEffect(() => {
     if (!session.email) {
@@ -399,11 +415,14 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
         key: 'trips' as SectionKey,
         label: 'Mes trajets',
         icon: 'car.fill' as const,
-        badge: tripBuckets[tripTab].length > 0 ? undefined : undefined,
+        badge:
+          session.isDriver && driverPublishedCount > 0
+            ? String(driverPublishedCount)
+            : undefined,
         onPress: () => router.push('/trips'),
       },
     ],
-    [passengerRequestCount, tripBuckets, tripTab, router]
+    [driverPublishedCount, passengerRequestCount, router, session.isDriver]
   );
 
   const sponsorSlides = useMemo(() => [sponsorSecondary, sponsorOffer], []);

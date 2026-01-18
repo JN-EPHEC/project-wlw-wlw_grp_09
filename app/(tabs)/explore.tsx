@@ -39,6 +39,7 @@ import {
   formatLocationAddress,
   getCurrentCommune,
   LocationPermissionError,
+  reverseGeocodeToAddress,
   toLatLng,
 } from '../services/location';
 import type { LatLng } from '../services/location';
@@ -56,6 +57,7 @@ import { getWallet, subscribeWallet, type WalletSnapshot } from '../services/wal
 import { getAvatarUrl } from '../ui/avatar';
 import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
 import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
+import { createNotification } from '@/app/services/notifications-store';
 
 const DefaultColors = {
   primary: '#E63946',
@@ -87,6 +89,7 @@ const isAppleCleanMap = Platform.OS === 'ios' && Constants.appOwnership === 'exp
 const LOCATION_SUGGESTION_OPTION = 'Utiliser ma position';
 const LOCATION_SUGGESTION_OPTIONS = [LOCATION_SUGGESTION_OPTION];
 const CURRENT_LOCATION_LABEL = 'Position actuelle';
+const UNKNOWN_ADDRESS_LABEL = 'Adresse inconnue';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -471,12 +474,17 @@ function DriverPublishScreen({
       setMeetingPointSelected(null);
       setDetectedMeetingCommune(null);
       const { commune, coords, address, latLng } = await getCurrentCommune();
-      const selectionLabel = address?.trim() || CURRENT_LOCATION_LABEL;
+      const resolvedAddress =
+        (await reverseGeocodeToAddress(latLng))?.trim() || address?.trim();
+      const finalLabel =
+        resolvedAddress && resolvedAddress.length > 0 && resolvedAddress !== CURRENT_LOCATION_LABEL
+          ? resolvedAddress
+          : UNKNOWN_ADDRESS_LABEL;
       setDetectedMeetingCommune(commune);
-      logSelectedPoint('origin', selectionLabel, latLng);
+      logSelectedPoint('origin', finalLabel, latLng);
       setOriginSelection({
         type: 'current_location',
-        label: selectionLabel,
+        label: finalLabel,
         coords: {
           latitude: coords.latitude,
           longitude: coords.longitude,
@@ -484,6 +492,7 @@ function DriverPublishScreen({
         latLng,
       });
       setOriginLatLng(latLng);
+      setMeetingPointInput(finalLabel);
       setShowMeetingList(false);
     } catch (error) {
       setIsUsingLocation(false);
@@ -499,7 +508,7 @@ function DriverPublishScreen({
         );
       }
     }
-  }, [setOriginSelection, logSelectedPoint]);
+  }, [setOriginSelection, logSelectedPoint, reverseGeocodeToAddress]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -871,24 +880,36 @@ const selectMeetingPoint = useCallback(
         console.debug('[publish] click');
       }
       const rideId = `ride-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const publishingDate = new Date(selectedDate);
-      const [hours, minutes] = travelTime.split(':').map((value) => parseInt(value, 10) || 0);
-      publishingDate.setHours(hours, minutes, 0, 0);
-      const pricePerPassenger = finalFare != null ? Number(finalFare.toFixed(2)) : 0;
-      const payload = {
-        id: rideId,
-        driver: session.name ?? 'Conducteur',
-        plate: registeredPlate,
-        depart: meetingPoint.trim(),
-        destination: destination.trim(),
-        time: travelTime,
-        seats: places,
-        price: pricePerPassenger,
-        ownerEmail: session.email,
-        pricingMode: 'single',
-        tripType,
-        departureAt: publishingDate.getTime(),
-      };
+    const publishingDate = new Date(selectedDate);
+    const [hours, minutes] = travelTime.split(':').map((value) => parseInt(value, 10) || 0);
+    publishingDate.setHours(hours, minutes, 0, 0);
+    let finalDepart = meetingPoint.trim();
+    if (!finalDepart || finalDepart === CURRENT_LOCATION_LABEL) {
+      const coords = originLatLng ?? originSelection?.latLng;
+      const resolvedAddress =
+        coords != null ? await reverseGeocodeToAddress(coords) : null;
+      finalDepart = resolvedAddress?.trim() || UNKNOWN_ADDRESS_LABEL;
+      setMeetingPointInput(finalDepart);
+    }
+    const pricePerPassenger = finalFare != null ? Number(finalFare.toFixed(2)) : 0;
+    console.log('[RidePublish] resolved depart address', {
+      input: meetingPoint,
+      resolved: finalDepart,
+    });
+    const payload = {
+      id: rideId,
+      driver: session.name ?? 'Conducteur',
+      plate: registeredPlate,
+      depart: finalDepart,
+      destination: destination.trim(),
+      time: travelTime,
+      seats: places,
+      price: pricePerPassenger,
+      ownerEmail: session.email,
+      pricingMode: 'single',
+      tripType,
+      departureAt: publishingDate.getTime(),
+    };
       console.log('[Publish] start', {
         depart: payload.depart,
         destination: payload.destination,
@@ -910,6 +931,12 @@ const selectMeetingPoint = useCallback(
       if (__DEV__) {
         console.debug('[Publish] rideId', publishedRide.id);
       }
+      createNotification(
+        session.email,
+        'ride_published',
+        'Trajet publié',
+        'Ton trajet a bien été publié.'
+      );
       router.replace({
         pathname: '/driver/ride-published',
         params: {
@@ -928,8 +955,11 @@ const selectMeetingPoint = useCallback(
     destination,
     isPublishingRide,
     meetingPoint,
+    originLatLng,
+    originSelection,
     places,
     registeredPlate,
+    reverseGeocodeToAddress,
     router,
     session.email,
     session.isDriver,
