@@ -9,6 +9,13 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid == targetUid;
     }
 
+    function isReservationStatus(value) {
+      return value == 'pending' ||
+        value == 'accepted' ||
+        value == 'paid' ||
+        value == 'cancelled';
+    }
+
     match /users/{userId} {
       allow create: if isUidOwner(userId) &&
         request.resource.data.email == request.auth.token.email &&
@@ -30,16 +37,21 @@ service cloud.firestore {
       );
     }
 
-    match /rides/{rideId} {
-      allow create: if isRideOwner();
-      allow read: if isSignedIn();
-      allow update, delete: if isRideOwner();
+    match /rides/{driverUid}/published/{rideId} {
+      allow read, write: if request.auth != null && request.auth.uid == driverUid;
+      match /requests/{requestId} {
+        allow read, write: if request.auth != null && request.auth.uid == driverUid;
+      }
     }
 
-    match /wallets/{walletId} {
-      allow create: if isUidOwner(walletId) &&
-        request.resource.data.ownerUid == walletId;
-      allow read, update, delete: if isUidOwner(walletId);
+    match /wallets/{uid} {
+      allow read: if isUidOwner(uid);
+      allow create, update: if isUidOwner(uid);
+      match /transactions/{txId} {
+        allow read: if isUidOwner(uid);
+        allow create: if isUidOwner(uid);
+        allow update, delete: if false;
+      }
     }
 
     function isValidPlatform(value) {
@@ -104,22 +116,51 @@ service cloud.firestore {
       allow read, update, delete: if isUidOwner(quoteId);
     }
 
-    match /notificationPreferences/{uid} {
-      allow create: if isUidOwner(uid) && request.resource.data.ownerUid == uid;
-      allow read, update, delete: if isUidOwner(uid);
+    match /users/{uid}/rideRequests/{requestId} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
-    match /notificationTokens/{uid} {
-      allow create: if isUidOwner(uid) && request.resource.data.ownerUid == uid;
-      allow read, update, delete: if isUidOwner(uid);
-    }
+    match /users/{uid}/reservations/{reservationId} {
+      function isIndexOwner() {
+        return request.auth != null && request.auth.uid == uid;
+      }
 
-    match /notifications/{notificationId} {
-      allow create: if isSignedIn() &&
-        request.resource.data.to == request.auth.token.email &&
-        request.resource.data.title is string &&
-        request.resource.data.body is string;
-      allow read: if false;
+      function isDriverOwner() {
+        return request.auth != null && resource != null &&
+          resource.data.driverUid == request.auth.uid;
+      }
+
+      function isValidIndexPayload() {
+        return request.resource.data.reservationId == reservationId &&
+          request.resource.data.driverUid is string &&
+          request.resource.data.driverUid != '' &&
+          request.resource.data.rideId is string &&
+          request.resource.data.rideId != '' &&
+          request.resource.data.status is string &&
+          isReservationStatus(request.resource.data.status) &&
+          request.resource.data.createdAt is timestamp &&
+          request.resource.data.updatedAt is timestamp;
+      }
+
+      function canUpdateReservationIndex() {
+        if (resource == null) {
+          return false;
+        }
+        let diff = request.resource.data.diff(resource.data);
+        return request.resource.data.reservationId == resource.data.reservationId &&
+          request.resource.data.driverUid == resource.data.driverUid &&
+          request.resource.data.rideId == resource.data.rideId &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          isReservationStatus(request.resource.data.status) &&
+          request.resource.data.updatedAt is timestamp &&
+          diff.addedKeys().size() == 0 &&
+          diff.removedKeys().size() == 0 &&
+          diff.changedKeys().hasOnly(['status', 'updatedAt']);
+      }
+
+      allow read: if isIndexOwner();
+      allow create: if isIndexOwner() && isValidIndexPayload();
+      allow update: if (isIndexOwner() || isDriverOwner()) && canUpdateReservationIndex();
     }
 
     match /trajets/{trajetId} {
@@ -134,9 +175,71 @@ service cloud.firestore {
         return isSignedIn() && request.auth.uid == trajetId;
       }
 
+      function existingReservations() {
+        return resource.data.reservations ?? {};
+      }
+
+      function isReservationOnlyDiff() {
+        let diff = request.resource.data.diff(resource.data);
+        return diff.addedKeys().size() == 0 &&
+          diff.removedKeys().size() == 0 &&
+          diff.changedKeys().hasOnly(['reservations', 'updatedAt']);
+      }
+
+      function isReservationEntry(entry, key) {
+        return entry is map &&
+          entry.reservationId == key &&
+          entry.rideId is string &&
+          entry.driverUid == trajetId &&
+          entry.passengerUid is string &&
+          (entry.passengerEmail == null || entry.passengerEmail is string) &&
+          entry.seatsRequested is number &&
+          entry.seatsRequested > 0 &&
+          entry.status is string &&
+          isReservationStatus(entry.status) &&
+          entry.createdAt is timestamp &&
+          entry.updatedAt is timestamp &&
+          entry.rideSnapshot is map &&
+          entry.rideSnapshot.depart is string &&
+          entry.rideSnapshot.destination is string &&
+          (entry.rideSnapshot.departureAt is number || entry.rideSnapshot.departureAt is timestamp) &&
+          entry.rideSnapshot.price is number;
+      }
+
+      function canPassengerCreateReservation() {
+        if (request.auth == null) {
+          return false;
+        }
+        if (!(request.resource.data.reservations is map)) {
+          return false;
+        }
+        if (request.resource.data.publies != resource.data.publies) {
+          return false;
+        }
+        let diff = request.resource.data.reservations.diff(existingReservations());
+        if (diff.removedKeys().size() > 0 || diff.changedKeys().size() > 0) {
+          return false;
+        }
+        let addedKeys = diff.addedKeys();
+        if (addedKeys.size() != 1) {
+          return false;
+        }
+        if (!isReservationOnlyDiff()) {
+          return false;
+        }
+        let reservationKey = addedKeys[0];
+        let entry = request.resource.data.reservations[reservationKey];
+        if (!isReservationEntry(entry, reservationKey)) {
+          return false;
+        }
+        return entry.passengerUid == request.auth.uid && entry.driverUid == trajetId;
+      }
+
       allow read: if isSignedIn();
       allow create: if isSignedIn() && (canManageUserJournal() || isTripOwner());
-      allow update, delete: if isSignedIn() && (canManageUserJournal() || isTripOwner());
+      allow update: if isSignedIn() &&
+        (canManageUserJournal() || isTripOwner() || canPassengerCreateReservation());
+      allow delete: if isSignedIn() && (canManageUserJournal() || isTripOwner());
 
       match /requests/{requestId} {
         allow read: if isSignedIn() && (
@@ -155,16 +258,6 @@ service cloud.firestore {
         allow delete: if isSignedIn() &&
           resource != null &&
           resource.data.passengerUid == request.auth.uid;
-      }
-
-      match /reservations/{reservationId} {
-        allow read: if isSignedIn() && (
-          (resource != null && resource.data.passengerUid == request.auth.uid) ||
-          isTripOwner()
-        );
-        allow create: if isSignedIn() &&
-          (request.resource.data.passengerUid == request.auth.uid || isTripOwner());
-        allow update: if isTripOwner();
       }
 
       match /history/{eventId} {

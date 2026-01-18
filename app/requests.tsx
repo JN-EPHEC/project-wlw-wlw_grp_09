@@ -23,6 +23,12 @@ import {
 
 const C = Colors;
 
+const formatBookingTimeLabel = (timestamp: number) =>
+  new Date(timestamp).toLocaleTimeString('fr-BE', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
 export default function RequestsScreen() {
   const router = useRouter();
   const session = useAuthSession();
@@ -33,6 +39,11 @@ export default function RequestsScreen() {
   const [bookings, setBookings] = useState<Booking[]>(() =>
     session.email ? listBookingsByPassenger(session.email) : []
   );
+  useEffect(() => {
+    if (!session.email) return;
+    const unsubscribe = subscribeBookingsByPassenger(session.email, setBookings);
+    return unsubscribe;
+  }, [session.email]);
   const isPaymentAllowed = useCallback(
     (request: ReservationRequestEntry) => {
       if (request.status !== 'accepted') return false;
@@ -46,13 +57,71 @@ export default function RequestsScreen() {
     },
     [session.email]
   );
+
+  const bookingToRequestEntry = useCallback((booking: Booking): ReservationRequestEntry => {
+    const timestamp = booking.createdAt ?? Date.now();
+    const status: ReservationRequestEntry['status'] =
+      booking.status === 'accepted' ||
+      booking.status === 'paid' ||
+      booking.status === 'completed'
+        ? 'accepted'
+        : booking.status === 'cancelled'
+        ? 'cancelled'
+        : 'pending';
+    const paymentStatus: ReservationRequestEntry['paymentStatus'] =
+      booking.paymentStatus === 'paid' || booking.status === 'paid' || booking.paid
+        ? 'paid'
+        : booking.paymentStatus === 'refunded'
+        ? 'refunded'
+        : 'unpaid';
+    return {
+      id: booking.id,
+      rideId: booking.rideId,
+      ridePath: booking.rideId,
+      driverUid: '',
+      driver: booking.driver,
+      driverEmail: booking.ownerEmail,
+      passengerUid: booking.passengerEmail,
+      passengerEmail: booking.passengerEmail,
+      passenger: booking.passengerEmail,
+      passengerName: undefined,
+      seatsRequested: 1,
+      depart: booking.depart,
+      destination: booking.destination,
+      price: booking.amount,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      status,
+      requestStatus: status,
+      paymentStatus,
+      paymentRef: null,
+      paidAt: booking.paid ? booking.paidAt ?? timestamp : null,
+      timeLabel:
+        booking.time ??
+        formatBookingTimeLabel(booking.departureAt ?? booking.createdAt ?? timestamp),
+      message: null,
+      paymentMethod: null,
+    };
+  }, []);
+
+  const localRequests = useMemo(() => bookings.map(bookingToRequestEntry), [bookings, bookingToRequestEntry]);
+
+  const combinedRequests = useMemo(() => {
+    const remote = passengerRequests.requests;
+    if (!localRequests.length) {
+      return remote;
+    }
+    const seen = new Set(remote.map((request) => request.id));
+    return [...remote, ...localRequests.filter((request) => !seen.has(request.id))];
+  }, [localRequests, passengerRequests.requests]);
+
   const pendingRequests = useMemo(
-    () => passengerRequests.requests.filter((request) => request.status === 'pending'),
-    [passengerRequests.requests]
+    () => combinedRequests.filter((request) => request.status === 'pending'),
+    [combinedRequests]
   );
   const acceptedRequests = useMemo(
-    () => passengerRequests.requests.filter((request) => request.status === 'accepted'),
-    [passengerRequests.requests]
+    () => combinedRequests.filter((request) => request.status === 'accepted'),
+    [combinedRequests]
   );
   const activeRequestCount = pendingRequests.length + acceptedRequests.length;
 

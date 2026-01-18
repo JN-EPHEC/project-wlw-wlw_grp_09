@@ -20,7 +20,11 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Spacing, Shadows } from '@/app/ui/theme';
 import { deleteRide, getRides, subscribeRides, type Ride } from '@/app/services/rides';
 import { useAuthSession } from '@/hooks/use-auth-session';
-import { createNotification } from '@/app/services/notifications-store';
+import {
+  respondToRequest,
+  subscribeRideRequests,
+  type RideRequestDoc,
+} from '@/src/firestoreRides';
 
 const formatFullDate = (timestamp: number) =>
   new Date(timestamp).toLocaleDateString('fr-BE', {
@@ -42,6 +46,8 @@ export default function DriverRideDetailScreen() {
   const session = useAuthSession();
   const { rideId } = useLocalSearchParams<{ rideId?: string }>();
   const [rides, setRides] = useState<Ride[]>(() => getRides());
+  const [rideRequests, setRideRequests] = useState<RideRequestDoc[]>([]);
+  const [processingRequestId, setProcessingRequestId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeRides(setRides);
@@ -52,6 +58,119 @@ export default function DriverRideDetailScreen() {
     if (!rideId) return undefined;
     return rides.find((item) => item.id === rideId);
   }, [rideId, rides]);
+
+  useEffect(() => {
+    if (!ride) {
+      setRideRequests([]);
+      return;
+    }
+    const driverUid = ride.ownerUid || session.uid;
+    const unsubscribe = subscribeRideRequests(driverUid, ride.id, setRideRequests);
+    return unsubscribe;
+  }, [ride, session.uid]);
+
+  const requestsByStatus = useMemo(() => {
+    return {
+      pending: rideRequests.filter((request) => request.requestStatus === 'pending'),
+      accepted: rideRequests.filter((request) => request.requestStatus === 'accepted'),
+      paid: rideRequests.filter((request) => request.requestStatus === 'paid'),
+    };
+  }, [rideRequests]);
+
+  const handleRequestDecision = useCallback(
+    async (requestId: string, decision: 'accept' | 'reject') => {
+      if (!ride) return;
+      const driverUid = ride.ownerUid || session.uid;
+      if (!driverUid) return;
+      setProcessingRequestId(requestId);
+      try {
+        await respondToRequest(driverUid, ride.id, requestId, decision);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Impossible de mettre à jour la demande.';
+        Alert.alert('Erreur', message);
+      } finally {
+        setProcessingRequestId(null);
+      }
+    },
+    [ride, session.uid]
+  );
+
+  const renderRequestsSection = useCallback(
+    (
+      title: string,
+      items: RideRequestDoc[],
+      emptyCopy: string,
+      showActions: boolean
+    ) => (
+      <View style={styles.requestsSection}>
+        <View style={styles.requestsSectionHeader}>
+          <Text style={styles.requestsSectionTitle}>{title}</Text>
+          <Text style={styles.requestsSectionCount}>{items.length}</Text>
+        </View>
+        {items.length === 0 ? (
+          <Text style={styles.requestsEmpty}>{emptyCopy}</Text>
+        ) : (
+          items.map((request) => {
+            const isProcessing = processingRequestId === request.requestId;
+            return (
+              <View key={request.requestId} style={styles.requestCard}>
+                <View style={styles.requestCardHeader}>
+                  <Text style={styles.requestCardTitle}>
+                    {request.passenger || request.passengerUid}
+                  </Text>
+                  <Text style={styles.requestCardMeta}>
+                    {request.depart} → {request.destination}
+                  </Text>
+                </View>
+                <View style={styles.requestCardFooter}>
+                  <Text style={styles.requestCardPrice}>
+                    {(Number.isFinite(request.price) ? request.price : 0).toFixed(2)} €
+                  </Text>
+                  <Text style={styles.requestCardMeta}>{request.timeLabel}</Text>
+                </View>
+                <Text style={styles.requestPaymentStatus}>
+                  Paiement : {request.paymentStatus}
+                </Text>
+                {showActions ? (
+                  <View style={styles.requestActions}>
+                    <Pressable
+                      style={[
+                        styles.requestActionButton,
+                        styles.requestActionButtonSecondary,
+                        isProcessing && styles.requestActionDisabled,
+                      ]}
+                      onPress={() => handleRequestDecision(request.requestId, 'reject')}
+                      disabled={isProcessing}
+                    >
+                      <Text style={styles.requestActionText}>Refuser</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        styles.requestActionButton,
+                        styles.requestActionButtonPrimary,
+                        isProcessing && styles.requestActionDisabled,
+                      ]}
+                      onPress={() => handleRequestDecision(request.requestId, 'accept')}
+                      disabled={isProcessing}
+                    >
+                      {isProcessing ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <Text style={[styles.requestActionText, styles.requestActionTextPrimary]}>
+                          Accepter
+                        </Text>
+                      )}
+                    </Pressable>
+                  </View>
+                ) : null}
+              </View>
+            );
+          })
+        )}
+      </View>
+    ),
+    [handleRequestDecision, processingRequestId]
+  );
 
   const reserved = ride?.passengers.length ?? 0;
   const totalSeats = ride?.seats ?? 3;
@@ -115,12 +234,7 @@ export default function DriverRideDetailScreen() {
       deleteRide(ride.id);
       console.debug('[DeleteRide] success', ride.id);
       setConfirmVisible(false);
-      createNotification(
-        session.email ?? '',
-        'ride_deleted',
-        'Trajet supprimé',
-        'Ton trajet a été supprimé.'
-      );
+      // Notifications disabled (Firebase removed)
       void router
         .replace({ pathname: '/driver-my-rides', params: { tab: 'published' } })
         .catch(() => router.back());
@@ -190,6 +304,27 @@ export default function DriverRideDetailScreen() {
           fullWidth
           onPress={() => router.push('/requests')}
         />
+
+        <View style={styles.requestsWrapper}>
+          {renderRequestsSection(
+            'Demandes en cours',
+            requestsByStatus.pending,
+            'Aucune demande en attente pour le moment.',
+            true
+          )}
+          {renderRequestsSection(
+            'Demandes acceptées',
+            requestsByStatus.accepted,
+            'Pas encore de demande acceptée.',
+            false
+          )}
+          {renderRequestsSection(
+            'Demandes payées',
+            requestsByStatus.paid,
+            'Aucune demande payée pour l’instant.',
+            false
+          )}
+        </View>
 
         <View style={styles.deleteWrapper}>
           <Pressable
@@ -339,6 +474,93 @@ const styles = StyleSheet.create({
   },
   paymentLarge: {
     fontSize: 20,
+  },
+  requestsWrapper: {
+    gap: Spacing.lg,
+  },
+  requestsSection: {
+    backgroundColor: Colors.white,
+    borderRadius: 24,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+    ...Shadows.card,
+  },
+  requestsSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  requestsSectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  requestsSectionCount: {
+    fontSize: 14,
+    color: Colors.gray500,
+  },
+  requestsEmpty: {
+    fontSize: 14,
+    color: Colors.gray500,
+  },
+  requestCard: {
+    borderRadius: 20,
+    backgroundColor: Colors.primaryLight,
+    padding: Spacing.md,
+    gap: Spacing.xs,
+  },
+  requestCardHeader: {
+    gap: Spacing.xs,
+  },
+  requestCardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  requestCardMeta: {
+    color: Colors.gray600,
+    fontSize: 12,
+  },
+  requestCardFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: Spacing.xs,
+  },
+  requestCardPrice: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  requestPaymentStatus: {
+    fontSize: 12,
+    color: Colors.gray500,
+  },
+  requestActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  requestActionButton: {
+    flex: 1,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.xs,
+    alignItems: 'center',
+  },
+  requestActionButtonPrimary: {
+    backgroundColor: Colors.accent,
+  },
+  requestActionButtonSecondary: {
+    backgroundColor: Colors.gray200,
+  },
+  requestActionDisabled: {
+    opacity: 0.6,
+  },
+  requestActionText: {
+    fontWeight: '700',
+    color: Colors.ink,
+  },
+  requestActionTextPrimary: {
+    color: '#fff',
   },
   deleteWrapper: {
     marginTop: Spacing.lg,

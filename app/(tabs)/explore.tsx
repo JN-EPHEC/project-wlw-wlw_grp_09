@@ -57,7 +57,7 @@ import { getWallet, subscribeWallet, type WalletSnapshot } from '../services/wal
 import { getAvatarUrl } from '../ui/avatar';
 import { Colors, Gradients, Shadows, Radius as ThemeRadius, Spacing as ThemeSpacing } from '../ui/theme';
 import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
-import { createNotification } from '@/app/services/notifications-store';
+import { createReservation } from '@/src/trajetsReservationsService';
 
 const DefaultColors = {
   primary: '#E63946',
@@ -935,12 +935,7 @@ const selectMeetingPoint = useCallback(
       if (__DEV__) {
         console.debug('[Publish] rideId', publishedRide.id);
       }
-      createNotification(
-        session.email,
-        'ride_published',
-        'Trajet publié',
-        'Ton trajet a bien été publié.'
-      );
+      // Notifications disabled (Firebase removed)
       router.replace({
         pathname: '/driver/ride-published',
         params: {
@@ -2528,6 +2523,21 @@ function PassengerPublishScreen({
     [router]
   );
 
+  const persistReservationRecord = useCallback(async (ride: Ride) => {
+    if (!ride.ownerUid || !ride.id) return;
+    try {
+      await createReservation(ride.ownerUid, ride.id, 1);
+    } catch (error) {
+      console.warn('[Explore] createReservation failed', error);
+      Alert.alert(
+        'Impossible de synchroniser',
+        error instanceof Error
+          ? error.message
+          : 'La réservation a été créée localement mais ne peut pas encore être synchronisée.'
+      );
+    }
+  }, []);
+
   const handleReserveRide = useCallback(
     (ride: Ride, method: PaymentMethod = 'wallet') => {
       if (!session.email) {
@@ -2557,6 +2567,7 @@ function PassengerPublishScreen({
       }
       if (!response) return false;
       if (response.ok) {
+        void persistReservationRecord(ride);
         const params = {
           driver: ride.driver,
           depart: ride.depart,
@@ -2614,7 +2625,7 @@ function PassengerPublishScreen({
       Alert.alert('Réservation impossible', message);
       return false;
     },
-    [session.email, router, openRide]
+    [session.email, router, openRide, persistReservationRecord]
   );
 
   const startPaymentFlow = useCallback(
@@ -4842,23 +4853,6 @@ const styles = (C: typeof DefaultColors, S: typeof Shadows) =>
       backgroundColor: 'transparent',
     },
     formCard: { marginTop: 4 },
-
-    notificationsCard: { gap: 12, borderColor: C.primary, borderWidth: 1 },
-    notificationsHeader: { gap: Spacing.xs },
-    notificationsTitle: { fontWeight: '800', color: C.primary, fontSize: 16 },
-    notificationsSubtitle: { color: C.gray600, fontSize: 12 },
-    notificationRow: { flexDirection: 'row', gap: 12, alignItems: 'center' },
-    notificationBody: { color: C.gray600, fontSize: 13, flexShrink: 1 },
-    notificationTime: { color: C.gray500, fontSize: 12, marginTop: 2 },
-    notificationRead: {
-      backgroundColor: C.primary,
-      paddingHorizontal: 12,
-      paddingVertical: 6,
-      borderRadius: 999,
-    },
-    notificationReadText: { color: '#fff', fontWeight: '700' },
-    notificationHint: { color: C.gray500, fontSize: 12 },
-    notificationEmpty: { color: C.gray600, fontSize: 12 },
 
     ridesCard: { gap: 12 },
     ridesTitle: { fontWeight: '800', color: C.ink, fontSize: 18 },

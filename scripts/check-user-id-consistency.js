@@ -14,18 +14,6 @@ const checks = [
       "doc\\(db,\\s*['\"]wallets['\"]\\s*,\\s*(?:auth\\.uid|ownerUid|uid)|userDocRef\\(\\s*['\"]wallets['\"]",
   },
   {
-    name: 'notificationTokens documents',
-    hint: "doc(db, 'notificationTokens', ...uid) or userDocRef('notificationTokens', ...)",
-    pattern:
-      "doc\\(db,\\s*['\"]notificationTokens['\"]\\s*,\\s*(?:auth\\.uid|uid)|userDocRef\\(\\s*['\"]notificationTokens['\"]",
-  },
-  {
-    name: 'notificationPreferences documents',
-    hint: "doc(db, 'notificationPreferences', ...uid) or userDocRef('notificationPreferences', ...)",
-    pattern:
-      "doc\\(db,\\s*['\"]notificationPreferences['\"]\\s*,\\s*(?:auth\\.uid|uid)|userDocRef\\(\\s*['\"]notificationPreferences['\"]",
-  },
-  {
     name: 'trajets user journal',
     hint: "doc(collection(db,'trajets'), uid) or doc(db, 'trajets', uid)",
     pattern: "doc\\(collection\\(db,\\s*'trajets'\\),\\s*(?:auth\\.uid|uid|ownerUid)\\)",

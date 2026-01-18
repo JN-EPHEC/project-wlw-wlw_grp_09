@@ -160,47 +160,47 @@ export default function RideCheckoutScreen() {
   const requestAccepted = requestForRide?.status === 'accepted';
   const bookingCancelled = bookingForRide?.status === 'cancelled';
   const bookingPaid = bookingForRide?.paymentStatus === 'paid';
-const bookingMissing = requestAccepted && !bookingForRide;
-const bookingReadyForPayment = Boolean(
-  bookingForRide && requestAccepted && !bookingCancelled && !bookingPaid
-);
+  const bookingMissing = requestAccepted && !bookingForRide;
+  const bookingReadyForPayment = Boolean(
+    bookingForRide && requestAccepted && !bookingCancelled && !bookingPaid
+  );
 
-const walletBalance = wallet?.balance ?? 0;
+  const walletBalance = wallet?.balance ?? 0;
 
-const driverProfileEmail = bookingForRide?.ownerEmail ?? ride?.ownerEmail ?? null;
-const resolvedRideId = ride?.id ?? ride?.rideId ?? rideIdString ?? null;
-const routeLabel = ride ? `${ride.depart} → ${ride.destination}` : '';
+  const driverProfileEmail = bookingForRide?.ownerEmail ?? ride?.ownerEmail ?? null;
+  const resolvedRideId = ride?.id ?? ride?.rideId ?? rideIdString ?? null;
+  const routeLabel = ride ? `${ride.depart} → ${ride.destination}` : '';
 
-const handleViewDriverProfile = useCallback(() => {
-  if (!driverProfileEmail) {
-    Alert.alert('Profil indisponible', 'Impossible de retrouver ce conducteur.');
-    return;
-  }
-  router.push({ pathname: '/driver-profile/[email]', params: { email: driverProfileEmail } });
-}, [driverProfileEmail, router]);
+  const handleViewDriverProfile = useCallback(() => {
+    if (!driverProfileEmail) {
+      Alert.alert('Profil indisponible', 'Impossible de retrouver ce conducteur.');
+      return;
+    }
+    router.push({ pathname: '/driver-profile/[email]', params: { email: driverProfileEmail } });
+  }, [driverProfileEmail, router]);
 
-const handleSendMessageToDriver = useCallback(() => {
-  if (!session.email) {
-    Alert.alert('Connexion requise', 'Connecte-toi pour envoyer un message.');
-    return;
-  }
-  if (!driverProfileEmail || !ride || !resolvedRideId) {
-    Alert.alert('Conversation indisponible', 'Impossible de démarrer la conversation pour le moment.');
-    return;
-  }
-  const thread = createThread({
-    rideId: resolvedRideId,
-    routeLabel,
-    participants: [
-      { email: session.email, role: 'passenger' },
-      { email: driverProfileEmail, role: 'driver' },
-    ],
-  });
-  router.push({
-    pathname: '/(tabs)/messages',
-    params: { thread: thread.id, origin: 'checkout' },
-  });
-}, [driverProfileEmail, ride, resolvedRideId, routeLabel, router, session.email]);
+  const handleSendMessageToDriver = useCallback(() => {
+    if (!session.email) {
+      Alert.alert('Connexion requise', 'Connecte-toi pour envoyer un message.');
+      return;
+    }
+    if (!driverProfileEmail || !ride || !resolvedRideId) {
+      Alert.alert('Conversation indisponible', 'Impossible de démarrer la conversation pour le moment.');
+      return;
+    }
+    const thread = createThread({
+      rideId: resolvedRideId,
+      routeLabel,
+      participants: [
+        { email: session.email, role: 'passenger' },
+        { email: driverProfileEmail, role: 'driver' },
+      ],
+    });
+    router.push({
+      pathname: '/(tabs)/messages',
+      params: { thread: thread.id, origin: 'checkout' },
+    });
+  }, [driverProfileEmail, ride, resolvedRideId, routeLabel, router, session.email]);
 
   useEffect(() => {
     if (!rideIdString) return;

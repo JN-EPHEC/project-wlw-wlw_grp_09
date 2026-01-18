@@ -5,7 +5,6 @@ import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import NotificationCenter from '@/components/notification-center';
 import { LanguageProvider } from '@/hooks/use-language';
 import { DocumentStoreProvider } from '@/hooks/use-document-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -78,7 +77,7 @@ export default function RootLayout() {
       <LanguageProvider>
         <DocumentStoreProvider>
           <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-            <NotificationCenter />
+            {/* Notifications disabled (Firebase removed) */}
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="welcome" options={{ headerShown: false }} />
               <Stack.Screen name="account-deleted" options={{ headerShown: false }} />

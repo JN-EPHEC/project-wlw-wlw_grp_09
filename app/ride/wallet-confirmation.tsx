@@ -16,12 +16,11 @@ import {
   type Ride,
 } from '@/app/services/rides';
 import {
-  canPayWithWallet,
   creditWallet,
   debitWallet,
-  getWallet,
-  subscribeWallet,
-} from '@/app/services/wallet';
+  subscribeWallet as subscribeRemoteWallet,
+  type WalletSnapshot as RemoteWalletSnapshot,
+} from '@/app/services/wallet-service';
 import { createBooking } from '@/app/services/booking-store';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { maskPlate } from '@/app/utils/plate';
@@ -39,9 +38,7 @@ export default function WalletConfirmationScreen() {
   }>();
   const session = useAuthSession();
   const [rides, setRides] = useState<Ride[]>(() => getRides());
-  const [walletSnapshot, setWalletSnapshot] = useState(() =>
-    session.email ? getWallet(session.email) : null
-  );
+  const [walletSnapshot, setWalletSnapshot] = useState<RemoteWalletSnapshot | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,13 +48,13 @@ export default function WalletConfirmationScreen() {
   }, []);
 
   useEffect(() => {
-    if (!session.email) {
+    if (!session.uid) {
       setWalletSnapshot(null);
       return;
     }
-    const unsubscribe = subscribeWallet(session.email, setWalletSnapshot);
+    const unsubscribe = subscribeRemoteWallet(session.uid, setWalletSnapshot);
     return unsubscribe;
-  }, [session.email]);
+  }, [session.uid]);
 
   const rideId = Array.isArray(params.rideId) ? params.rideId[0] : params.rideId;
   const ride = useMemo(() => (rideId ? rides.find((item) => item.id === rideId) ?? null : null), [
@@ -85,7 +82,7 @@ export default function WalletConfirmationScreen() {
       setError('Impossible de confirmer ce trajet, la date est mal configurée.');
       return;
     }
-    if (!canPayWithWallet(session.email, amount)) {
+    if (walletBalance < amount) {
       setError('Solde insuffisant dans ton wallet.');
       return;
     }
@@ -94,22 +91,17 @@ export default function WalletConfirmationScreen() {
     setIsProcessing(true);
     setError(null);
     try {
-      const debitResult = await debitWallet(
-        session.email,
-        amount,
-        `Paiement trajet ${ride.depart} → ${ride.destination}`,
-        { rideId }
-      );
-      console.debug('[WalletConfirm] debit', debitResult);
-      if (!debitResult) {
-        throw new Error('Solde insuffisant ou montant invalide.');
-      }
+      await debitWallet(amount, {
+        description: `Paiement trajet ${ride.depart} → ${ride.destination}`,
+        reason: 'ride_payment',
+        metadata: { rideId },
+      });
       const reservation = confirmReservationWithoutPayment(ride.id, session.email);
       if (!reservation) {
-        await creditWallet(session.email, amount, {
+        await creditWallet(amount, {
           description: 'Annulation paiement',
-          rideId,
           reason: 'reservation_failed',
+          metadata: { rideId },
         });
         throw new Error('Impossible de confirmer ce trajet pour le moment.');
       }
@@ -146,10 +138,10 @@ export default function WalletConfirmationScreen() {
       console.debug('[WalletConfirm] reservationResult', bookingResult);
       if (!bookingResult.ok) {
         cancelReservation(ride.id, session.email);
-        await creditWallet(session.email, amount, {
+        await creditWallet(amount, {
           description: 'Annulation paiement',
-          rideId,
           reason: 'booking_failed',
+          metadata: { rideId },
         });
         throw new Error('Impossible de sauvegarder la confirmation.');
       }

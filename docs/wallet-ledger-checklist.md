@@ -10,7 +10,7 @@
    - `wallet.transferForRide` callable : exécute une seule transaction multi-documents pour débiter le passager et créditer le conducteur (rideId + feeCents) tout en vérifiant l’idempotencyKey côté passager.
 
 3. **Frontend**
-   - Tous les services (`wallet.ts`, `payments.ts`, `rides.ts`, `notifications.ts`) doivent appeler `wallet.adjustBalance` / `wallet.transferForRide` via un `httpsCallable` (`firebase/functions`) plutôt que d’écrire Firestore.
+   - Tous les services (`wallet.ts`, `payments.ts`, `rides.ts`) doivent appeler `wallet.adjustBalance` / `wallet.transferForRide` via un `httpsCallable` (`firebase/functions`) plutôt que d’écrire Firestore. Le service `notifications.ts` a été retiré et la pile de notifications Firebase est désactivée.
    - La vue `wallet` ne lit plus le champ `transactions` du doc ; elle surveille le sous-collection `wallets/{uid}/transactions`.
 
 4. **Sécurité**

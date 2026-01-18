@@ -62,18 +62,6 @@ const collectionsToMigrate = [
     emailFields: ["createdByEmail", "email"],
     uidFieldToSet: "createdByUid",
   },
-  {
-    name: "notificationPreferences",
-    uidFields: ["ownerUid", "uid"],
-    emailFields: ["email"],
-    uidFieldToSet: "ownerUid",
-  },
-  {
-    name: "notificationTokens",
-    uidFields: ["ownerUid", "uid"],
-    emailFields: ["email"],
-    uidFieldToSet: "ownerUid",
-  },
 ];
 
 const resolveUid = async (config, docSnapshot) => {

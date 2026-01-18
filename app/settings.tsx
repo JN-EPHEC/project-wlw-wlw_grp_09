@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   Pressable,
@@ -17,11 +17,6 @@ import { GradientBackground } from '@/components/ui/gradient-background';
 import { Colors, Gradients, Radius, Shadows, Spacing, Typography } from '@/app/ui/theme';
 import PrivacyPolicyModal from '@/components/privacy-policy-modal';
 import { useAuthSession } from '@/hooks/use-auth-session';
-import {
-  getNotificationPreferences,
-  subscribeNotificationPreferences,
-  updateNotificationPreferences,
-} from '@/app/services/notifications';
 import { useBlockedUsers } from '@/hooks/use-blocked-users';
 import { useLanguage, useTranslation } from '@/hooks/use-language';
 
@@ -30,30 +25,8 @@ const C = Colors;
 export default function SettingsScreen() {
   const session = useAuthSession();
   const email = session.email;
-  const [pushEnabledLocal, setPushEnabledLocal] = useState(true);
-  const [soundEnabledLocal, setSoundEnabledLocal] = useState(true);
-  const [remindersEnabledLocal, setRemindersEnabledLocal] = useState(true);
   const { locale } = useLanguage();
   const t = useTranslation();
-
-  useEffect(() => {
-    if (!email) {
-      setSoundEnabledLocal(true);
-      setRemindersEnabledLocal(true);
-      setPushEnabledLocal(true);
-      return;
-    }
-    const current = getNotificationPreferences(email);
-    setPushEnabledLocal(current.pushEnabled);
-    setSoundEnabledLocal(current.soundEnabled);
-    setRemindersEnabledLocal(current.remindersEnabled);
-    const unsubscribe = subscribeNotificationPreferences(email, (prefs) => {
-      setPushEnabledLocal(prefs.pushEnabled);
-      setSoundEnabledLocal(prefs.soundEnabled);
-      setRemindersEnabledLocal(prefs.remindersEnabled);
-    });
-    return unsubscribe;
-  }, [email]);
 
   const [privacyVisible, setPrivacyVisible] = useState(false);
   const blockedUsers = useBlockedUsers(session.email);
@@ -74,34 +47,6 @@ export default function SettingsScreen() {
   const openTerms = () =>
     router.push('/settings/terms');
 
-  const handlePushChange = (value: boolean) => {
-    if (!email) {
-      Alert.alert('Connexion requise', 'Connecte-toi pour modifier les notifications.');
-      return;
-    }
-    setPushEnabledLocal(value);
-    updateNotificationPreferences(email, { pushEnabled: value }, session.uid);
-  };
-
-  const handleSoundChange = (value: boolean) => {
-    if (!email) {
-      Alert.alert('Connexion requise', 'Connecte-toi pour modifier les notifications.');
-      return;
-    }
-    setSoundEnabledLocal(value);
-    updateNotificationPreferences(email, { soundEnabled: value }, session.uid);
-  };
-
-  const handleReminderChange = (value: boolean) => {
-    if (!email) {
-      Alert.alert('Connexion requise', 'Connecte-toi pour modifier les notifications.');
-      return;
-    }
-    setRemindersEnabledLocal(value);
-    updateNotificationPreferences(email, { remindersEnabled: value }, session.uid);
-  };
-
-  const pushEnabled = pushEnabledLocal;
   const backgroundColors = session.isDriver ? Gradients.driver : Gradients.twilight;
 
   return (
@@ -123,32 +68,9 @@ export default function SettingsScreen() {
               icon="bell.fill"
               iconTint="#FF9D5C"
             >
-              <ToggleCard
-                icon="bell.fill"
-                title={t('settingsNotificationsPush')}
-                subtitle={
-                  email ? t('settingsNotificationsPushSubtitle') : t('settingsLoginPrompt')
-                }
-                value={pushEnabled}
-                onChange={handlePushChange}
-                disabled={!email}
-              />
-              <ToggleCard
-                icon="clock"
-                title={t('settingsReminders')}
-                subtitle={t('settingsRemindersSubtitle')}
-                value={remindersEnabledLocal}
-                onChange={handleReminderChange}
-                disabled={!email}
-              />
-              <ToggleCard
-                icon="speaker.wave.2.fill"
-                title={t('settingsSounds')}
-                subtitle={t('settingsSoundsSubtitle')}
-                value={soundEnabledLocal}
-                onChange={handleSoundChange}
-                disabled={!email}
-              />
+              <Text style={styles.notificationsDisabledText}>
+                Notifications locales activées : elles arrivent instantanément dans l’app et s’affichent sur l’écran Notifications.
+              </Text>
             </SettingsSection>
 
             <SettingsSection
@@ -359,6 +281,10 @@ const styles = StyleSheet.create({
   },
   sectionBody: {
     gap: Spacing.md,
+  },
+  notificationsDisabledText: {
+    color: C.gray500,
+    fontSize: 14,
   },
   toggleCard: {
     backgroundColor: '#F5F6FB',

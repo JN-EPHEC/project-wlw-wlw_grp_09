@@ -1,7 +1,6 @@
 // app/services/rewards.ts
 // Calcul du système de récompenses conducteur (badges + délai de retrait réduit).
 
-import { pushNotification } from './notifications';
 import { updateWithdrawalDelay } from './wallet';
 
 export type RewardTierId = 'none' | 'bronze' | 'silver' | 'gold';
@@ -185,29 +184,7 @@ export const applyRewards = (email: string, stats: RewardStats) => {
   driverSnapshots[key] = snapshot;
   const delayChanged = updateWithdrawalDelay(email, tier.withdrawalDelayDays);
   const tierChanged = previousTier !== tier.id;
-  if (tierChanged && tier.id !== 'none') {
-    pushNotification({
-      to: email,
-      title: tierLabelForNotification(tier),
-      body:
-        tier.id === 'gold'
-          ? 'Félicitations ! Tu obtiens le badge Gold et le délai de retrait minimum.'
-          : `Bravo ! Tu débloques ${tier.label.toLowerCase()} : ${tier.highlight ?? 'nouvelle récompense disponible.'}`,
-      metadata: {
-        action: 'driver-reward',
-        tier: tier.id,
-        delayDays: tier.withdrawalDelayDays,
-      },
-    });
-  }
-  if (delayChanged && !tierChanged) {
-    pushNotification({
-      to: email,
-      title: 'Retrait accéléré',
-      body: `Ton délai de retrait passe à ${tier.withdrawalDelayDays} jour(s).`,
-      metadata: { action: 'driver-reward', tier: tier.id, delayDays: tier.withdrawalDelayDays },
-    });
-  }
+  // Notifications disabled (Firebase removed)
   return snapshot;
 };
 

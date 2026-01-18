@@ -5,7 +5,6 @@ import { purgeFeedbackForEmail } from './passenger-feedback';
 import { purgeMessagesForEmail } from './messages';
 import { purgeReportsForEmail } from './reports';
 import { purgeReviewsForEmail } from './reviews';
-import { purgeNotificationsForEmail } from './notifications';
 import { purgePurchasesForEmail } from './passes';
 import { purgeUserRides } from './rides';
 import { clearDriverSecurity } from './security';
@@ -20,7 +19,7 @@ export const deleteAccountData = (email: string | null | undefined) => {
   purgeFeedbackForEmail(normalized);
   purgeReportsForEmail(normalized);
   purgePurchasesForEmail(normalized);
-  purgeNotificationsForEmail(normalized);
+  // Notifications disabled (Firebase removed)
   purgeBlockedReferences(normalized);
   clearDriverSecurity(normalized);
   clearRewardsForEmail(normalized);

@@ -1,7 +1,6 @@
 // app/services/reviews.ts
 // Service en mémoire pour gérer les avis conducteurs côté client.
 
-import { pushNotification } from './notifications';
 import { getRide, hasRideDeparted } from './rides';
 import { moderateComment } from './review-moderation';
 
@@ -302,17 +301,7 @@ export const submitReview = (payload: ReviewPayload) => {
   notifyDriver(driverEmail);
   notifyRide(rideId);
   notifyPassenger(passengerEmail);
-  pushNotification({
-    to: driverEmail,
-    title: 'Nouvel avis reçu',
-    body: `${passengerName} a noté ton trajet ${rating.toFixed(1)}/5.`,
-    metadata: {
-      action: 'driver-review',
-      rideId,
-      rating,
-      passenger: passengerName,
-    },
-  });
+  // Notifications disabled (Firebase removed)
   return review;
 };
 
@@ -335,16 +324,7 @@ export const respondToReview = (reviewId: string, response: string) => {
   notifyDriver(updated.driverEmail);
   notifyRide(updated.rideId);
   notifyPassenger(updated.passengerEmail);
-  pushNotification({
-    to: updated.passengerEmail,
-    title: 'Réponse conductrice',
-    body: `${updated.driverName} a répondu à ton avis.`,
-    metadata: {
-      action: 'review-response',
-      rideId: updated.rideId,
-      driver: updated.driverName,
-    },
-  });
+  // Notifications disabled (Firebase removed)
   return updated;
 };
 

@@ -1,8 +1,6 @@
 // app/services/messages.ts
 // In-memory messaging service with basic XOR "encryption", realtime listeners
-// and notification hooks for the demo app.
-
-import { pushNotification } from '@/app/services/notifications';
+// Notifications disabled (Firebase removed). 
 
 export type ThreadParticipant = {
   email: string;
@@ -205,12 +203,6 @@ export const sendMessage = ({
     if (emailKey === authorKey) return;
     message.receipts[emailKey] = 'received';
     thread.unreadBy[emailKey] = (thread.unreadBy[emailKey] ?? 0) + 1;
-    pushNotification({
-      to: participant.email,
-      title: 'Nouveau message',
-      body: trimmed.length > 72 ? `${trimmed.slice(0, 69)}…` : trimmed,
-      metadata: { threadId, rideId: thread.rideId },
-    });
     notifyThreadListeners(participant.email);
   });
   notifyThreadListeners(author);

@@ -1,6 +1,9 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
+
+admin.initializeApp();
+
 const { parseMetadata, saveEncryptedFile, requestReview, parseEmail, serializeSnapshot } = require('./src/driverDocuments');
 const setDriverDocumentsCorsHeaders = (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
@@ -12,7 +15,6 @@ const setDriverDocumentsCorsHeaders = (req, res) => {
   );
 };
 
-admin.initializeApp();
 const db = admin.firestore();
 
 const RESEND_API_KEY =
@@ -190,6 +192,20 @@ exports.driverDocuments = functions.https.onRequest(async (req, res) => {
   }
 
   return res.status(405).json({ error: 'METHOD_NOT_ALLOWED' });
+});
+
+exports.getDriverDocumentsStatus = functions.https.onCall(async (data, context) => {
+  const uid = context.auth?.uid ?? null;
+  const email = context.auth?.token?.email ?? null;
+  if (!uid || !email) {
+    throw new functions.https.HttpsError('unauthenticated', 'Connexion requise.');
+  }
+  const normalized = parseEmail(data?.email ?? email);
+  if (!normalized || normalized !== email.toLowerCase()) {
+    throw new functions.https.HttpsError('permission-denied', 'E-mail invalide.');
+  }
+  const snapshot = await serializeSnapshot(normalized);
+  return snapshot;
 });
 
 const BATCH_DELETE_LIMIT = 400;
@@ -379,43 +395,13 @@ exports.deleteAccountAndData = functions.https.onCall(async (_, context) => {
       deletedCounts
     );
     await deleteQueryBatch(
-      'ridesByOwnerUid',
-      () => db.collection('rides').where('ownerUid', '==', uid),
+      'driverPublishedRides',
+      () => db.collection('rides').doc(uid).collection('published'),
       deletedCounts
     );
     await deleteQueryBatch(
-      'ridesByPassengerUid',
-      () => db.collection('rides').where('passengerUid', '==', uid),
-      deletedCounts
-    );
-    await deleteQueryBatch(
-      'notificationsByUserId',
-      () => db.collection('notifications').where('userId', '==', uid),
-      deletedCounts
-    );
-    await deleteQueryBatch(
-      'notificationsByOwnerUid',
-      () => db.collection('notifications').where('ownerUid', '==', uid),
-      deletedCounts
-    );
-    await deleteDocIfExists(
-      db.collection('notificationPreferences').doc(uid),
-      'notificationPreferencesDoc',
-      deletedCounts
-    );
-    await deleteDocIfExists(
-      db.collection('notificationTokens').doc(uid),
-      'notificationTokensDoc',
-      deletedCounts
-    );
-    await deleteQueryBatch(
-      'notificationTokensByOwnerUid',
-      () => db.collection('notificationTokens').where('ownerUid', '==', uid),
-      deletedCounts
-    );
-    await deleteQueryBatch(
-      'notificationTokensByAuthUid',
-      () => db.collection('notificationTokens').where('authUid', '==', uid),
+      'passengerRideRequests',
+      () => db.collection('users').doc(uid).collection('rideRequests'),
       deletedCounts
     );
     await deleteQueryBatch(
@@ -540,62 +526,110 @@ const buildWalletUpdate = (existing, uid, balanceCents, now) => ({
   updatedAt: now,
 });
 
-const getTransactionRef = (walletRef, idempotencyKey) =>
-  idempotencyKey
-    ? walletRef.collection("transactions").doc(idempotencyKey)
-    : walletRef.collection("transactions").doc();
+const ALLOWED_BALANCE_REASONS = new Set(['topup', 'withdraw', 'ride_payment', 'ride_payout']);
 
-exports.adjustBalance = functions.https.onCall(async (data, context) => {
-  const uid = context.auth?.uid;
-  if (!uid) {
-    throw new functions.https.HttpsError("unauthenticated", "Connexion requise.");
+const sanitizeBalanceReason = (value) => {
+  if (!value || typeof value !== 'string') return null;
+  const next = value.trim().toLowerCase();
+  return ALLOWED_BALANCE_REASONS.has(next) ? next : null;
+};
+
+const buildBalanceTransaction = ({
+  txId,
+  uid,
+  amountCents,
+  reason,
+  description,
+  metadata,
+  createdAt,
+  balanceBeforeCents,
+  balanceAfterCents,
+  idempotencyKey,
+}) => ({
+  txId,
+  uid,
+  amountCents,
+  type: amountCents >= 0 ? 'credit' : 'debit',
+  reason,
+  status: 'succeeded',
+  metadata: metadata ?? null,
+  description: description ?? null,
+  createdAt,
+  balanceBeforeCents,
+  balanceAfterCents,
+  idempotencyKey: idempotencyKey ?? null,
+});
+
+const runWalletAdjustBalance = async (uid, data) => {
+  const rawAmount = Number(data?.amountCents);
+  if (!Number.isFinite(rawAmount) || rawAmount === 0) {
+    throw new functions.https.HttpsError('invalid-argument', 'Montant invalide.');
   }
-  const amountCents = toCents(data.amountCents ?? 0);
-  if (amountCents <= 0) {
-    throw new functions.https.HttpsError("invalid-argument", "Montant invalide.");
+  const amountCents = Math.round(rawAmount);
+  const reason = sanitizeBalanceReason(data?.reason);
+  if (!reason) {
+    throw new functions.https.HttpsError('invalid-argument', 'Raison invalide.');
   }
-  const direction = data.direction === "debit" ? "debit" : "credit";
-  const walletRef = db.collection("wallets").doc(uid);
+  const idempotencyKey =
+    typeof data?.idempotencyKey === 'string' ? data.idempotencyKey.trim() : '';
+  if (!idempotencyKey) {
+    throw new functions.https.HttpsError('invalid-argument', 'idempotencyKey requis.');
+  }
+  const walletRef = db.collection('wallets').doc(uid);
+  const txRef = walletRef.collection('transactions').doc(idempotencyKey);
   const now = admin.firestore.Timestamp.now();
-  const txRef = getTransactionRef(walletRef, data.idempotencyKey);
 
   return db.runTransaction(async (transaction) => {
-    if (data.idempotencyKey) {
-      const existingTx = await transaction.get(txRef);
-      if (existingTx.exists) {
-        return { balanceCents: existingTx.data().balanceAfterCents };
-      }
+    const existingTx = await transaction.get(txRef);
+    if (existingTx.exists) {
+      return {
+        balanceCents: existingTx.data().balanceAfterCents ?? 0,
+        txId: existingTx.id,
+        transaction: existingTx.data(),
+      };
     }
     const walletSnap = await transaction.get(walletRef);
     const walletData = walletSnap.data() ?? {};
     const balanceCents =
-      typeof walletData.balanceCents === "number"
+      typeof walletData.balanceCents === 'number'
         ? walletData.balanceCents
         : toCents(walletData.balance ?? 0);
-    const delta = direction === "debit" ? -amountCents : amountCents;
-    const newBalance = balanceCents + delta;
+    const newBalance = balanceCents + amountCents;
     if (newBalance < 0) {
-      throw new functions.https.HttpsError("failed-precondition", "Solde insuffisant.");
+      throw new functions.https.HttpsError('failed-precondition', 'Solde insuffisant.');
     }
-    const txData = buildTransactionData({
+    const txData = buildBalanceTransaction({
+      txId: txRef.id,
+      uid,
       amountCents,
-      direction,
-      source: data.source ?? "wallet-adjustment",
-      description: data.description ?? null,
-      rideId: data.rideId ?? null,
-      counterpartyUid: data.counterpartyUid ?? null,
-      idempotencyKey: data.idempotencyKey ?? null,
-      createdByUid: uid,
+      reason,
+      description: typeof data?.description === 'string' ? data.description : null,
+      metadata: data?.metadata ?? null,
+      createdAt: now,
       balanceBeforeCents: balanceCents,
       balanceAfterCents: newBalance,
+      idempotencyKey,
     });
-    txData.metadata = data.metadata ?? null;
-    transaction.set(walletRef, buildWalletUpdate(walletData, uid, newBalance, now), {
-      merge: true,
-    });
+    const walletPayload = {
+      balanceCents: newBalance,
+      ownerUid: uid,
+      currency: walletData.currency ?? 'EUR',
+      payoutMethod: walletData.payoutMethod ?? null,
+      createdAt: walletData.createdAt ?? now,
+      updatedAt: now,
+    };
+    transaction.set(walletRef, walletPayload, { merge: true });
     transaction.set(txRef, txData, { merge: true });
-    return { balanceCents: newBalance };
+    return { balanceCents: newBalance, txId: txRef.id, transaction: txData };
   });
+};
+
+exports.walletAdjustBalance = functions.https.onCall(async (data, context) => {
+  const uid = context.auth?.uid;
+  if (!uid) {
+    throw new functions.https.HttpsError('unauthenticated', 'Connexion requise.');
+  }
+  return runWalletAdjustBalance(uid, data);
 });
 
 exports.transferForRide = functions.https.onCall(async (data, context) => {

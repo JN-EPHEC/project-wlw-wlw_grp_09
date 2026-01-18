@@ -1,7 +1,10 @@
 import { encryptFileUri, encryptStringPayload, type EncryptedPayload } from '@/app/utils/secure-cipher';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '@/src/firebase';
 
-const DEFAULT_ENDPOINT = 'https://us-central1-campusride-demo.cloudfunctions.net/driverDocuments';
+const DEFAULT_ENDPOINT = 'https://us-central1-campusride-8b619.cloudfunctions.net/driverDocuments';
 const DRIVER_DOCS_ENDPOINT = process.env.EXPO_PUBLIC_DRIVER_DOCS_URL ?? DEFAULT_ENDPOINT;
+const getDriverDocumentsStatusCallable = httpsCallable(functions, 'getDriverDocumentsStatus');
 
 export type DriverDocumentType = 'license_front' | 'license_back' | 'vehicle_registration';
 export type DriverDocumentState = 'missing' | 'pending' | 'approved' | 'rejected';
@@ -113,22 +116,6 @@ export const fetchDriverDocumentStatuses = async (email: string): Promise<Driver
   if (!normalized) {
     throw new Error('Adresse e-mail requise');
   }
-  const response = await fetch(
-    `${DRIVER_DOCS_ENDPOINT}?email=${encodeURIComponent(normalized)}`,
-    {
-      headers: { 'Accept': 'application/json' },
-    }
-  );
-  if (!response.ok) {
-    let message = `Erreur ${response.status}`;
-    try {
-      const body = await response.json();
-      if (body?.error) message = body.error;
-    } catch {
-      // ignore
-    }
-    throw new Error(message);
-  }
-  const snapshot = (await response.json()) as DriverDocumentSnapshot;
-  return snapshot;
+  const result = await getDriverDocumentsStatusCallable({ email: normalized });
+  return result.data as DriverDocumentSnapshot;
 };

@@ -4,14 +4,10 @@ import {
   CAMPUSPOINTS_PER_PASSENGER,
   CAMPUSRIDE_COMMISSION_RATE,
 } from '../constants/fuel';
-import {
-  cancelNotificationSchedule,
-  getAreaSubscribers,
-  pushNotification,
-} from './notifications';
 import { processPayment, type Payment, type PaymentMethod } from './payments';
 import { creditWallet, addPoints } from './wallet';
 import { recordCommission } from './platform';
+import { pushLocalNotification } from '@/src/app/services/localNotifications';
 import {
   markRideCancelledRecord,
   persistRideRecord,
@@ -151,40 +147,16 @@ const computeRidePrice = (
 
 export const hasRideDeparted = (ride: Ride, now = Date.now()) => now >= ride.departureAt;
 
-const reminderKey = (rideId: string, email: string, role: 'driver' | 'passenger') =>
-  `${rideId}:${email.toLowerCase()}:${role}:reminder`;
-
-const REMINDER_OFFSET_MINUTES = 30;
-
-const scheduleRideReminder = (ride: Ride, email: string, role: 'driver' | 'passenger') => {
-  const scheduleAt = ride.departureAt - REMINDER_OFFSET_MINUTES * 60 * 1000;
-  if (scheduleAt <= Date.now() + 1000) {
-    return;
-  }
-  const scheduleKey = reminderKey(ride.id, email, role);
-  cancelNotificationSchedule(scheduleKey);
-  pushNotification({
-    to: email,
-    title: 'Rappel trajet',
-    body:
-      role === 'driver'
-        ? `Tu pars bientôt vers ${ride.destination}. Pense à prévenir tes passagers.`
-        : `Ton trajet ${ride.depart} → ${ride.destination} démarre dans ${REMINDER_OFFSET_MINUTES} min.`,
-    metadata: {
-      action: 'ride-reminder',
-      rideId: ride.id,
-      role,
-      depart: ride.depart,
-      destination: ride.destination,
-      time: ride.time,
-    },
-    scheduleAt,
-    scheduleKey,
-  });
+const scheduleRideReminder = (
+  _ride: Ride,
+  _email: string,
+  _role: 'driver' | 'passenger'
+) => {
+  // Notifications disabled (Firebase removed)
 };
 
-const cancelRideReminder = (rideId: string, email: string, role: 'driver' | 'passenger') => {
-  cancelNotificationSchedule(reminderKey(rideId, email, role));
+const cancelRideReminder = (_rideId: string, _email: string, _role: 'driver' | 'passenger') => {
+  // Notifications disabled (Firebase removed)
 };
 
 const formatPassengerDisplay = (email: string) => {
@@ -314,17 +286,7 @@ const processRidePayouts = () => {
           destination: ride.destination,
         });
       }
-      pushNotification({
-        to: ride.ownerEmail,
-        title: 'Versement reçu',
-        body: `€${driverNet.toFixed(2)} crédités suite à ton trajet ${ride.depart} → ${ride.destination}.`,
-        metadata: {
-          rideId: ride.id,
-          action: 'wallet-credit',
-          amount: driverNet,
-          commission,
-        },
-      });
+      // Notifications disabled (Firebase removed)
     }
     const completedRide = { ...ride, payoutProcessed: true, updatedAt: now };
     updatedRides.push(completedRide);
@@ -351,29 +313,7 @@ export const addRide = (payload: RidePayload) => {
   const ride = buildRide(payload);
   rides = [ride, ...rides];
   scheduleRideReminder(ride, ride.ownerEmail, 'driver');
-  const area = resolveAreaFromPlace(ride.depart);
-  if (area) {
-    const recipients = getAreaSubscribers(area.id).filter((email) => email !== ride.ownerEmail);
-    const title = `Nouveau trajet ${area.label}`;
-    const body = `${ride.driver} (${maskPlate(ride.plate)}) part vers ${ride.destination} à ${ride.time}.`;
-    recipients.forEach((to) =>
-      pushNotification({
-        to,
-        title,
-        body,
-        metadata: {
-          rideId: ride.id,
-          action: 'ride-published',
-          areaId: area.id,
-          driver: ride.driver,
-          plate: ride.plate,
-          time: ride.time,
-          destination: ride.destination,
-          depart: ride.depart,
-        },
-      })
-    );
-  }
+  // Notifications disabled (Firebase removed)
   persistRideSnapshot(ride);
   void recordPublishedRide(ride);
   if (ride.ownerUid) {
@@ -395,6 +335,11 @@ export const addRide = (payload: RidePayload) => {
     console.debug('[addRide] created ride', ride);
     console.debug('[addRide] rides count after push', rides.length);
   }
+  void pushLocalNotification({
+    title: 'Trajet publié',
+    body: `${ride.depart} → ${ride.destination} est en ligne.`,
+    metadata: { action: 'ride-published', driver: ride.driver },
+  });
   return ride;
 };
 
@@ -425,15 +370,7 @@ const removeRideInternal = (id: string) => {
     throw new Error('Impossible de supprimer un trajet déjà parti.');
   }
   target.passengers.forEach((passengerEmail) => {
-    pushNotification({
-      to: passengerEmail,
-      title: 'Trajet annulé',
-      body: `${target.driver} a annulé ${target.depart} → ${target.destination}.`,
-      metadata: {
-        action: 'ride-cancelled',
-        rideId: target.id,
-      },
-    });
+    // Notifications disabled (Firebase removed)
     cancelRideReminder(target.id, passengerEmail, 'passenger');
   });
   cancelRideReminder(target.id, target.ownerEmail, 'driver');
@@ -532,28 +469,18 @@ export const reserveSeat = (
   });
 
   if (updated && payment) {
-    notifyRides();
     const passengerDisplay = formatPassengerDisplay(passengerEmail);
-    pushNotification({
-      to: updated.ownerEmail,
-      title: 'Nouvelle réservation confirmée',
-      body: `${passengerDisplay} rejoint ton trajet ${updated.depart} → ${updated.destination}.`,
+    notifyRides();
+    void pushLocalNotification({
+      title: 'Réservation confirmée',
+      body: `${updated.depart} → ${updated.destination} validé.`,
       metadata: {
         action: 'reservation-confirmed',
-        rideId: updated.id,
+        driver: updated.driver,
         passenger: passengerDisplay,
       },
     });
-    pushNotification({
-      to: passengerEmail,
-      title: 'Réservation confirmée',
-      body: `Ta place pour ${updated.depart} → ${updated.destination} est confirmée.`,
-      metadata: {
-        action: 'reservation-confirmed',
-        rideId: updated.id,
-        driver: updated.driver,
-      },
-    });
+    // Notifications disabled (Firebase removed)
     scheduleRideReminder(updated, passengerEmail, 'passenger');
     persistRideSnapshot(updated);
     void recordReservedRide(updated, passengerEmail, {
@@ -585,32 +512,23 @@ export const confirmReservationWithoutPayment = (rideId: string, passengerEmail:
   }
   notifyRides();
   const passengerDisplay = formatPassengerDisplay(email);
-  pushNotification({
-    to: updated.ownerEmail,
+  void pushLocalNotification({
     title: 'Réservation confirmée',
-    body: `${passengerDisplay} rejoint ton trajet ${updated.depart} → ${updated.destination}.`,
+    body: `${updated.depart} → ${updated.destination} validé.`,
     metadata: {
       action: 'reservation-confirmed',
-      rideId: updated.id,
+      driver: updated.driver,
       passenger: passengerDisplay,
     },
   });
-  pushNotification({
-    to: email,
-    title: 'Demande acceptée',
-    body: `Ta place pour ${updated.depart} → ${updated.destination} est confirmée.`,
-    metadata: {
-      action: 'reservation-confirmed',
-      rideId: updated.id,
-      driver: updated.driver,
-    },
-  });
+  // Notifications disabled (Firebase removed)
   scheduleRideReminder(updated, email, 'passenger');
   return updated;
 };
 
 export const cancelReservation = (rideId: string, passengerEmail: string) => {
   let updated: Ride | null = null;
+  const passengerDisplay = formatPassengerDisplay(passengerEmail);
   rides = rides.map((ride) => {
     if (ride.id !== rideId) return ride;
     if (!ride.passengers.includes(passengerEmail)) return ride;
@@ -632,33 +550,22 @@ export const cancelReservation = (rideId: string, passengerEmail: string) => {
         updatedAt,
       };
 
-      const passengerDisplay = formatPassengerDisplay(passengerEmail);
-
-      pushNotification({
-        to: ride.ownerEmail,
-        title: 'Réservation annulée',
-        body: `${passengerDisplay} a annulé sa place sur ${ride.depart} → ${ride.destination}.`,
-        metadata: {
-          action: 'reservation-cancelled',
-          rideId: ride.id,
-          passenger: passengerDisplay,
-        },
-      });
-      pushNotification({
-        to: passengerEmail,
-        title: 'Réservation annulée',
-        body: `Ta réservation pour ${ride.depart} → ${ride.destination} est annulée.`,
-        metadata: {
-          action: 'reservation-cancelled-confirmation',
-          rideId: ride.id,
-        },
-      });
+      // Notifications disabled (Firebase removed)
       cancelRideReminder(ride.id, passengerEmail, 'passenger');
     }
     return updated;
   });
   if (updated) {
     notifyRides();
+    void pushLocalNotification({
+      title: 'Réservation annulée',
+      body: `Ta réservation pour ${updated.depart} → ${updated.destination} a été annulée.`,
+      metadata: {
+        action: 'reservation-cancelled',
+        passenger: passengerDisplay,
+        driver: updated.driver,
+      },
+    });
     persistRideSnapshot(updated);
     return updated;
   }
@@ -682,20 +589,7 @@ const notifyRideStatusChange = (previous: Ride | null, updated: Ride | null) => 
   }
   if (changed.length === 0) return;
   const body = `Le trajet ${updated.depart} → ${updated.destination} a changé (${changed.join(', ')}).`;
-  updated.passengers.forEach((email) =>
-    pushNotification({
-      to: email,
-      title: 'Trajet mis à jour',
-      body,
-      metadata: {
-        action: 'ride-status-changed',
-        rideId: updated.id,
-        depart: updated.depart,
-        destination: updated.destination,
-        time: updated.time,
-      },
-    })
-  );
+  // Notifications disabled (Firebase removed)
   if (previous.departureAt !== updated.departureAt) {
     cancelRideReminder(updated.id, updated.ownerEmail, 'driver');
     scheduleRideReminder(updated, updated.ownerEmail, 'driver');

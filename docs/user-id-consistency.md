@@ -30,23 +30,22 @@ Les résa se synchronisent via `createReservation` qui reçoit `passengerUid` et
 
 Chaque événement (création de demande, acceptation, annulation) inclut `actorUid`. On conserve le `uid` qui a déclenché l’action (driver ou passager).
 
-## 7. Autres collections (notifications, notificationTokens, businessQuotes…)
+## 7. Autres collections (businessQuotes…)
 
-- `notifications/{autoId}` utilise la charge utile `ownerUid` / `userId`.  
-- `notificationTokens/{uid}` et `notificationPreferences/{uid}` sont écrits via `request.auth.uid`.
 - `businessQuotes` contient `createdByUid` et se supprime par `uid`.
 
 ## Checklist d’audit
 
-1. `users`, `wallets`, `notificationTokens`, `notificationPreferences` restent indexés par le `uid` (pas d’autre identifiant).
-2. `trajets/{trajetId}` doit toujours stocker `driverEmail` + `ownerUid` (= `session.uid`).
-3. `requests` et `reservations` incluent `passengerUid`/`driverUid` et la collectionGroup utilise ces champs dans les queries.
-4. Les helpers Firestore (`createRequest`, `acceptRequest`, `removeReservationRequest`) acceptent un `uid` explicite pour éviter de deviner le driver/passager.
-5. Les règles Firestore vont continuer à autoriser `auth.uid == trajetId` pour le journal utilisateur legacy (le doc `trajets/{uid}`) tout en protégeant `ownerUid` sur le doc central.
+1. `users` et `wallets` restent indexés par le `uid` (pas d’autre identifiant).
+2. Les collections de notifications (`notifications`, `notificationTokens`, `notificationPreferences`) sont désactivées ; le code ne doit plus écrire/consulter ces documents.
+3. `trajets/{trajetId}` doit toujours stocker `driverEmail` + `ownerUid` (= `session.uid`).
+4. `requests` et `reservations` incluent `passengerUid`/`driverUid` et la collectionGroup utilise ces champs dans les queries.
+5. Les helpers Firestore (`createRequest`, `acceptRequest`, `removeReservationRequest`) acceptent un `uid` explicite pour éviter de deviner le driver/passager.
+6. Les règles Firestore vont continuer à autoriser `auth.uid == trajetId` pour le journal utilisateur legacy (le doc `trajets/{uid}`) tout en protégeant `ownerUid` sur le doc central.
 
 ## Vérification automatique
 
-- `npm run check:user-id-consistency` parcourt les fichiers TypeScript/JavaScript et s’assure qu’au moins une écriture sur chaque collection critique (`users`, `wallets`, `notificationTokens`, `notificationPreferences`, `trajets`) utilise `auth.uid` / `ownerUid` comme identifiant.
+- `npm run check:user-id-consistency` parcourt les fichiers TypeScript/JavaScript et s’assure qu’au moins une écriture sur chaque collection critique (`users`, `wallets`, `trajets`) utilise `auth.uid` / `ownerUid` comme identifiant.
 - `npm run verify:firebase-requests -- --tripId=<trajetId> [--passengerUid=<uid>]` se connecte à Firestore (via `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`) et vérifie :
   1. Que le doc `trajets/{trajetId}` existe avec `ownerUid`, `driverName`, `driverEmail`, `depart`, `destination`, `departureAt` (Timestamp), `totalSeats`, `availableSeats`, `price`, `status`, `search`, `createdAt`, `updatedAt`.
   2. Que les entrées `trajets/{trajetId}/requests` sont présentes, ont des statuts `pending`/`accepted` et stockent `passengerUid`/`driverUid`.
