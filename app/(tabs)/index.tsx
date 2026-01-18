@@ -223,7 +223,7 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
   }, [session.email]);
 
   const { pending: passengerPendingRequests, accepted: passengerAcceptedRequests } = usePassengerRequests(
-    session.email
+    session.uid
   );
 
   const recommendedRides = useMemo(() => rides.slice(0, 3), [rides]);

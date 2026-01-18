@@ -230,7 +230,7 @@ export default function NotificationCenter() {
 
   const refreshToken = useCallback(
     async (prefs: NotificationPreferences) => {
-      if (!session.email || registeringRef.current) return;
+    if (!session.email || !session.uid || registeringRef.current) return;
       if (!shouldRefreshToken(prefs)) return;
       registeringRef.current = true;
       try {
@@ -245,7 +245,7 @@ export default function NotificationCenter() {
             'Notifications désactivées',
             'Active les notifications dans les réglages de ton appareil pour les recevoir.'
           );
-          updateNotificationPreferences(session.email, { pushEnabled: false });
+          updateNotificationPreferences(session.email, { pushEnabled: false }, session.uid);
           return;
         }
         const projectId =
@@ -253,14 +253,19 @@ export default function NotificationCenter() {
         const tokenResponse = await Notifications.getExpoPushTokenAsync(
           projectId ? { projectId } : undefined
         );
-        registerPushToken(session.email, tokenResponse.data, resolvePlatform());
+        registerPushToken(
+          session.email,
+          tokenResponse.data,
+          resolvePlatform(),
+          session.uid
+        );
       } catch (error) {
         console.warn('[notifications] token registration failed', error);
       } finally {
         registeringRef.current = false;
       }
     },
-    [session.email]
+    [session.email, session.uid]
   );
 
   useEffect(() => {

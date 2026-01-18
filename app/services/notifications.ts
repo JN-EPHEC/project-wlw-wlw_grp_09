@@ -213,7 +213,8 @@ export const subscribeNotificationPreferences = (
 
 export const updateNotificationPreferences = (
   email: string,
-  updates: Partial<NotificationPreferences>
+  updates: Partial<NotificationPreferences>,
+  uid?: string | null
 ) => {
   const { key, preferences } = ensurePreferences(email);
   const next: NotificationPreferences = {
@@ -224,7 +225,9 @@ export const updateNotificationPreferences = (
   if (!next.pushEnabled || !next.remindersEnabled) {
     clearSchedulesForEmailInternal(email);
   }
-  void persistNotificationPreferencesRecord(key, next);
+  if (uid) {
+    void persistNotificationPreferencesRecord(uid, next, key);
+  }
   notifyPreferenceListeners(email);
   return next;
 };
@@ -232,7 +235,8 @@ export const updateNotificationPreferences = (
 export const registerPushToken = (
   email: string,
   token: string,
-  platform?: NotificationPreferences['platform']
+  platform?: NotificationPreferences['platform'],
+  uid?: string | null
 ) => {
   if (!email) return null;
   const normalized = normalizeEmail(email);
@@ -241,7 +245,9 @@ export const registerPushToken = (
     platform: platform ?? undefined,
     lastRegisteredAt: Date.now(),
   });
-  void persistPushTokenRecord({ email: normalized, token, platform });
+  if (uid) {
+    void persistPushTokenRecord({ uid, email: normalized, token, platform });
+  }
   return result;
 };
 

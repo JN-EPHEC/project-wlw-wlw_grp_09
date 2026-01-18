@@ -316,7 +316,7 @@ export default function WalletScreen() {
     setBankModalVisible(false);
   }, [bankForm, resetBankForm, session.email]);
 
-  const onAddFunds = useCallback(() => {
+  const onAddFunds = useCallback(async () => {
     if (!session.email) return;
     if (!payoutMethod) {
       Alert.alert(
@@ -339,7 +339,7 @@ export default function WalletScreen() {
     }
     setProcessing(true);
     try {
-      creditWallet(session.email, amount, { description: 'Recharge wallet' });
+      await creditWallet(session.email, amount, { description: 'Recharge wallet' });
       pushNotification({
         to: session.email,
         title: 'Recharge réussie',
@@ -349,12 +349,17 @@ export default function WalletScreen() {
       Alert.alert('Recharge confirmée', `${formatCurrency(amount)} ajoutés à ton wallet.`);
       setAddAmount('0');
       setView('home');
+    } catch (error) {
+      Alert.alert(
+        'Erreur de recharge',
+        error instanceof Error ? error.message : 'La recharge a échoué.'
+      );
     } finally {
       setProcessing(false);
     }
   }, [addAmount, payoutMethod, session.email]);
 
-  const onWithdrawFunds = useCallback(() => {
+  const onWithdrawFunds = useCallback(async () => {
     if (!session.email) return;
     if (!payoutAccount && !payoutMethod) {
       Alert.alert(
@@ -378,7 +383,7 @@ export default function WalletScreen() {
     }
     setProcessing(true);
     try {
-      const result = withdrawAmount(session.email, amountValue, { description: 'Retrait manuel' });
+      const result = await withdrawAmount(session.email, amountValue, { description: 'Retrait manuel' });
       if (!result.ok) {
         switch (result.reason) {
           case 'no-payout-method':
@@ -404,6 +409,11 @@ export default function WalletScreen() {
         setWithdrawValue('0');
         setView('home');
       }
+    } catch (error) {
+      Alert.alert(
+        'Erreur de retrait',
+        error instanceof Error ? error.message : 'Le retrait a échoué.'
+      );
     } finally {
       setProcessing(false);
     }

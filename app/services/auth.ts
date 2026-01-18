@@ -43,6 +43,7 @@ export type AuthSession = {
   isDriver: boolean;
   isPassenger: boolean;
   roleMode: RoleMode;
+  uid: string | null;
 };
 
 export type AuthSnapshot = AuthSession;
@@ -159,6 +160,7 @@ function createEmptySession(): AuthSession {
     isDriver: false,
     isPassenger: false,
     roleMode: getPersistedRoleMode(),
+    uid: null,
   };
 }
 
@@ -342,6 +344,7 @@ const buildSessionFromUser = async (user: User | null): Promise<AuthSession> => 
       isDriver: false,
       isPassenger: true,
       roleMode: getPersistedRoleMode(),
+      uid: user.uid,
     };
   }
 
@@ -367,6 +370,7 @@ const buildSessionFromUser = async (user: User | null): Promise<AuthSession> => 
     isDriver: hasDriverFlag ? !!profile.isDriver : isDriverFromRole,
     isPassenger: hasPassengerFlag ? !!profile.isPassenger : !isDriverFromRole,
     roleMode: getPersistedRoleMode(),
+    uid: user.uid,
   };
 };
 

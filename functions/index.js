@@ -2,6 +2,15 @@ const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
 const { parseMetadata, saveEncryptedFile, requestReview, parseEmail, serializeSnapshot } = require('./src/driverDocuments');
+const setDriverDocumentsCorsHeaders = (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  const requestHeaders = req.headers['access-control-request-headers'];
+  res.set(
+    'Access-Control-Allow-Headers',
+    requestHeaders ?? 'Content-Type, Authorization'
+  );
+};
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -136,9 +145,7 @@ exports.notifyVerificationCode = functions.firestore
   });
 
 exports.driverDocuments = functions.https.onRequest(async (req, res) => {
-  res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  setDriverDocumentsCorsHeaders(req, res);
   if (req.method === 'OPTIONS') {
     return res.status(204).send('');
   }
@@ -492,4 +499,206 @@ exports.deleteAccountAndData = functions.https.onCall(async (_, context) => {
       { step: failingStep, code: errorCode, message: errorMessage, uid }
     );
   }
+});
+
+const toCents = (value) => Math.round((Number(value) || 0) * 100);
+
+const buildTransactionData = ({
+  amountCents,
+  direction,
+  type = "adjustment",
+  source = "adjustment",
+  description = null,
+  rideId = null,
+  counterpartyUid = null,
+  idempotencyKey = null,
+  createdByUid,
+  balanceBeforeCents,
+  balanceAfterCents,
+}) => ({
+  type,
+  direction,
+  amountCents,
+  balanceBeforeCents,
+  balanceAfterCents,
+  status: "completed",
+  source,
+  description,
+  rideId,
+  counterpartyUid,
+  createdAt: admin.firestore.Timestamp.now(),
+  createdByUid,
+  idempotencyKey,
+});
+
+const buildWalletUpdate = (existing, uid, balanceCents, now) => ({
+  balanceCents,
+  ownerUid: uid,
+  currency: existing.currency ?? "EUR",
+  payoutMethod: existing.payoutMethod ?? null,
+  createdAt: existing.createdAt ?? now,
+  updatedAt: now,
+});
+
+const getTransactionRef = (walletRef, idempotencyKey) =>
+  idempotencyKey
+    ? walletRef.collection("transactions").doc(idempotencyKey)
+    : walletRef.collection("transactions").doc();
+
+exports.adjustBalance = functions.https.onCall(async (data, context) => {
+  const uid = context.auth?.uid;
+  if (!uid) {
+    throw new functions.https.HttpsError("unauthenticated", "Connexion requise.");
+  }
+  const amountCents = toCents(data.amountCents ?? 0);
+  if (amountCents <= 0) {
+    throw new functions.https.HttpsError("invalid-argument", "Montant invalide.");
+  }
+  const direction = data.direction === "debit" ? "debit" : "credit";
+  const walletRef = db.collection("wallets").doc(uid);
+  const now = admin.firestore.Timestamp.now();
+  const txRef = getTransactionRef(walletRef, data.idempotencyKey);
+
+  return db.runTransaction(async (transaction) => {
+    if (data.idempotencyKey) {
+      const existingTx = await transaction.get(txRef);
+      if (existingTx.exists) {
+        return { balanceCents: existingTx.data().balanceAfterCents };
+      }
+    }
+    const walletSnap = await transaction.get(walletRef);
+    const walletData = walletSnap.data() ?? {};
+    const balanceCents =
+      typeof walletData.balanceCents === "number"
+        ? walletData.balanceCents
+        : toCents(walletData.balance ?? 0);
+    const delta = direction === "debit" ? -amountCents : amountCents;
+    const newBalance = balanceCents + delta;
+    if (newBalance < 0) {
+      throw new functions.https.HttpsError("failed-precondition", "Solde insuffisant.");
+    }
+    const txData = buildTransactionData({
+      amountCents,
+      direction,
+      source: data.source ?? "wallet-adjustment",
+      description: data.description ?? null,
+      rideId: data.rideId ?? null,
+      counterpartyUid: data.counterpartyUid ?? null,
+      idempotencyKey: data.idempotencyKey ?? null,
+      createdByUid: uid,
+      balanceBeforeCents: balanceCents,
+      balanceAfterCents: newBalance,
+    });
+    txData.metadata = data.metadata ?? null;
+    transaction.set(walletRef, buildWalletUpdate(walletData, uid, newBalance, now), {
+      merge: true,
+    });
+    transaction.set(txRef, txData, { merge: true });
+    return { balanceCents: newBalance };
+  });
+});
+
+exports.transferForRide = functions.https.onCall(async (data, context) => {
+  const initiatorUid = context.auth?.uid;
+  if (!initiatorUid) {
+    throw new functions.https.HttpsError("unauthenticated", "Connexion requise.");
+  }
+  const passengerUid = data.passengerUid;
+  const driverUid = data.driverUid;
+  if (!passengerUid || !driverUid) {
+    throw new functions.https.HttpsError("invalid-argument", "UID manquant.");
+  }
+  if (initiatorUid !== passengerUid) {
+    throw new functions.https.HttpsError(
+      "permission-denied",
+      "Tu dois être le passager pour initier le paiement."
+    );
+  }
+  const amountCents = toCents(data.amountCents ?? 0);
+  const feeCents = toCents(data.feeCents ?? 0);
+  if (amountCents <= 0) {
+    throw new functions.https.HttpsError("invalid-argument", "Montant invalide.");
+  }
+  if (feeCents < 0 || feeCents > amountCents) {
+    throw new functions.https.HttpsError("invalid-argument", "Frais invalides.");
+  }
+  const passengerRef = db.collection("wallets").doc(passengerUid);
+  const driverRef = db.collection("wallets").doc(driverUid);
+  const passengerTxRef = getTransactionRef(passengerRef, data.idempotencyKey);
+  const driverKey = data.idempotencyKey ? `${data.idempotencyKey}-driver` : undefined;
+  const driverTxRef = getTransactionRef(driverRef, driverKey);
+
+  return db.runTransaction(async (transaction) => {
+    if (data.idempotencyKey) {
+      const existingPassengerTx = await transaction.get(passengerTxRef);
+      if (existingPassengerTx.exists) {
+        return {
+          passengerBalance: existingPassengerTx.data().balanceAfterCents,
+          driverBalance: existingPassengerTx.data().counterpartyUid
+            ? (await transaction.get(driverRef)).data().balanceCents
+            : null,
+        };
+      }
+    }
+    const passengerSnap = await transaction.get(passengerRef);
+    const driverSnap = await transaction.get(driverRef);
+    const passengerData = passengerSnap.data() ?? {};
+    const driverData = driverSnap.data() ?? {};
+    const passengerBalance =
+      typeof passengerData.balanceCents === "number"
+        ? passengerData.balanceCents
+        : toCents(passengerData.balance ?? 0);
+    const driverBalance =
+      typeof driverData.balanceCents === "number"
+        ? driverData.balanceCents
+        : toCents(driverData.balance ?? 0);
+    const totalDebit = amountCents + feeCents;
+    if (passengerBalance < totalDebit) {
+      throw new functions.https.HttpsError("failed-precondition", "Solde insuffisant.");
+    }
+    const driverCredit = amountCents - feeCents;
+    const now = admin.firestore.Timestamp.now();
+    const passengerTx = buildTransactionData({
+      amountCents: totalDebit,
+      direction: "debit",
+      source: "ride-payment",
+      description: `Ride ${data.rideId}`,
+      rideId: data.rideId ?? null,
+      counterpartyUid: driverUid,
+      idempotencyKey: data.idempotencyKey ?? null,
+      createdByUid: passengerUid,
+      balanceBeforeCents: passengerBalance,
+      balanceAfterCents: passengerBalance - totalDebit,
+    });
+    const driverTx = buildTransactionData({
+      amountCents: driverCredit,
+      direction: "credit",
+      source: "ride-payment",
+      description: `Ride ${data.rideId}`,
+      rideId: data.rideId ?? null,
+      counterpartyUid: passengerUid,
+      idempotencyKey: `${data.idempotencyKey ?? ""}-driver`,
+      createdByUid: driverUid,
+      balanceBeforeCents: driverBalance,
+      balanceAfterCents: driverBalance + driverCredit,
+    });
+    passengerTx.metadata = data.metadata ?? null;
+    driverTx.metadata = data.metadata ?? null;
+    transaction.set(
+      passengerRef,
+      buildWalletUpdate(passengerData, passengerUid, passengerBalance - totalDebit, now),
+      { merge: true }
+    );
+    transaction.set(passengerTxRef, passengerTx, { merge: true });
+    transaction.set(
+      driverRef,
+      buildWalletUpdate(driverData, driverUid, driverBalance + driverCredit, now),
+      { merge: true }
+    );
+    transaction.set(driverTxRef, driverTx, { merge: true });
+    return {
+      passengerBalance: passengerBalance - totalDebit,
+      driverBalance: driverBalance + driverCredit,
+    };
+  });
 });

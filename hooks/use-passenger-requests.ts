@@ -3,19 +3,19 @@ import { useEffect, useState } from 'react';
 import {
   subscribeReservationRequests,
   type ReservationRequestEntry,
-} from '@/app/services/reservation-requests';
+} from '@/app/services/firestore-reservation-requests';
 
-export const usePassengerRequests = (email: string | null) => {
+export const usePassengerRequests = (passengerUid: string | null) => {
   const [requests, setRequests] = useState<ReservationRequestEntry[]>([]);
 
   useEffect(() => {
-    if (!email) {
+    if (!passengerUid) {
       setRequests([]);
       return;
     }
-    const unsubscribe = subscribeReservationRequests(email, setRequests);
+    const unsubscribe = subscribeReservationRequests(passengerUid, setRequests);
     return unsubscribe;
-  }, [email]);
+  }, [passengerUid]);
 
   return {
     pending: requests.filter((request) => request.status === 'pending'),
