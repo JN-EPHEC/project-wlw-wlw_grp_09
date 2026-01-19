@@ -40,10 +40,9 @@ import {
 import {
   creditWallet,
   debitWallet,
-  getWallet,
-  subscribeWallet,
+  subscribeWallet as subscribeRemoteWallet,
   type WalletSnapshot,
-} from '@/app/services/wallet';
+} from '@/app/services/wallet-service';
 import {
   logReservationRequest,
   removeReservationRequest,
@@ -68,6 +67,7 @@ import type { PaymentMethod } from '@/app/services/payments';
 import { FALLBACK_UPCOMING } from '@/app/data/driver-samples';
 import { resolveMeetingPoint } from '@/utils/meeting-point';
 import { subscribePublishedRides } from '@/app/services/firestore-rides';
+import { createReservation } from '@/src/trajetsReservationsService';
 
 export type RideDetailScreenMode = 'detail' | 'checkout';
 
@@ -107,9 +107,7 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
     average: 0,
     count: 0,
   });
-  const [wallet, setWallet] = useState<WalletSnapshot | null>(() =>
-    session.email ? getWallet(session.email) : null
-  );
+  const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
   const [driverFeedback, setDriverFeedback] = useState<PassengerFeedback[]>([]);
   const [feedbackTarget, setFeedbackTarget] = useState<{ email: string; alias: string } | null>(null);
   const [feedbackRating, setFeedbackRating] = useState(4.5);
@@ -291,14 +289,13 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
   }, [ride?.ownerEmail]);
 
   useEffect(() => {
-    if (!session.email) {
+    if (!session.uid) {
       setWallet(null);
       return;
     }
-    setWallet(getWallet(session.email));
-    const unsubscribe = subscribeWallet(session.email, setWallet);
+    const unsubscribe = subscribeRemoteWallet(session.uid, setWallet);
     return unsubscribe;
-  }, [session.email]);
+  }, [session.uid]);
 
   useEffect(() => {
     if (!session.email) {
@@ -420,14 +417,22 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
       Alert.alert('Complet', 'Toutes les places ont été réservées.');
       return;
     }
-    const entry = await logReservationRequest(session.email, ride, null, session.name ?? undefined);
-    if (!entry) return;
+    let entry = null;
+    try {
+      entry = await logReservationRequest(session.email, ride, null, session.name ?? undefined);
+    } catch (error) {
+      console.warn('[RideDetail] logReservationRequest failed', error);
+    }
+    const requestSeed = entry ?? {
+      id: `local-${ride.id}-${Date.now()}`,
+      createdAt: Date.now(),
+    };
     const meetingPointSnapshot = resolveMeetingPoint({ ride });
     const meetingPointAddress = meetingPointSnapshot.address || ride.depart;
     const meetingPointLatLng = meetingPointSnapshot.latLng ?? null;
     const driverPlate = ride.plate ?? '';
     const bookingPayload = {
-      id: entry.id,
+      id: requestSeed.id,
       rideId: ride.id,
       passengerEmail,
       driver: ride.driver,
@@ -436,7 +441,7 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
       paid: false,
       paymentMethod: 'none' as const,
       amount: Number.isFinite(ride.price) ? ride.price : 0,
-      createdAt: entry.createdAt,
+      createdAt: requestSeed.createdAt,
       depart: ride.depart,
       destination: ride.destination,
       departureAt: Number.isFinite(ride.departureAt) ? ride.departureAt : Date.now(),
@@ -554,16 +559,12 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
     setWalletPaymentError(null);
     let debited = false;
     try {
-      const debitResult = await debitWallet(
-        passengerEmail,
-        amount,
-        `Paiement trajet ${ride.depart} → ${ride.destination}`,
-        { rideId: rideIdValue, reason: 'ride_payment' }
-      );
-      if (!debitResult) {
-        setWalletPaymentError('Solde insuffisant.');
-        return;
-      }
+      const debitResult = await debitWallet(amount, {
+        description: `Paiement trajet ${ride.depart} → ${ride.destination}`,
+        reason: 'ride_payment',
+        metadata: { rideId: rideIdValue },
+      });
+      console.debug('[WalletConfirm] debit', debitResult);
       debited = true;
       const finalBookingId = bookingForRide?.id ?? `${rideIdValue}:${passengerEmail}:${Date.now()}`;
       if (bookingForRide) {
@@ -610,10 +611,10 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
         console.debug('[WalletConfirm] reservationResult', bookingResult);
         if (!bookingResult.ok) {
           cancelReservation(ride.id, session.email);
-          creditWallet(session.email, amount, {
+          await creditWallet(amount, {
             description: 'Annulation paiement',
-            rideId,
             reason: 'booking_failed',
+            metadata: { rideId },
           });
           throw new Error('Impossible de sauvegarder la confirmation.');
         }
@@ -631,10 +632,10 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
       console.error('[Checkout] payment failed', error);
       if (debited) {
         try {
-          await creditWallet(passengerEmail, amount, {
+          await creditWallet(amount, {
             description: 'Reversion paiement',
             reason: 'rollback',
-            rideId: rideIdValue,
+            metadata: { rideId: rideIdValue },
           });
         } catch (rollbackError) {
           console.error('[Checkout] rollback failed', rollbackError);
@@ -650,6 +651,21 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
     setShowWalletConfirmModal(false);
     setWalletPaymentError(null);
   };
+
+  const persistRideReservation = useCallback(async () => {
+    if (!ride?.ownerUid || !ride.id) return;
+    try {
+      await createReservation(ride.ownerUid, ride.id, 1);
+    } catch (error) {
+      console.warn('[RideDetail] createReservation failed', error);
+      Alert.alert(
+        'Impossible de synchroniser',
+        error instanceof Error
+          ? error.message
+          : 'La réservation a été créée localement mais ne peut pas encore être synchronisée.'
+      );
+    }
+  }, [ride?.id, ride?.ownerUid]);
 
   const confirmReservation = async (method: PaymentMethod) => {
     if (!ride) return;
@@ -684,6 +700,7 @@ export default function RideDetailScreen({ mode: propMode, overrideRideId }: Rid
           return;
       }
     }
+    void persistRideReservation();
     if (session.uid) {
       await removeReservationRequest(session.uid, ride.id);
     }

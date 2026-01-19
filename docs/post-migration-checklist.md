@@ -6,7 +6,8 @@
 
 2. **Spot-check Firestore docs**  
    - In the console, verify `/businessQuotes/{uid}` exists for a user and contains `quoteId === uid`, `createdByUid`, `createdByEmail`, `clientTimestamp` and `status = "new"`.  
-   - Confirm `/wallets/{uid}`, `/notificationPreferences/{uid}`, and `/notificationTokens/{uid}` documents now exist with `ownerUid === uid` and the expected fields (`balance`, `transactions`, `pushToken`, etc.).  
+   - Confirm `/wallets/{uid}` exists, contains `ownerUid === uid`, and exposes `balance`, `transactions` and related runtime fields.  
+   - Ensure the legacy notification collections (`/notificationPreferences`, `/notificationTokens`, `/notifications`) are absent since the Firebase stack is retired.  
    - Ensure no remaining legacy documents with email/random IDs remain (the migration script deletes them).
 
 3. **Validate Firestore rules**  
@@ -15,7 +16,7 @@
 
 4. **Confirm client behaviour**  
    - Submit a business quote on the app and verify Firestore writes to `/businessQuotes/{auth.uid}` with merged data.  
-   - Register a push token, toggle preferences, refresh the wallet snapshot (if applicable) and ensure the writes hit the `uid` documents instead of email-based IDs.
+   - Open the Notifications page; it should show the disabled message and no Firestore reads/writes should occur.
 
 5. **Audit residual data paths**  
    - Run `scripts/check-user-id-consistency.js` to ensure the codebase still references the centralized `userDocRef`/`doc(db, ..., uid)` patterns.  

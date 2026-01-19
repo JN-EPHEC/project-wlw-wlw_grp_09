@@ -13,13 +13,13 @@ import {
 import { AppBackground } from '@/components/ui/app-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
-import { useAuthSession } from '@/hooks/use-auth-session';
-import {
-  markAsRead as markNotificationAsRead,
-  subscribeNotifications,
-  type Notification,
-} from '@/app/services/notifications';
 import { getAvatarUrl } from '@/app/ui/avatar';
+import {
+  markAllLocalAsRead,
+  markLocalAsRead,
+  subscribeLocalNotifications,
+  type LocalNotification,
+} from '@/src/app/services/localNotifications';
 
 const C = Colors;
 
@@ -144,7 +144,7 @@ const formatRelative = (timestamp: number) => {
   return `Il y a ${days} j`;
 };
 
-const getAccent = (notification: Notification): IconTheme => {
+const getAccent = (notification: LocalNotification): IconTheme => {
   const action = typeof notification.metadata?.action === 'string' ? notification.metadata.action : null;
   const hint = action ? ACTION_THEMES[action] : undefined;
   if (hint) {
@@ -162,7 +162,10 @@ const getAccent = (notification: Notification): IconTheme => {
       tint: C.primary,
       background: C.primaryLight,
       accentLabel: notification.title,
-      avatarSeed: notification.metadata && typeof notification.metadata.threadId === 'string' ? notification.metadata.threadId : null,
+      avatarSeed:
+        notification.metadata && typeof notification.metadata.threadId === 'string'
+          ? notification.metadata.threadId
+          : null,
     };
   }
   return {
@@ -178,8 +181,8 @@ const NotificationCard = ({
   notification,
   onMarkAsRead,
 }: {
-  notification: Notification;
-  onMarkAsRead?: (notification: Notification) => void;
+  notification: LocalNotification;
+  onMarkAsRead?: (notification: LocalNotification) => void;
 }) => {
   const accent = useMemo(() => getAccent(notification), [notification]);
   const relative = useMemo(() => formatRelative(notification.createdAt), [notification.createdAt]);
@@ -222,39 +225,30 @@ const NotificationCard = ({
 };
 
 export default function NotificationsScreen() {
-  const session = useAuthSession();
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifications, setNotifications] = useState<LocalNotification[]>([]);
+
   useEffect(() => {
-    if (!session.email) return;
-    const unsubscribe = subscribeNotifications(session.email, (items) => {
-      setNotifications(items);
-    });
+    const unsubscribe = subscribeLocalNotifications(setNotifications);
     return unsubscribe;
-  }, [session.email]);
+  }, []);
 
   const unread = useMemo(() => notifications.filter((notif) => !notif.read), [notifications]);
   const older = useMemo(() => notifications.filter((notif) => notif.read), [notifications]);
-  const isDriver = session.isDriver;
 
-  const handleMarkAsRead = useCallback(
-    (notif: Notification) => {
-      if (!session.email) return;
-      markNotificationAsRead(session.email, notif.id);
-    },
-    [session.email]
-  );
+  const handleMarkAsRead = useCallback((notif: LocalNotification) => {
+    void markLocalAsRead(notif.id);
+  }, []);
 
-  const markAllAsRead = useCallback(() => {
-    if (!session.email) return;
-    unread.forEach((notif) => markNotificationAsRead(session.email!, notif.id));
-  }, [session.email, unread]);
+  const handleMarkAllAsRead = useCallback(() => {
+    void markAllLocalAsRead();
+  }, []);
 
   return (
-    <AppBackground colors={isDriver ? Gradients.driver : Gradients.background}>
+    <AppBackground colors={Gradients.background}>
       <SafeAreaView style={styles.safe}>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-          <View style={[styles.pageHeader, isDriver && styles.pageHeaderDriver]}>
-            <Pressable style={[styles.backButton, isDriver && styles.backButtonDriver]} onPress={() => router.back()}>
+          <View style={styles.pageHeader}>
+            <Pressable style={styles.backButton} onPress={() => router.back()}>
               <IconSymbol name="chevron.left" size={20} color={C.white} />
             </Pressable>
             <View style={{ flex: 1 }}>
@@ -270,10 +264,8 @@ export default function NotificationsScreen() {
                   : 'Notifications'}
               </Text>
               {unread.length > 0 ? (
-                <Pressable onPress={markAllAsRead} style={styles.sectionActionButton}>
-                  <Text style={[styles.sectionAction, isDriver && styles.sectionActionDriver]}>
-                    Tout marquer comme lu
-                  </Text>
+                <Pressable onPress={handleMarkAllAsRead} style={styles.sectionActionButton}>
+                  <Text style={styles.sectionAction}>Tout marquer comme lu</Text>
                 </Pressable>
               ) : null}
             </View>
@@ -326,12 +318,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  pageHeaderDriver: {
-    backgroundColor: 'transparent',
-  },
-  backButtonDriver: {
-    backgroundColor: 'rgba(255,255,255,0.25)',
-  },
   heroTitle: {
     color: C.white,
     fontSize: 20,
@@ -363,9 +349,6 @@ const styles = StyleSheet.create({
   },
   sectionActionButton: {
     alignSelf: 'flex-start',
-  },
-  sectionActionDriver: {
-    color: Colors.accent,
   },
   cardRow: {
     flexDirection: 'row',

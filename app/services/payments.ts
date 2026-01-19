@@ -1,5 +1,4 @@
 // app/services/payments.ts
-import { pushNotification } from './notifications';
 import { consumeRideCredit, getRideCredits, payWithWallet } from './wallet';
 import type { Ride } from './rides';
 
@@ -72,28 +71,7 @@ export const processPayment = (ride: Ride, passengerEmail: string, options: Paym
   };
   payments.unshift(payment);
   notify();
-  pushNotification({
-    to: email,
-    title: 'Paiement confirmé',
-    body:
-      method === 'pass'
-        ? `1 crédit trajet utilisé pour ${ride.depart} → ${ride.destination}.`
-        : `€${ride.price.toFixed(2)} débité pour le trajet ${ride.depart} → ${ride.destination}.`,
-    metadata: { action: 'payment-confirmed', rideId: ride.id, amount: ride.price, method },
-  });
-  pushNotification({
-    to: ride.ownerEmail,
-    title: 'Réservation payée',
-    body: `${passengerDisplay} a payé €${ride.price.toFixed(2)} pour ton trajet ${ride.depart} → ${ride.destination}.`,
-    metadata: {
-      action: 'payment-received',
-      rideId: ride.id,
-      amount: ride.price,
-      passenger: passengerDisplay,
-      method,
-      remainingCredits: method === 'pass' ? getRideCredits(email) : undefined,
-    },
-  });
+  // Notifications disabled (Firebase removed)
   return payment;
 };
 

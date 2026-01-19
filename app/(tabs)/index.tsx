@@ -24,10 +24,11 @@ import type { AuthSession } from '@/app/services/auth';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { usePassengerRequests } from '@/hooks/use-passenger-requests';
 import { getAvatarUrl } from '@/app/ui/avatar';
-import type { Notification } from '@/app/services/notifications';
-import { subscribeNotifications } from '@/app/services/notifications';
 import { hasRideDeparted, type Ride } from '@/app/services/rides';
-import { getWallet, subscribeWallet, type WalletSnapshot } from '@/app/services/wallet';
+import {
+  subscribeWallet as subscribeRemoteWallet,
+  type WalletSnapshot as RemoteWalletSnapshot,
+} from '@/app/services/wallet-service';
 import {
   listBookingsByPassenger,
   subscribeBookingsByPassenger,
@@ -35,6 +36,7 @@ import {
 } from '@/app/services/booking-store';
 import { getCurrentCommune, LocationPermissionError } from '@/app/services/location';
 import { subscribePublishedRides } from '@/app/services/firestore-rides';
+import { subscribeLocalNotifications } from '@/src/app/services/localNotifications';
 
 type SectionKey = 'search' | 'requests' | 'trips';
 type SectionFocus = { key: SectionKey; token: number };
@@ -159,6 +161,19 @@ const DRIVER_RULES = [
   { key: 'chat', label: 'Discussion bienvenue', icon: '💬' },
 ];
 
+const useUnreadNotificationsCount = () => {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    const unsubscribe = subscribeLocalNotifications((items) => {
+      setCount(items.filter((item) => !item.read).length);
+    });
+    return unsubscribe;
+  }, []);
+
+  return count;
+};
+
 export default function Home() {
   const session = useAuthSession();
   const params = useLocalSearchParams<{ section?: string }>();
@@ -166,6 +181,7 @@ export default function Home() {
   const [focusSection, setFocusSection] = useState<SectionFocus | null>(() =>
     isSectionKey(initialSection) ? { key: initialSection, token: Date.now() } : null
   );
+  const unreadCount = useUnreadNotificationsCount();
 
   useEffect(() => {
     const nextSection = Array.isArray(params.section) ? params.section[0] : params.section;
@@ -178,13 +194,19 @@ export default function Home() {
   const driverModeActive = session.roleMode === 'driver' && session.isDriver;
   const showPassenger = !driverModeActive;
   return showPassenger ? (
-    <PassengerHome session={session} focusSection={focusSection} />
+    <PassengerHome session={session} focusSection={focusSection} unreadNotifications={unreadCount} />
   ) : (
-    <DriverDashboard session={session} />
+    <DriverDashboard session={session} unreadNotifications={unreadCount} />
   );
 }
 
-function PassengerHome({ session, focusSection }: { session: AuthSession; focusSection: SectionFocus | null }) {
+type PassengerHomeProps = {
+  session: AuthSession;
+  focusSection: SectionFocus | null;
+  unreadNotifications: number;
+};
+
+function PassengerHome({ session, focusSection, unreadNotifications }: PassengerHomeProps) {
   const scrollRef = useRef<ScrollView>(null);
   const sectionPositions = useRef<Record<SectionKey, number>>({
     search: 0,
@@ -193,10 +215,7 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
   });
 
   const [rides, setRides] = useState<Ride[]>([]);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [wallet, setWallet] = useState<WalletSnapshot | null>(() =>
-    session.email ? getWallet(session.email) : null
-  );
+  const [wallet, setWallet] = useState<RemoteWalletSnapshot | null>(null);
   const [departureInput, setDepartureInput] = useState('');
   const [campus, setCampus] = useState('');
   const [tripTab, setTripTab] = useState<'current' | 'reserved' | 'history'>('current');
@@ -226,23 +245,13 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
   }, [driverPublishedCount, session.email, session.isDriver]);
 
   useEffect(() => {
-    if (!session.email) {
+    if (!session.uid) {
       setWallet(null);
       return;
     }
-    setWallet(getWallet(session.email));
-    const unsubscribe = subscribeWallet(session.email, setWallet);
+    const unsubscribe = subscribeRemoteWallet(session.uid, setWallet);
     return unsubscribe;
-  }, [session.email]);
-
-  useEffect(() => {
-    if (!session.email) {
-      setNotifications([]);
-      return;
-    }
-    const unsubscribe = subscribeNotifications(session.email, setNotifications);
-    return unsubscribe;
-  }, [session.email]);
+  }, [session.uid]);
 
   const { pending: passengerPendingRequests, accepted: passengerAcceptedRequests } = usePassengerRequests(
     session.uid
@@ -288,14 +297,9 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
   const activeTrip = tripBuckets[tripTab][0] ?? pendingRequests[0] ?? historyTrips[0] ?? null;
   const featuredRide = recommendedRides[0] ?? activeTrip ?? rides[0] ?? null;
 
-  const unreadNotifications = useMemo(
-    () => notifications.filter((notif) => !notif.read).length,
-    [notifications]
-  );
-
   const firstName = getFirstName(session.name);
   const walletBalance = wallet?.balance ?? 0;
-  const rideCredits = wallet?.rideCredits ?? 0;
+  const rideCredits = 0;
 
   const handleCampusSelect = () => {
     setShowCampusList((prev) => !prev);
@@ -445,11 +449,18 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
                 <Text style={styles.heroLabel}>Bonjour {firstName ?? 'CampusRider'}</Text>
                 <Text style={styles.heroSubtitle}>Trouve ton prochain trajet</Text>
               </View>
-              <Pressable style={styles.notificationIcon} onPress={() => router.push('/notifications')}>
-                <IconSymbol name="bell.fill" size={22} color={Colors.white} />
+              <Pressable
+                style={styles.notificationButton}
+                onPress={() => router.push('/notifications')}
+                accessibilityRole="button"
+                accessibilityLabel="Notifications"
+              >
+                <IconSymbol name="bell.fill" size={20} color={Colors.primary} />
                 {unreadNotifications > 0 ? (
                   <View style={styles.notificationBadge}>
-                    <Text style={styles.notificationBadgeText}>{unreadNotifications}</Text>
+                    <Text style={styles.notificationBadgeText}>
+                      {unreadNotifications > 9 ? '9+' : unreadNotifications}
+                    </Text>
                   </View>
                 ) : null}
               </Pressable>
@@ -690,15 +701,15 @@ function PassengerHome({ session, focusSection }: { session: AuthSession; focusS
 
 type DriverDashboardProps = {
   session: AuthSession;
+  unreadNotifications: number;
 };
 
-function DriverDashboard({ session }: DriverDashboardProps) {
+function DriverDashboard({ session, unreadNotifications }: DriverDashboardProps) {
   const ownerEmail = (session.email ?? '').toLowerCase();
   const [rides, setRides] = useState<Ride[]>([]);
   const [loadingRides, setLoadingRides] = useState(true);
   const [meetingPoint, setMeetingPoint] = useState('');
   const [destination, setDestination] = useState('');
-  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [locationLoading, setLocationLoading] = useState(false);
   const [showMeetingList, setShowMeetingList] = useState(false);
   const [showDestinationList, setShowDestinationList] = useState(false);
@@ -713,15 +724,6 @@ function DriverDashboard({ session }: DriverDashboardProps) {
     return unsubscribe;
   }, []);
 
-  useEffect(() => {
-    if (!session.email) {
-      setNotifications([]);
-      return;
-    }
-    const unsubscribe = subscribeNotifications(session.email, setNotifications);
-    return unsubscribe;
-  }, [session.email]);
-
   const handleCreateRide = useCallback(() => {
     router.push('/create-ride');
   }, []);
@@ -730,10 +732,6 @@ function DriverDashboard({ session }: DriverDashboardProps) {
     Linking.openURL(quickSponsor.url).catch(() => undefined);
   }, []);
 
-  const unreadNotifications = useMemo(
-    () => notifications.filter((notif) => !notif.read).length,
-    [notifications]
-  );
   const driverQuickActions = useMemo(
     () => [
       {
@@ -850,14 +848,17 @@ function DriverDashboard({ session }: DriverDashboardProps) {
                 <Text style={styles.heroSubtitle}>Publie ton prochain trajet</Text>
               </View>
               <Pressable
-                style={styles.notificationIcon}
+                style={styles.notificationButton}
                 onPress={() => router.push('/notifications')}
                 accessibilityRole="button"
+                accessibilityLabel="Notifications"
               >
-                <IconSymbol name="bell.fill" size={22} color={Colors.white} />
+                <IconSymbol name="bell.fill" size={20} color={Colors.primary} />
                 {unreadNotifications > 0 ? (
                   <View style={styles.notificationBadge}>
-                    <Text style={styles.notificationBadgeText}>{unreadNotifications}</Text>
+                    <Text style={styles.notificationBadgeText}>
+                      {unreadNotifications > 9 ? '9+' : unreadNotifications}
+                    </Text>
                   </View>
                 ) : null}
               </Pressable>
@@ -1036,6 +1037,32 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  notificationButton: {
+    width: 48,
+    height: 48,
+    borderRadius: Radius['xl'],
+    backgroundColor: Colors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Shadows.card,
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: Colors.danger,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  notificationBadgeText: {
+    color: Colors.white,
+    fontSize: 10,
+    fontWeight: '700',
+  },
   heroLabel: {
     color: Colors.white,
     fontSize: 24,
@@ -1045,29 +1072,6 @@ const styles = StyleSheet.create({
     color: Colors.white,
     fontSize: 16,
     opacity: 0.9,
-  },
-  notificationIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  notificationBadge: {
-    position: 'absolute',
-    top: 2,
-    right: 2,
-    backgroundColor: Colors.danger,
-    borderRadius: Radius.pill,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  notificationBadgeText: {
-    color: Colors.white,
-    fontSize: 10,
-    fontWeight: '700',
   },
   quickActionsRow: {
     flexDirection: 'row',

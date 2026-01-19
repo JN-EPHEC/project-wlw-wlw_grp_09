@@ -44,6 +44,12 @@ import {
   toggleChecklistItem,
   type WalletSnapshot,
 } from '@/app/services/wallet';
+import {
+  subscribeTransactions,
+  subscribeWallet as subscribeRemoteWallet,
+  type WalletSnapshot as RemoteWalletSnapshot,
+  type WalletTransaction as RemoteWalletTransaction,
+} from '@/app/services/wallet-service';
 import { getAvatarUrl } from '@/app/ui/avatar';
 import { Colors, Gradients, Radius, Spacing, Typography } from '@/app/ui/theme';
 import { buildSmartReplies } from '@/app/utils/ai-reply';
@@ -57,7 +63,7 @@ import { useAuthSession } from '@/hooks/use-auth-session';
 import { useBreakpoints } from '@/hooks/use-breakpoints';
 import { useDriverSecurity } from '@/hooks/use-driver-security';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
-import { uploadProfileSelfie } from '@/src/storageUploads';
+import { uploadProfileSelfie } from '@/app/services/storage-upload';
 
 const C = Colors;
 const R = Radius;
@@ -76,6 +82,8 @@ export default function ProfileScreen() {
   const session = useAuthSession();
   const [rides, setRides] = useState<Ride[]>(getRides());
   const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
+  const [remoteWallet, setRemoteWallet] = useState<RemoteWalletSnapshot | null>(null);
+  const [remoteTransactions, setRemoteTransactions] = useState<RemoteWalletTransaction[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [rewardSnapshot, setRewardSnapshot] = useState<RewardSnapshot | null>(null);
   const [showAllReviews, setShowAllReviews] = useState(false);
@@ -110,7 +118,7 @@ export default function ProfileScreen() {
         return false;
       }
     },
-    [session.email]
+    [session.email, session.uid]
   );
 
   const togglePassengerRole = useCallback(() => {
@@ -172,8 +180,12 @@ export default function ProfileScreen() {
       setIsSavingAvatar(true);
       try {
         let nextUri = uri;
-        if (uri && !isRemoteUri(uri)) {
-          nextUri = await uploadProfileSelfie({ email: session.email, uri });
+        if (uri && !isRemoteUri(uri) && session.uid) {
+          const uploaded = await uploadProfileSelfie({
+            uid: session.uid,
+            uri,
+          });
+          nextUri = uploaded.downloadURL;
         }
         await Auth.updateProfile(session.email, { avatarUrl: nextUri ?? '' });
         setAvatarVersion((prev) => prev + 1);
@@ -393,6 +405,24 @@ export default function ProfileScreen() {
   }, [session.email]);
 
   useEffect(() => {
+    if (!session.uid) {
+      setRemoteWallet(null);
+      return;
+    }
+    const unsubscribe = subscribeRemoteWallet(session.uid, setRemoteWallet);
+    return unsubscribe;
+  }, [session.uid]);
+
+  useEffect(() => {
+    if (!session.uid) {
+      setRemoteTransactions([]);
+      return;
+    }
+    const unsubscribe = subscribeTransactions(session.uid, setRemoteTransactions);
+    return unsubscribe;
+  }, [session.uid]);
+
+  useEffect(() => {
     if (!session.email) {
       setReviews([]);
       return;
@@ -416,9 +446,11 @@ export default function ProfileScreen() {
   );
   const avatarSource = previewAvatarUri
     ? { uri: previewAvatarUri }
-    : session.avatarUrl
-      ? { uri: buildAvatarUri(session.avatarUrl, avatarVersion) }
-      : fallbackAvatarSource;
+    : session.photoUrl
+      ? { uri: buildAvatarUri(session.photoUrl, avatarVersion) }
+      : session.avatarUrl
+        ? { uri: buildAvatarUri(session.avatarUrl, avatarVersion) }
+        : fallbackAvatarSource;
   const profileDisplayName = useMemo(() => {
     if (session.name && session.name.trim().length > 0) {
       return session.name.toUpperCase();
@@ -479,9 +511,11 @@ export default function ProfileScreen() {
     rideTotals.seats > 0 ? Math.round((rideTotals.passengers / rideTotals.seats) * 100) : 0;
   const avgPrice = myRides.length > 0 ? rideTotals.price / myRides.length : 0;
 
+  const ledgerEntries = remoteTransactions.length ? remoteTransactions : wallet?.transactions ?? [];
+
   const walletTotals = useMemo(() => {
-    if (!wallet) return { earned: 0, withdrawn: 0 };
-    return wallet.transactions.reduce(
+    if (!ledgerEntries.length) return { earned: 0, withdrawn: 0 };
+    return ledgerEntries.reduce(
       (acc, tx) => {
         if (tx.type === 'credit') acc.earned += tx.amount;
         else acc.withdrawn += tx.amount;
@@ -491,9 +525,9 @@ export default function ProfileScreen() {
     );
   }, [wallet]);
 
-  const walletBalance = wallet?.balance ?? 0;
+  const walletBalance = remoteWallet?.balance ?? wallet?.balance ?? 0;
   const walletPoints = wallet?.points ?? 0;
-  const lastWalletTransaction = wallet?.transactions[0] ?? null;
+  const lastWalletTransaction = ledgerEntries[0] ?? null;
   const lastWalletTransactionLabel = useMemo(() => {
     if (!lastWalletTransaction) return 'Aucune opération récente';
     const amount = `${lastWalletTransaction.type === 'credit' ? '+' : '-'}€${lastWalletTransaction.amount.toFixed(2)}`;
@@ -513,11 +547,12 @@ export default function ProfileScreen() {
 
   const canWithdraw = useMemo(() => {
     if (!wallet) return false;
-    if (wallet.balance <= 0) return false;
+    const balance = remoteWallet?.balance ?? wallet.balance ?? 0;
+    if (balance <= 0) return false;
     if (!wallet.lastWithdrawalAt) return true;
     const delay = (wallet.withdrawalDelayDays ?? 30) * 24 * 60 * 60 * 1000;
     return Date.now() - wallet.lastWithdrawalAt >= delay;
-  }, [wallet]);
+  }, [wallet, remoteWallet]);
 
   const nextWithdrawalLabel = useMemo(() => {
     if (!wallet?.lastWithdrawalAt) return 'Disponible immédiatement';
@@ -1565,14 +1600,6 @@ const styles = StyleSheet.create({
   upcomingMeta: { color: C.gray600, fontSize: 12 },
   emptyText: { color: C.gray600, fontSize: 13 },
 
-  notificationRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.md,
-  },
-  notificationTitle: { color: C.ink, fontWeight: '600' },
-  notificationBody: { color: C.gray600, fontSize: 12 },
-  notificationTime: { color: C.gray500, fontSize: 11 },
   passengerFeedbackRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',

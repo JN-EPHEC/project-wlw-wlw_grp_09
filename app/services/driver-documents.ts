@@ -1,6 +1,15 @@
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+} from 'firebase/firestore';
 import { encryptFileUri, encryptStringPayload, type EncryptedPayload } from '@/app/utils/secure-cipher';
+import { db } from '@/src/firebase';
 
-const DEFAULT_ENDPOINT = 'https://us-central1-campusride-demo.cloudfunctions.net/driverDocuments';
+const DEFAULT_ENDPOINT = 'https://us-central1-campusride-8b619.cloudfunctions.net/driverDocuments';
 const DRIVER_DOCS_ENDPOINT = process.env.EXPO_PUBLIC_DRIVER_DOCS_URL ?? DEFAULT_ENDPOINT;
 
 export type DriverDocumentType = 'license_front' | 'license_back' | 'vehicle_registration';
@@ -58,7 +67,44 @@ const getMimeFromUri = (uri: string) => {
   return MIME_BY_EXTENSION[ext] ?? DEFAULT_MIME;
 };
 
-const sanitizeEmail = (value: string) => value.trim().toLowerCase();
+const USERS_COLLECTION = collection(db, 'users');
+type DocumentValue = string | { url?: string | null } | null | undefined;
+
+const normalizeEmail = (value: string) => value.trim().toLowerCase();
+
+const findUserDocumentByEmail = async (email: string) => {
+  const snapshot = await getDocs(
+    query(USERS_COLLECTION, where('email', '==', email))
+  );
+  return snapshot.docs[0] ?? null;
+};
+
+const loadUserDocumentSnapshot = async (email: string, uid?: string) => {
+  if (uid) {
+    const explicitRef = doc(db, 'users', uid);
+    const explicitSnap = await getDoc(explicitRef);
+    if (explicitSnap.exists()) {
+      return explicitSnap;
+    }
+  }
+  return findUserDocumentByEmail(email);
+};
+
+const resolveDocumentUrl = (value: DocumentValue) => {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') {
+    return value.url ?? null;
+  }
+  return null;
+};
+
+const buildDocumentRecord = (hasData: boolean, storagePath: string | null): DriverDocumentRecord => ({
+  status: hasData ? 'pending' : 'missing',
+  storagePath,
+  uploadedAt: null,
+  metadata: null,
+});
 
 const postJson = async (payload: Record<string, any>) => {
   const response = await fetch(DRIVER_DOCS_ENDPOINT, {
@@ -82,7 +128,7 @@ const postJson = async (payload: Record<string, any>) => {
 };
 
 export const uploadDriverDocument = async (params: UploadParams) => {
-  const email = sanitizeEmail(params.email);
+  const email = normalizeEmail(params.email);
   if (!email) throw new Error('Adresse e-mail requise');
   let encryption: EncryptedPayload;
   if (params.uri) {
@@ -108,27 +154,31 @@ export const uploadDriverDocument = async (params: UploadParams) => {
   });
 };
 
-export const fetchDriverDocumentStatuses = async (email: string): Promise<DriverDocumentSnapshot> => {
-  const normalized = sanitizeEmail(email);
+export const fetchDriverDocumentStatuses = async (
+  email: string,
+  uid?: string
+): Promise<DriverDocumentSnapshot> => {
+  const normalized = normalizeEmail(email);
   if (!normalized) {
     throw new Error('Adresse e-mail requise');
   }
-  const response = await fetch(
-    `${DRIVER_DOCS_ENDPOINT}?email=${encodeURIComponent(normalized)}`,
-    {
-      headers: { 'Accept': 'application/json' },
-    }
-  );
-  if (!response.ok) {
-    let message = `Erreur ${response.status}`;
-    try {
-      const body = await response.json();
-      if (body?.error) message = body.error;
-    } catch {
-      // ignore
-    }
-    throw new Error(message);
-  }
-  const snapshot = (await response.json()) as DriverDocumentSnapshot;
-  return snapshot;
+  const snapshot = await loadUserDocumentSnapshot(normalized, uid);
+  const payload = snapshot?.data() ?? null;
+  const licenseFrontUrl =
+    resolveDocumentUrl(payload?.documents?.driverLicenseRecto) ??
+    resolveDocumentUrl(payload?.driverLicenseFrontUrl);
+  const licenseBackUrl =
+    resolveDocumentUrl(payload?.documents?.driverLicenseVerso) ??
+    resolveDocumentUrl(payload?.driverLicenseBackUrl);
+  const vehiclePhotoUrl = resolveDocumentUrl(payload?.vehiclePhotoUrl);
+  const hasVehicle = Boolean(vehiclePhotoUrl || payload?.driverVehiclePlate);
+
+  return {
+    email: normalized,
+    documents: {
+      license_front: buildDocumentRecord(Boolean(licenseFrontUrl), licenseFrontUrl),
+      license_back: buildDocumentRecord(Boolean(licenseBackUrl), licenseBackUrl),
+      vehicle_registration: buildDocumentRecord(hasVehicle, vehiclePhotoUrl),
+    },
+  };
 };

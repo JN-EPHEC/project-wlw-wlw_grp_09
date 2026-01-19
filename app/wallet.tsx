@@ -17,21 +17,26 @@ import {
 } from 'react-native';
 
 import {
-  creditWallet,
   getWallet,
   selectPaymentMethod,
   setPayoutAccount,
   setPayoutMethod,
   subscribeWallet,
-  withdrawAmount,
   type PayoutMethod,
   type WalletSnapshot,
 } from '@/app/services/wallet';
+import {
+  adjustBalance,
+  subscribeTransactions,
+  subscribeWallet as subscribeRemoteWallet,
+  type WalletSnapshot as RemoteWalletSnapshot,
+  type WalletTransaction as RemoteWalletTransaction,
+} from '@/app/services/wallet-service';
 import { Colors, Gradients, Radius, Spacing } from '@/app/ui/theme';
+import { pushLocalNotification } from '@/src/app/services/localNotifications';
 import { AppBackground } from '@/components/ui/app-background';
 import { GradientBackground } from '@/components/ui/gradient-background';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { pushNotification } from '@/app/services/notifications';
 import { useAuthSession } from '@/hooks/use-auth-session';
 
 const C = Colors;
@@ -42,6 +47,8 @@ const formatCurrency = (value: number) =>
 
 const ADD_PRESETS = [10, 20, 50, 100];
 const WITHDRAW_PRESETS = [10, 20, 30];
+const buildIdempotencyKey = (prefix: string) =>
+  `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now()}`;
 const buildCardFormState = () => ({
   holder: '',
   number: '',
@@ -77,10 +84,27 @@ const formatCardNumberInput = (value: string) => {
   return digits.replace(/(.{4})/g, '$1 ').trim();
 };
 
+const getErrorCode = (error: unknown) => {
+  if (typeof error !== 'object' || error === null) return '';
+  return String((error as { code?: string }).code ?? '');
+};
+
+const isInsufficientFundsError = (error: unknown) => {
+  const code = getErrorCode(error).toLowerCase();
+  return (
+    code === 'functions/failed-precondition' ||
+    code === 'failed-precondition' ||
+    code === 'insufficient_funds' ||
+    code === 'insufficientfunds'
+  );
+};
+
 export default function WalletScreen() {
   const router = useRouter();
   const session = useAuthSession();
   const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
+  const [remoteWallet, setRemoteWallet] = useState<RemoteWalletSnapshot | null>(null);
+  const [ledger, setLedger] = useState<RemoteWalletTransaction[]>([]);
   const [view, setView] = useState<WalletView>('home');
   const [addAmount, setAddAmount] = useState('20');
   const [withdrawValue, setWithdrawValue] = useState('0');
@@ -204,6 +228,24 @@ export default function WalletScreen() {
   }, [session.email]);
 
   useEffect(() => {
+    if (!session.uid) {
+      setRemoteWallet(null);
+      return;
+    }
+    const unsubscribe = subscribeRemoteWallet(session.uid, setRemoteWallet);
+    return unsubscribe;
+  }, [session.uid]);
+
+  useEffect(() => {
+    if (!session.uid) {
+      setLedger([]);
+      return;
+    }
+    const unsubscribe = subscribeTransactions(session.uid, setLedger);
+    return unsubscribe;
+  }, [session.uid]);
+
+  useEffect(() => {
     if (session.email) return;
     setMethodPickerVisible(false);
     setCardModalVisible(false);
@@ -212,12 +254,12 @@ export default function WalletScreen() {
     resetBankForm();
   }, [resetBankForm, resetCardForm, session.email]);
 
-  const balance = wallet?.balance ?? 0;
+  const balance = remoteWallet?.balance ?? wallet?.balance ?? 0;
   const payoutMethod = wallet?.payoutMethod ?? null;
   const paymentMethods = useMemo(() => wallet?.paymentMethods ?? [], [wallet?.paymentMethods]);
   const defaultPaymentMethodId = wallet?.defaultPaymentMethodId ?? null;
   const payoutAccount = wallet?.payoutAccount ?? null;
-  const transactions = wallet?.transactions ?? [];
+  const transactions = ledger;
 
   const goBack = useCallback(() => {
     if (view === 'home') {
@@ -317,7 +359,7 @@ export default function WalletScreen() {
   }, [bankForm, resetBankForm, session.email]);
 
   const onAddFunds = useCallback(async () => {
-    if (!session.email) return;
+    if (!session.uid) return;
     if (!payoutMethod) {
       Alert.alert(
         'Ajoute une carte',
@@ -339,28 +381,40 @@ export default function WalletScreen() {
     }
     setProcessing(true);
     try {
-      await creditWallet(session.email, amount, { description: 'Recharge wallet' });
-      pushNotification({
-        to: session.email,
-        title: 'Recharge réussie',
-        body: `${formatCurrency(amount)} ajoutés à ton wallet.`,
+      await adjustBalance({
+        amountCents: Math.round(amount * 100),
+        reason: 'topup',
+        idempotencyKey: buildIdempotencyKey('topup'),
+        description: 'Recharge wallet',
         metadata: { action: 'wallet-topup', amount },
       });
       Alert.alert('Recharge confirmée', `${formatCurrency(amount)} ajoutés à ton wallet.`);
+      void pushLocalNotification({
+        title: 'Recharge réussie',
+        body: `${amount.toFixed(2)} € ajoutés à ton wallet.`,
+        metadata: { action: 'wallet-topup', amount },
+      });
       setAddAmount('0');
       setView('home');
     } catch (error) {
-      Alert.alert(
-        'Erreur de recharge',
-        error instanceof Error ? error.message : 'La recharge a échoué.'
-      );
+      if (isInsufficientFundsError(error)) {
+        Alert.alert(
+          'Solde insuffisant',
+          'Ton solde ne permet pas cette recharge pour le moment.'
+        );
+      } else {
+        Alert.alert(
+          'Erreur de recharge',
+          error instanceof Error ? error.message : 'La recharge a échoué.'
+        );
+      }
     } finally {
       setProcessing(false);
     }
-  }, [addAmount, payoutMethod, session.email]);
+  }, [addAmount, payoutMethod, session.email, session.uid]);
 
   const onWithdrawFunds = useCallback(async () => {
-    if (!session.email) return;
+    if (!session.uid) return;
     if (!payoutAccount && !payoutMethod) {
       Alert.alert(
         'Ajoute un compte bancaire',
@@ -383,41 +437,37 @@ export default function WalletScreen() {
     }
     setProcessing(true);
     try {
-      const result = await withdrawAmount(session.email, amountValue, { description: 'Retrait manuel' });
-      if (!result.ok) {
-        switch (result.reason) {
-          case 'no-payout-method':
-            Alert.alert('Ajoute un compte bancaire', 'Enregistre un compte pour recevoir tes retraits.');
-            break;
-          case 'empty':
-            Alert.alert('Solde insuffisant', 'Ton solde doit être supérieur à 0 €.');
-            break;
-          case 'invalid-amount':
-            Alert.alert('Montant invalide', 'Entre un montant valide.');
-            break;
-          case 'insufficient':
-            Alert.alert('Montant trop élevé', 'Ton solde ne permet pas ce retrait.');
-            break;
-          default:
-            Alert.alert('Retrait impossible', 'Réessaie dans un instant.');
-        }
+      await adjustBalance({
+        amountCents: -Math.round(amountValue * 100),
+        reason: 'withdraw',
+        idempotencyKey: buildIdempotencyKey('withdraw'),
+        description: 'Retrait manuel',
+        metadata: { action: 'wallet-withdrawal', amount: amountValue },
+      });
+      Alert.alert(
+        'Retrait envoyé',
+        `${formatCurrency(amountValue)} sont en route vers ton compte bancaire.`
+      );
+      void pushLocalNotification({
+        title: 'Retrait effectué',
+        body: `${amountValue.toFixed(2)} € retirés de ton wallet.`,
+        metadata: { action: 'wallet-withdrawal', amount: amountValue },
+      });
+      setWithdrawValue('0');
+      setView('home');
+    } catch (error) {
+      if (isInsufficientFundsError(error)) {
+        Alert.alert('Solde insuffisant', 'Ton solde ne permet pas ce retrait.');
       } else {
         Alert.alert(
-          'Retrait envoyé',
-          `${formatCurrency(result.amount)} sont en route vers ton compte bancaire.`
+          'Erreur de retrait',
+          error instanceof Error ? error.message : 'Le retrait a échoué.'
         );
-        setWithdrawValue('0');
-        setView('home');
       }
-    } catch (error) {
-      Alert.alert(
-        'Erreur de retrait',
-        error instanceof Error ? error.message : 'Le retrait a échoué.'
-      );
     } finally {
       setProcessing(false);
     }
-  }, [balance, openBankModal, payoutAccount, payoutMethod, session.email, withdrawValue]);
+  }, [balance, openBankModal, payoutAccount, payoutMethod, session.uid, withdrawValue]);
 
   const renderAmountInput = (
     label: string,
@@ -650,7 +700,11 @@ export default function WalletScreen() {
         disabled={processing}
         accessibilityRole="button"
       >
-        <Text style={styles.primaryButtonText}>Continuer</Text>
+        {processing ? (
+          <ActivityIndicator color="#FFFFFF" />
+        ) : (
+          <Text style={styles.primaryButtonText}>Continuer</Text>
+        )}
       </Pressable>
     </>
   );
@@ -724,7 +778,11 @@ export default function WalletScreen() {
         disabled={processing}
         accessibilityRole="button"
       >
-        <Text style={styles.primaryButtonText}>Continuer</Text>
+        {processing ? (
+          <ActivityIndicator color="#FFFFFF" />
+        ) : (
+          <Text style={styles.primaryButtonText}>Continuer</Text>
+        )}
       </Pressable>
     </>
   );
@@ -965,6 +1023,8 @@ export default function WalletScreen() {
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
           bounces={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
         >
           {view === 'home' ? renderHome() : null}
           {view === 'add' ? renderAddFunds() : null}

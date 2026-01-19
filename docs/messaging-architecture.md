@@ -9,7 +9,7 @@ Cette version de l’application intègre une maquette fonctionnelle de messager
 | Stockage             | `app/services/messages.ts` conserve threads & messages en mémoire        |
 | « Chiffrement »      | XOR simple (fonction `encrypt/decrypt`) pour illustrer le concept        |
 | Temps réel           | `subscribeThreads` / `subscribeMessages` notifient les listeners JS      |
-| Notifications        | Les envois passent par `pushNotification` (service notifications mock)  |
+| Notifications        | Désactivées : la page `app/notifications.tsx` affiche un message local (Firebase retiré) |
 | Historique           | Historique par thread conservé tant que l’app reste en mémoire          |
 | Signalement          | `reportMessage` stocke les signalements (affichés dans l’état local)     |
 
@@ -32,9 +32,7 @@ Les threads de démonstration sont injectés via `ensureDemoThreads(email)` pour
 - Dans `messages.ts`, remplacer les listeners in-memory par un pont vers ce service.
 
 ### 2.3 Notifications push
-1. Activer Expo Notifications (ou Firebase Cloud Messaging) sur mobile.
-2. Enregistrer le `pushToken` utilisateur côté serveur.
-3. Lors d’un `POST /messages`, déclencher l’envoi (via SDK Expo, FCM ou APNS).
+La stack de notifications Firestore/Expo est désactivée. La page `app/notifications.tsx` reste locale et informe l’utilisateur que les notifications Firebase ont été retirées ; aucun token push n’est collecté ni synchronisé tant qu’un nouveau mécanisme n’est pas redéployé.
 
 ### 2.4 Modération
 1. Côté serveur, stocker les signalements (`messageId`, reporter, reason, date).
@@ -48,7 +46,6 @@ Les threads de démonstration sont injectés via `ensureDemoThreads(email)` pour
 - Documenter la portabilité/suppression des données utilisateurs.
 
 ## 4. Tests à prévoir
-- Unitaire : serialisation, chiffrement/déchiffrement, formatage des notifications.
 - Intégration : envoi/consultation de messages via API réelle.
 - E2E : scénarios conducteur ↔ passager + signalement.
 - Tests de résistance (flood, message volumineux).

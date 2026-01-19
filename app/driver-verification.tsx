@@ -15,7 +15,8 @@ import {
 } from 'react-native';
 
 import * as Auth from '@/app/services/auth';
-import { updateVehicleInfo } from '@/app/services/security';
+import { uploadDriverDocument } from '@/app/services/driver-documents';
+import { updateDriverLicense, updateVehicleInfo } from '@/app/services/security';
 import { Colors, Gradients, Radius, Shadows, Spacing } from '@/app/ui/theme';
 import { DocumentRow } from '@/components/documents/document-row';
 import { GradientBackground } from '@/components/ui/gradient-background';
@@ -26,6 +27,10 @@ import { pickProfileDocument } from '@/app/utils/image-picker';
 import { useAuthSession } from '@/hooks/use-auth-session';
 import { SharedDocumentKey, useDocumentStore } from '@/hooks/use-document-store';
 import { useDriverSecurity } from '@/hooks/use-driver-security';
+import { uploadDriverLicense } from '@/src/storageUploads';
+import { updateUserDocuments } from '@/src/firestoreUsers';
+import { db } from '@/src/firebase';
+import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 
 const formatPlateInput = (value: string) => {
   const cleaned = value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
@@ -134,18 +139,71 @@ export default function DriverVerificationScreen() {
       setLoadingDocument(key);
       try {
         const uri = await pickProfileDocument();
-        if (uri) {
-          const name =
-            key === 'licenseRecto'
-              ? 'Permis de conduire — Recto'
-              : 'Permis de conduire — Verso';
-          setDocumentEntry(key, { uri, name });
+        if (!uri) {
+          return;
         }
+        const name =
+          key === 'licenseRecto'
+            ? 'Permis de conduire — Recto'
+            : 'Permis de conduire — Verso';
+        setDocumentEntry(key, { uri, name });
+
+        if (!session.email || !session.uid) {
+          return;
+        }
+
+        const side = key === 'licenseRecto' ? 'front' : 'back';
+        const licenseUpload = uploadDriverLicense({
+          uid: session.uid,
+          uri,
+          side,
+        });
+        const reviewUpload = uploadDriverDocument({
+          email: session.email,
+          documentType: side === 'front' ? 'license_front' : 'license_back',
+          uri,
+        });
+
+        const [licenseResult] = await Promise.all([licenseUpload, reviewUpload]);
+
+        const previewUrl = licenseResult.downloadURL;
+        updateDriverLicense(session.email, { side, url: previewUrl });
+        await updateUserDocuments(
+          session.email,
+          side === 'front'
+            ? { driverLicenseRecto: previewUrl }
+            : { driverLicenseVerso: previewUrl }
+        );
+
+        if (session.uid) {
+          const licenseDocRef = doc(db, 'users', session.uid);
+          await setDoc(
+            licenseDocRef,
+            {
+              driverLicense: {
+                ...(side === 'front'
+                  ? {
+                      frontUrl: licenseResult.downloadURL,
+                      frontPath: licenseResult.path,
+                    }
+                  : {
+                      backUrl: licenseResult.downloadURL,
+                      backPath: licenseResult.path,
+                    }),
+                updatedAt: serverTimestamp(),
+              },
+            },
+            { merge: true }
+          );
+        }
+      } catch (error) {
+        console.warn('driver document upload failed', error);
+        Alert.alert('Erreur', 'Impossible d’envoyer ce document pour le moment.');
       } finally {
         setLoadingDocument((current) => (current === key ? null : current));
       }
     },
-    [setDocumentEntry]
+    [session.email, session.uid, setDocumentEntry, updateDriverLicense, updateUserDocuments]
   );
 
   const licenseRecto = storedDocuments.licenseRecto;

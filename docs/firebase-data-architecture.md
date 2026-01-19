@@ -49,32 +49,46 @@ Des Cloud Functions (dossier `functions/`) viendront plus tard orchestrer les wo
 
 ## 3. Collection `rides` (Cloud Firestore)
 
-- **Emplacement** : `firestore.collection('rides')`, géré par `src/firestoreRides.ts`.
-- **Rôle** : journaliser chaque trajet publié (même en mode démo) avec les informations clés pour l’équipe CampusRide (conducteur, trajet, places, statut, paiements).
-- **Clé fonctionnelle** : `rideId` (même identifiant que côté front `app/services/rides.ts`).
+- **Emplacement** : `firestore.collection('rides/{driverUid}/published')`, géré par `src/firestoreRides.ts`.
+- **Rôle** : chaque conducteur publie un document `rides/{driverUid}/published/{rideId}` qui contient les métadonnées du trajet (`driverName`, `depart`, `destination`, `departureAt`, `availableSeats`, `price`, `passengers[]`, `status`, …). Un sous-dossier `requests` stocke les demandes (`pending` → `accepted` → `paid`) côté conducteur, et un miroir côté passager se trouve sous `/users/{passengerUid}/rideRequests/{requestId}` pour faciliter l’expérience « Mes demandes ».
+- **Clé fonctionnelle** : `rideId` (même qu’en front). Les requêtes suivent le pattern `req-${Date.now()}-xxxx`.
 
 | Champ                     | Type                     | Description / Source |
 |---------------------------|--------------------------|----------------------|
 | `rideId`                  | string                   | Identifiant partagé avec l’app. |
-| `ownerEmail`              | string (lowercase)       | Conducteur authentifié ayant publié le trajet. |
-| `driver`                  | string                   | Nom affiché côté passagers. |
-| `vehiclePlate`            | string                   | Plaque formatée. |
-| `depart` / `destination`  | string                   | Origine / destination saisis. |
-| `time` / `departureAt`    | string HH:MM / timestamp | Heure saisie + timestamp calculé pour les rappels. |
-| `seats` / `availableSeats`| number                   | Places totales / restantes. |
-| `price` / `pricingMode`   | number / enum            | Prix par passager + mode (single/double). |
-| `passengers`              | string[]                 | E-mails normalisés des passagers confirmés. |
-| `canceledPassengers`      | string[]                 | Historique des passagers annulés. |
-| `passengerCount`          | number                   | Calculé pour faciliter les filtres / exports. |
-| `payoutProcessed`         | boolean                  | Aligné avec `processRidePayouts`. |
-| `status`                  | enum `scheduled`/`ongoing`/`completed`/`cancelled` | Déduit automatiquement, `cancelled` si `removeRide`. |
-| `cancellationReason`      | string \| null           | Motif métier (`driver_cancelled`, etc.). |
-| `createdAt` / `updatedAt` | number ms                | Horodatages front (utilisés aussi pour détecter les mises à jour). |
-| `firestoreUpdatedAt`      | Timestamp Firestore      | Audit serveur (écrit via `serverTimestamp`). |
+| `ownerUid`                | string                   | UID Firebase Auth du conducteur. |
+| `ownerEmail`              | string (lowercase)       | E-mail du conducteur. |
+| `driverName`              | string                   | Nom affiché dans l’interface passager. |
+| `plate`                   | string                   | Plaque formatée. |
+| `depart` / `destination`  | string                   | Origine / destination saisies. |
+| `time` / `departureAt`    | string HH:MM / number ms | Heure saisie + timestamp normalisé. |
+| `totalSeats` / `availableSeats`| number             | Capacités totales / places restantes. |
+| `price` / `pricingMode`   | number / enum            | Tarif par passager + mode (single/double). |
+| `passengers`              | string[]                 | E-mails normalisés des réservations validées. |
+| `canceledPassengers`      | string[]                 | Historique des annulations. |
+| `passengerCount`          | number                   | Utilisé pour les indicateurs / exports. |
+| `status`                  | enum `active`/`completed`/`cancelled` | Suit le cycle de vie du trajet. |
+| `createdAt` / `updatedAt` | Timestamp Firestore      | Gérés via `serverTimestamp` (`persistRideRecord`). |
 
-**Alimentation**
-- `app/services/rides.ts` appelle `persistRideRecord` lors de la création, modification, réservation, annulation, payout.
-- Les règles Firestore autorisent la lecture à tout membre connecté et les écritures uniquement au propriétaire du trajet (ou à la requête dont `ownerEmail` correspond au compte courant). Les passagers s’appuieront plus tard sur des Cloud Functions.
+**Sous-collections**
+- `rides/{driverUid}/published/{rideId}/requests/{requestId}` contient :
+  - `requestStatus`: `pending` / `accepted` / `paid` / `rejected` / `cancelled`
+  - `paymentStatus`: `unpaid` / `processing` / `paid` / `failed` / `refunded`
+  - `seatsRequested`, `passengerUid`, `passengerEmail`, `driverUid`, `rideId`
+  - `paymentRef`, `paidAt`, `createdAt`, `updatedAt`
+- `users/{passengerUid}/rideRequests/{requestId}` est le miroir UX :
+  - copie des statuts (`requestStatus`, `paymentStatus`)
+  - champ `ridePath` = `rides/{driverUid}/published/{rideId}`
+  - `rideId`, `driverUid`, `passengerUid`, `createdAt`, `updatedAt`
+
+**Flux**
+- `app/services/rides.ts` (via `persistRideRecord`) alimente `rides/{ownerUid}/published/{rideId}` à chaque création/modification/réservation.
+- `RideService` (`src/firestoreRides.ts`) expose `createRide`, `updateRide`, `deleteRide`, `createRideRequest`, `respondToRequest`, `markRequestPaid`.
+- Les demandes sont synchronisées : `createRideRequest` écrit dans la sous-collection `requests` et dans le miroir `users/{passengerUid}/rideRequests`; un `respondToRequest` en transaction met à jour les deux documents et ajuste `availableSeats`/`passengerCount`.
+
+**Règles**
+- `firestore.rules` restreint l’accès à `rides/{driverUid}/published/{rideId}` au conducteur (`request.auth.uid == driverUid`) et donne la même restriction à la sous-collection `requests`.
+- Les passagers lisent/écrivent uniquement dans leur miroir `users/{passengerUid}/rideRequests/{requestId}`.
 
 ## 4. Collection `wallets` (Cloud Firestore)
 
@@ -123,21 +137,48 @@ La collection `trajets` contient deux usages compatibles :
 
 Le champ `search.dayKey` correspond à la date ISO (YYYY-MM-DD) de `departureAt`. Les appels front-end doivent faire un double-écriture temporaire vers la structure `publies`/`reservations` existante (pour le moment) en attendant que les anciens parcours migrent.
 
-### 5.2. Sous-collections d’un trajet
+### 5.2. Map `reservations` (`trajets/{driverUid}.reservations`)
 
-- **`reservations`** (`trajets/{trajetId}/reservations/{reservationId}`)
-  - Objectif : stocker les réservations confirmées du conducteur.
-  - Champs obligatoires :
-    | Champ | Type | Description |
-    |---|---|---|
-    | `rideId` | string (optionnel) | Identifiant des seeds existants (`seed-1`, `seed-2`). |
-    | `passengerUid` | string | UID du passager confirmé. |
-    | `passengerEmail` | string | E-mail normalisé. |
-    | `seats` | number | Nombre de places réservées (généralement 1). |
-    | `status` | enum | `pending` / `accepted` / `declined` / `cancelled` / `completed`. |
-    | `reservedAt` / `updatedAt` | `Timestamp` | `serverTimestamp()` pour garder l’historique. |
-    | `payoutProcessed` | bool (optionnel) | Flag existant, ne pas supprimer. |
-    | `syncedAt` | `Timestamp` (optionnel) | Si la synchronisation batch existe déjà.
+Juste en dessous du champ `publies`, chaque document `trajets/{driverUid}` expose une map `reservations`. Chaque entrée (clé `reservationId`) rassemble les données minimales nécessaires pour que le conducteur puisse consulter les réservations sans créer de sous-collection.
+
+La structure attendue :
+
+```
+reservations (map)
+  • {reservationId} :
+    • reservationId (string)
+    • rideId (string)
+    • driverUid (string)
+    • passengerUid (string)
+    • passengerEmail (string|null)
+    • seatsRequested (number)
+    • status (“pending”|“accepted”|“paid”|“cancelled”)
+    • createdAt (serverTimestamp)
+    • updatedAt (serverTimestamp)
+    • rideSnapshot (object) :
+      • depart (string)
+      • destination (string)
+      • departureAt (number|timestamp)
+      • price (number)
+```
+
+Le helper `createReservation` de `src/trajetsReservationsService.ts` ajoute à la map le nouvel objet via `updateDoc(trajets/${driverUid}, FieldPath('reservations', reservationId), payload)` pour rester compatible avec la structure map existante. Le même helper met à jour `updatedAt` et l’entrée `users/{passengerUid}/reservations/{reservationId}` (voir section suivante) afin que le passager retrouve facilement son historique.
+
+### 5.3. Index passager (`users/{passengerUid}/reservations`)
+
+Pour permettre au passager de consulter ses réservations sans avoir à scanner tous les documents conducteur, on ajoute un index simple :
+
+| Champ | Type | Description |
+|---|---|---|
+| `reservationId` | string | Identifiant coïncidant avec l’entrée du conducteur. |
+| `driverUid` | string | UID du conducteur propriétaire du trajet. |
+| `rideId` | string | Identifiant du ride/publikation ciblé. |
+| `status` | enum | `pending` / `accepted` / `paid` / `cancelled`. |
+| `createdAt` / `updatedAt` | `Timestamp` | `serverTimestamp()` pour refléter la dernière mise à jour. |
+
+Le helper `listMyReservationsAsPassenger(passengerUid)` (même fichier) lit cette sous-collection ordonnée par `createdAt` pour alimenter l’interface « Mes trajets ». `driverUpdateReservationStatus` lève aussi le status dans cet index afin que le passager suive l’évolution.
+
+-### 5.4. Sous-collections d’un trajet
 
 - **`requests`** (`trajets/{trajetId}/requests/{requestId}`)
   - Objectif : enregistrer les demandes « en attente » du passager.
@@ -162,22 +203,23 @@ Le champ `search.dayKey` correspond à la date ISO (YYYY-MM-DD) de `departureAt`
     | `createdAt` | `Timestamp` | `serverTimestamp()`. |
     | `metadata` | objet | Informations contextuelles (rideId, seats…). |
 
-### 5.3. Requêtes principales
+### 5.5. Requêtes principales
 
 1. **Mes trajets (driver)** : requête `firestore.collection('trajets').where('ownerUid', '==', currentUser.uid)` classée par `createdAt`. Index automatique sur `ownerUid`.
 2. **Mes demandes (passager)** : requête `collectionGroup('requests').where('passengerUid', '==', currentUser.uid).orderBy('createdAt', 'desc')`. Index collectif nécessaire (`requests` collectionGroup + `passengerUid` + `createdAt`).
-3. **Mes réservations (passager)** : `collectionGroup('reservations').where('passengerUid', '==', currentUser.uid)`.
-4. **Admin overview** : combinaison `collectionGroup('requests')` ou `collectionGroup('reservations')` triées par `createdAt` pour surveiller demandes et confirmations.
+3. **Mes réservations (passager)** : lecture de `users/{currentUser.uid}/reservations` triée par `createdAt` (le helper `listMyReservationsAsPassenger` expose cette liste). On profite ainsi du cache local et des règles plus simples côté passager.
+4. **Admin overview** : combinaison `collectionGroup('requests')` (dashboards conducteur + passager) et lecture des maps `trajets/{driverUid}.reservations` ou de l’index `users/{passengerUid}/reservations` pour auditer les réservations confirmées.
 
 **Index Firestore recommandés**
 - `collectionGroup('requests')` : préfère un index composite `passengerUid (asc), createdAt (desc)` pour les vues passager + `driverUid (asc), createdAt (desc)` pour le dashboard conducteur.
-*- `collectionGroup('reservations')` : index sur `passengerUid (asc)` (et `createdAt` si tu les classes par date).
+- `users/{uid}/reservations` : un index simple sur `createdAt (desc)` suffit pour commander l’historique par date.
 
-### 5.4. Helpers TypeScript et compatibilité
+### 5.6. Helpers TypeScript et compatibilité
 
-- Le nouveau fichier `src/firestoreTrajets.ts` expose les types `TrajetDoc`, `TrajetRequestDoc`, `TrajetReservationDoc` ainsi que les helpers `createTrajet`, `createRequest`, `acceptRequest`, `declineRequest`, `createReservation`, `listMyTrips` et `listMyRequests`. Les helpers utilisent des transactions pour éviter les sur-réservations (`availableSeats`) et consignent les événements dans `history`.
-- Les vues UI doivent toujours prioriser la lecture du document `trajets/{trajetId}` et rebasculer sur le journal par utilisateur (`trajets/{uid}`) uniquement si le document trip est absent. Cette double lecture garantit une compatibilité sans rupture (le nouveau modèle existe en parallèle).
-- Les règles Firestore (section dédiée) autorisent désormais les opérations sur `trajets/{trajetId}`/subcollections tout en conservant `request.auth.uid == userId` pour le journal legacy.
+- Le fichier `src/firestoreTrajets.ts` expose toujours `TrajetDoc`, `TrajetRequestDoc`, `TrajetReservationDoc` et les helpers historiques (`createTrajet`, `createRequest`, `acceptRequest`, `declineRequest`, `createReservation`, `listMyTrips`, `listMyRequests`). Ces helpers consignent les événements dans `history` et s’assurent que `availableSeats` reste cohérent.
+- Le nouveau fichier `src/trajetsReservationsService.ts` orchestre la double écriture `trajets/{driverUid}.reservations` + `users/{passengerUid}/reservations` à l’aide de `FieldPath('reservations', reservationId)` et de `serverTimestamp()`. Il expose `createReservation`, `listMyReservationsAsPassenger` et `driverUpdateReservationStatus` pour faciliter les workflows passager/driver en respectant la structure map demandée.
+- Les vues UI doivent toujours prioriser `trajets/{trajetId}` et tomber sur le journal `trajets/{uid}` ou `users/{uid}/reservations` seulement en fallback. Cette double lecture garantit une compatibilité sans rupture puisque l’ancien modèle (journal par utilisateur) reste accessible.
+- Les règles Firestore (section dédiée) autorisent la mise à jour additionnelle des maps `publies`/`reservations` en contrôlant précisément ce que chaque rôle peut écrire.
 
 
 ## 6. `authUsers` (Firebase Auth)
@@ -248,23 +290,11 @@ firebase deploy --only functions
 
 En développement, si `RESEND_API_KEY` est absent, la fonction se contente de journaliser l’absence de configuration afin de ne pas casser les tests.
 
-## 10. Notifications (Firestore)
+## 10. Notifications (Firebase désactivé)
 
-Les notifications temps-réel reposent désormais sur trois collections Firestore afin de conserver une trace serveur même lorsque l’app est relancée ou installée sur un autre appareil.
+Les collections `notifications`, `notificationTokens` et `notificationPreferences` ont été retirées. Les écritions Firestore/Functions/Storage associées à la stack de notifications ne sont plus en service tant qu’un nouveau mécanisme n’aura pas été redéployé.
 
-| Ressource                     | Service         | Description                                                                                              |
-|-------------------------------|-----------------|----------------------------------------------------------------------------------------------------------|
-| `notificationTokens/{email}`  | Firestore       | Token Expo/FCM courant + plateforme pour envoyer un push.                                                |
-| `notificationPreferences/{email}` | Firestore   | Préférences utilisateur (`pushEnabled`, sons, rappels, `lastRegisteredAt`, token courant…).               |
-| `notifications/{autoId}`      | Firestore       | Journal des événements envoyés (messages, réservations, rappels) avec métadonnées et planification.      |
-
-**Alimentation côté app** (`app/services/notifications.ts`) :
-
-- `registerPushToken` → `persistPushTokenRecord` écrit/merge le token normalisé et `platform` (ios/android/web) + `updatedAt`.
-- `updateNotificationPreferences` → `persistNotificationPreferencesRecord` synchronise les toggles (push, rappels, sons) et `lastRegisteredAt`.
-- `pushNotification` → `persistNotificationEventRecord` ajoute une entrée immuable pour chaque notification envoyée (titre, corps, `metadata`, `scheduleAt`, `scheduleKey`).
-
-Cela couvre la Definition of Done : le « serveur de notifications » repose sur Firestore, et les tokens push sont enregistrés/mis à jour dès qu’ils changent. Des Cloud Functions pourront ensuite se brancher sur ces collections (`notifications` pour envoyer, `notificationTokens` pour cibler les appareils) sans modifier le front.
+L’interface `app/notifications.tsx` affiche désormais un message fixe pour signaler la désactivation, et l’application ne tente plus d’écrire ou de lire ces documents ni de synchroniser des tokens push.
 
 ## 11. Collection `businessQuotes` (Cloud Firestore)
 

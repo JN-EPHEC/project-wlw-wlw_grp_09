@@ -18,8 +18,9 @@ export const useDriverRequests = (driverUid: string | null) => {
   }, [driverUid]);
 
   return {
-    pending: requests.filter((request) => request.status === 'pending'),
-    accepted: requests.filter((request) => request.status === 'accepted'),
-    rejected: requests.filter((request) => request.status === 'rejected'),
+    pending: requests.filter((request) => request.requestStatus === 'pending'),
+    accepted: requests.filter((request) => request.requestStatus === 'accepted'),
+    paid: requests.filter((request) => request.requestStatus === 'paid'),
+    rejected: requests.filter((request) => request.requestStatus === 'rejected'),
   };
 };
