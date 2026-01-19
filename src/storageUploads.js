@@ -1,4 +1,4 @@
-import { ref, uploadString, getDownloadURL } from "firebase/storage";
+import { ref, uploadBytes, uploadString, getDownloadURL } from "firebase/storage";
 import * as FileSystem from "expo-file-system";
 import Constants from "expo-constants";
 import { auth, storage } from "./firebase";
@@ -62,6 +62,15 @@ const toDataUrl = async (uri) => {
     dataUrl: `data:${mimeType};base64,${base64}`,
     mimeType,
   };
+};
+
+const toBlob = async (uri) => {
+  if (!uri) throw new Error("Image URI manquante");
+  const response = await fetch(uri);
+  if (!response.ok) {
+    throw new Error("Impossible de lire l’image locale.");
+  }
+  return response.blob();
 };
 
 const uploadDataUrl = async (dataUrl, path, mimeType) => {
@@ -142,16 +151,55 @@ export const uploadUserDocument = async ({ email, folder, label, uri }) => {
   return uploadDataUrl(dataUrl, path, mimeType);
 };
 
-export const uploadStudentCard = async ({ email, uri }) =>
-  uploadUserDocument({ email, uri, folder: "documents", label: "student-card" });
+const uploadUserImage = async ({ uid, uri, folder, filenamePrefix }) => {
+  if (!uri) throw new Error("Image URI manquante");
+  if (!uid) throw new Error("Utilisateur non authentifié");
+  const mimeType = inferMimeFromPath(uri);
+  const extension = EXTENSION_BY_MIME[mimeType] ?? "jpg";
+  const safePrefix = sanitizeSegment(filenamePrefix ?? "image");
+  const filename = `${safePrefix}-${Date.now()}.${extension}`;
+  const storageRef = ref(storage, `users/${uid}/${folder}/${filename}`);
+  const blob = await toBlob(uri);
+  await uploadBytes(storageRef, blob, { contentType: mimeType });
+  return {
+    downloadURL: await getDownloadURL(storageRef),
+    path: storageRef.fullPath,
+  };
+};
+
+export const uploadStudentCard = async ({ email, uri }) => {
+  if (!uri) throw new Error("Fichier manquant.");
+  const { uid } = requireCurrentUserContext(email);
+  const { downloadURL } = await uploadUserImage({
+    uid,
+    uri,
+    folder: "documents",
+    filenamePrefix: "student-card",
+  });
+  return downloadURL;
+};
 
 export const uploadProfileSelfie = async ({ email, uri }) =>
   uploadUserDocument({ email, uri, folder: "selfies", label: "identity-selfie" });
 
-export const uploadDriverLicenseSide = async ({ email, uri, side }) =>
-  uploadUserDocument({
-    email,
+export async function uploadDriverLicense({ uid, uri, side }) {
+  const result = await uploadUserImage({
+    uid,
     uri,
-    folder: "driver-licenses",
-    label: `license-${side}`,
+    folder: "driver_licenses",
+    filenamePrefix: `driver-license-${side}`,
   });
+  return result;
+}
+
+export const uploadDriverLicenseSide = async ({ email, uri, side }) => {
+  if (!uri) throw new Error("Fichier manquant.");
+  const { uid } = requireCurrentUserContext(email);
+  const result = await uploadUserImage({
+    uid,
+    uri,
+    folder: "driver_licenses",
+    filenamePrefix: `driver-license-${side}`,
+  });
+  return result.downloadURL;
+};

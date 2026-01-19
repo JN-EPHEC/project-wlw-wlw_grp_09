@@ -40,6 +40,7 @@ export type AuthSession = {
   phone: string | null;
   studentCardUrl: string | null;
   avatarUrl: string | null;
+  photoUrl: string | null;
   isDriver: boolean;
   isPassenger: boolean;
   roleMode: RoleMode;
@@ -157,6 +158,7 @@ function createEmptySession(): AuthSession {
     phone: null,
     studentCardUrl: null,
     avatarUrl: null,
+    photoUrl: null,
     isDriver: false,
     isPassenger: false,
     roleMode: getPersistedRoleMode(),
@@ -306,7 +308,7 @@ const splitName = (value: string | null | undefined) => {
 
 const hydrateDriverSecurityFromProfile = (email: string, profile: any) => {
   if (!email || !profile) return;
-  initDriverSecurity(email);
+  initDriverSecurity(email, profile.authUid ?? null);
   if (profile.driverLicenseFrontUrl) {
     seedDriverLicense(email, { side: 'front', url: profile.driverLicenseFrontUrl });
   }
@@ -341,6 +343,7 @@ const buildSessionFromUser = async (user: User | null): Promise<AuthSession> => 
       phone: null,
       studentCardUrl: null,
       avatarUrl: user.photoURL,
+      photoUrl: user.photoURL,
       isDriver: false,
       isPassenger: true,
       roleMode: getPersistedRoleMode(),
@@ -367,6 +370,7 @@ const buildSessionFromUser = async (user: User | null): Promise<AuthSession> => 
     phone: profile.phone ?? null,
     studentCardUrl: profile.studentCardUrl ?? null,
     avatarUrl: profile.selfieUrl ?? user.photoURL ?? null,
+    photoUrl: profile.photoUrl ?? profile.selfieUrl ?? user.photoURL ?? null,
     isDriver: hasDriverFlag ? !!profile.isDriver : isDriverFromRole,
     isPassenger: hasPassengerFlag ? !!profile.isPassenger : !isDriverFromRole,
     roleMode: getPersistedRoleMode(),

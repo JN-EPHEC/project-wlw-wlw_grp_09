@@ -62,9 +62,16 @@ type Listener = (snapshot: DriverSecuritySnapshot) => void;
 
 const driverSecurity: Record<string, DriverSecurityRecord> = {};
 const listeners: Record<string, Listener[]> = {};
+const driverUids: Record<string, string | null> = {};
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 const now = () => Date.now();
+
+const setDriverUidForEmail = (email: string, uid: string | null) => {
+  driverUids[normalizeEmail(email)] = uid;
+};
+
+const getDriverUidForEmail = (email: string) => driverUids[normalizeEmail(email)] ?? null;
 
 const cleanText = (value: string | null | undefined) => {
   if (!value) return null;
@@ -205,7 +212,8 @@ const remoteFetches: Record<string, Promise<DriverDocumentSnapshot | null> | nul
 const refreshRemoteStatuses = async (email: string) => {
   const key = normalizeEmail(email);
   if (remoteFetches[key]) return remoteFetches[key];
-  const promise = fetchDriverDocumentStatuses(email)
+  const uid = getDriverUidForEmail(email) ?? undefined;
+  const promise = fetchDriverDocumentStatuses(email, uid)
     .then((snapshot) => {
       remoteStatuses[key] = snapshot;
       return snapshot;
@@ -223,7 +231,8 @@ const refreshRemoteStatuses = async (email: string) => {
   return promise;
 };
 
-export const initDriverSecurity = (email: string) => {
+export const initDriverSecurity = (email: string, uid?: string | null) => {
+  setDriverUidForEmail(email, uid ?? null);
   ensureRecord(email);
   void refreshRemoteStatuses(email);
   notify(email, remoteStatuses[normalizeEmail(email)] ?? null);
@@ -326,6 +335,7 @@ export const clearDriverSecurity = (email: string) => {
     lastStatusChange: null,
   };
   remoteStatuses[key] = null;
+  driverUids[key] = null;
   notify(email, null);
 };
 

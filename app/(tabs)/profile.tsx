@@ -63,7 +63,7 @@ import { useAuthSession } from '@/hooks/use-auth-session';
 import { useBreakpoints } from '@/hooks/use-breakpoints';
 import { useDriverSecurity } from '@/hooks/use-driver-security';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
-import { uploadProfileSelfie } from '@/src/storageUploads';
+import { uploadProfileSelfie } from '@/app/services/storage-upload';
 
 const C = Colors;
 const R = Radius;
@@ -118,7 +118,7 @@ export default function ProfileScreen() {
         return false;
       }
     },
-    [session.email]
+    [session.email, session.uid]
   );
 
   const togglePassengerRole = useCallback(() => {
@@ -180,8 +180,12 @@ export default function ProfileScreen() {
       setIsSavingAvatar(true);
       try {
         let nextUri = uri;
-        if (uri && !isRemoteUri(uri)) {
-          nextUri = await uploadProfileSelfie({ email: session.email, uri });
+        if (uri && !isRemoteUri(uri) && session.uid) {
+          const uploaded = await uploadProfileSelfie({
+            uid: session.uid,
+            uri,
+          });
+          nextUri = uploaded.downloadURL;
         }
         await Auth.updateProfile(session.email, { avatarUrl: nextUri ?? '' });
         setAvatarVersion((prev) => prev + 1);
@@ -442,9 +446,11 @@ export default function ProfileScreen() {
   );
   const avatarSource = previewAvatarUri
     ? { uri: previewAvatarUri }
-    : session.avatarUrl
-      ? { uri: buildAvatarUri(session.avatarUrl, avatarVersion) }
-      : fallbackAvatarSource;
+    : session.photoUrl
+      ? { uri: buildAvatarUri(session.photoUrl, avatarVersion) }
+      : session.avatarUrl
+        ? { uri: buildAvatarUri(session.avatarUrl, avatarVersion) }
+        : fallbackAvatarSource;
   const profileDisplayName = useMemo(() => {
     if (session.name && session.name.trim().length > 0) {
       return session.name.toUpperCase();
